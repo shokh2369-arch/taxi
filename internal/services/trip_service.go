@@ -324,10 +324,10 @@ func (s *TripService) FinishTrip(ctx context.Context, tripID string, driverUserI
 				}
 			}
 			if isActive == 1 && liveRecent {
-				// Pay full reward 100000 so'm (Stage 1 + Stage 2) and mark both paid.
+				// Pay stage2 reward 100000 so'm (stage1 = 20k was paid when referred driver completed application).
 				res, _ := s.db.ExecContext(ctx, `UPDATE drivers SET balance = balance + 100000 WHERE user_id = (SELECT id FROM users WHERE referral_code = ?1)`, referredBy.String)
 				if nr, _ := res.RowsAffected(); nr > 0 {
-					_, _ = s.db.ExecContext(ctx, `UPDATE users SET referral_stage1_reward_paid = 1, referral_stage2_reward_paid = 1 WHERE id = ?1`, driverUserID)
+					_, _ = s.db.ExecContext(ctx, `UPDATE users SET referral_stage2_reward_paid = 1 WHERE id = ?1`, driverUserID)
 				}
 			}
 		}

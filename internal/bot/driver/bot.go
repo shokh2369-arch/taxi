@@ -463,6 +463,10 @@ func handleStart(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64, ref
 		return
 	}
 	clearApplicationStep(ctx, db, userID)
+	// Pay 20k to referrer and notify them when this driver completed application via referral link.
+	rewardReferrerOnApplicationComplete(bot, db, userID)
+	// New driver signup bonus: 100k so'm once when they complete application (e.g. returning user who completed earlier).
+	_, _ = db.ExecContext(ctx, `UPDATE drivers SET balance = balance + 100000, signup_bonus_paid = 1 WHERE user_id = ?1 AND COALESCE(signup_bonus_paid, 0) = 0`, userID)
 	// Application complete — show onboarding (2 steps + Ishni boshlash button).
 	kb := getDriverKeyboard(db, userID)
 	m := tgbotapi.NewMessage(chatID, onboardingMessage)
@@ -674,6 +678,10 @@ func handleApplicationText(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID 
 			_, _ = db.ExecContext(ctx, `UPDATE drivers SET plate = ?1 WHERE user_id = ?2`, text, userID)
 			clearApplicationStep(ctx, db, userID)
 		}
+		// Pay 20k to referrer and notify them when this driver completed application via referral link.
+		rewardReferrerOnApplicationComplete(bot, db, userID)
+		// New driver signup bonus: 100k so'm once when they complete application.
+		_, _ = db.ExecContext(ctx, `UPDATE drivers SET balance = balance + 100000, signup_bonus_paid = 1 WHERE user_id = ?1 AND COALESCE(signup_bonus_paid, 0) = 0`, userID)
 		kb := getDriverKeyboard(db, userID)
 		m := tgbotapi.NewMessage(chatID, "Ilova qabul qilindi ✅ Endi lokatsiyangizni yuboring (Telegramda 📎 → Location).")
 		m.ReplyMarkup = kb
@@ -771,6 +779,40 @@ func handleOffline(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) {
 	}
 }
 
+const referralBonusOnApplicationSoM = 20000 // so'm paid to referrer when referred driver completes application
+
+// rewardReferrerOnApplicationComplete pays 20k to the referrer and notifies them when a referred driver completes the application.
+// Idempotent: only runs if referred_by is set and referral_stage1_reward_paid is 0.
+func rewardReferrerOnApplicationComplete(bot *tgbotapi.BotAPI, db *sql.DB, newDriverUserID int64) {
+	ctx := context.Background()
+	var referredBy sql.NullString
+	var stage1Paid int
+	if err := db.QueryRowContext(ctx, `SELECT referred_by, COALESCE(referral_stage1_reward_paid, 0) FROM users WHERE id = ?1`, newDriverUserID).Scan(&referredBy, &stage1Paid); err != nil || !referredBy.Valid || referredBy.String == "" || stage1Paid != 0 {
+		return
+	}
+	var referrerUserID, referrerTelegramID int64
+	if err := db.QueryRowContext(ctx, `SELECT id, telegram_id FROM users WHERE referral_code = ?1`, referredBy.String).Scan(&referrerUserID, &referrerTelegramID); err != nil || referrerUserID == 0 {
+		return
+	}
+	res, err := db.ExecContext(ctx, `UPDATE drivers SET balance = balance + ?1 WHERE user_id = ?2`, referralBonusOnApplicationSoM, referrerUserID)
+	if err != nil {
+		log.Printf("driver: referral reward update balance: %v", err)
+		return
+	}
+	if nr, _ := res.RowsAffected(); nr == 0 {
+		return
+	}
+	_, _ = db.ExecContext(ctx, `UPDATE users SET referral_stage1_reward_paid = 1 WHERE id = ?1`, newDriverUserID)
+	var newDriverName string
+	_ = db.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(TRIM(name), ''), 'Yangi haydovchi') FROM users WHERE id = ?1`, newDriverUserID).Scan(&newDriverName)
+	if referrerTelegramID != 0 && bot != nil {
+		msg := fmt.Sprintf("🎉 Do'stingiz %s taklif havolangiz orqali haydovchi bo'lib ro'yxatdan o'tdi. Hisobingizga 20 000 so'm qo'shildi.", newDriverName)
+		if _, err := bot.Send(tgbotapi.NewMessage(referrerTelegramID, msg)); err != nil {
+			log.Printf("driver: notify referrer: %v", err)
+		}
+	}
+}
+
 // handleReferral sends an invitation-style message with the shareable link only (for forwarding to others).
 // If the user has no referral_code, one is generated and saved (backfill).
 func handleReferral(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) {
@@ -840,9 +882,11 @@ func handleBonuslar(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) 
 	}
 	var referredCount int64
 	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users u INNER JOIN drivers d ON d.user_id = u.id WHERE u.referred_by = ?1`, code).Scan(&referredCount)
-	var earnedCount int64
-	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE referred_by = ?1 AND COALESCE(referral_stage2_reward_paid, 0) = 1`, code).Scan(&earnedCount)
-	totalEarnings := earnedCount * 100000 // 100000 so'm per referred driver who completed 5 trips and met conditions
+	var stage1Count int64
+	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE referred_by = ?1 AND COALESCE(referral_stage1_reward_paid, 0) = 1`, code).Scan(&stage1Count)
+	var stage2Count int64
+	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE referred_by = ?1 AND COALESCE(referral_stage2_reward_paid, 0) = 1`, code).Scan(&stage2Count)
+	totalEarnings := stage1Count*referralBonusOnApplicationSoM + stage2Count*100000
 	text := fmt.Sprintf("📊 Referral statistikasi\n\nTaklif qilgan haydovchilar: %d\nReferral bonus: %d so'm", referredCount, totalEarnings)
 	text += "\n\n🔗 Taklif havolasi: /referral"
 	kb := getDriverKeyboard(db, userID)
