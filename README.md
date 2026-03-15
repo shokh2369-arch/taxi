@@ -210,4 +210,5 @@ Trip fare is computed from distance and `PRICE_PER_KM` (from `.env`):
  #   t a x i  
  #   t a x i  
  #   t a x i  
+ #   t a x i  
  
