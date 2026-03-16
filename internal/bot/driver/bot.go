@@ -272,21 +272,28 @@ func handleLiveLocationInstruction(bot *tgbotapi.BotAPI, db *sql.DB, chatID, tel
 		}
 	}
 	kb := getDriverKeyboard(db, userID)
-	photo := tgbotapi.NewPhoto(chatID, tgbotapi.FileBytes{Name: "live_location_steps.png", Bytes: liveLocationStepsPNG})
-	photo.Caption = liveLocationInstructionMessage
-	photo.ReplyMarkup = kb
-	if _, err := bot.Send(photo); err != nil {
-		log.Printf("driver: send live location instruction photo failed: %v", err)
-		m := tgbotapi.NewMessage(chatID, liveLocationInstructionMessage)
-		m.ReplyMarkup = kb
-		if _, err := bot.Send(m); err != nil {
-			log.Printf("driver: send live location instruction: %v", err)
+	if len(liveLocationStepsPNG) > 0 {
+		photo := tgbotapi.NewPhoto(chatID, tgbotapi.FileBytes{Name: "live_location_steps.png", Bytes: liveLocationStepsPNG})
+		photo.Caption = liveLocationInstructionMessage
+		photo.ReplyMarkup = kb
+		if _, err := bot.Send(photo); err != nil {
+			log.Printf("driver: send live location instruction photo failed: %v", err)
+		} else {
+			nowStr := time.Now().UTC().Format("2006-01-02 15:04:05")
+			_, _ = db.ExecContext(ctx, `UPDATE drivers SET live_location_hint_last_sent_at = ?1 WHERE user_id = ?2`, nowStr, userID)
 			return
 		}
+	}
+	m := tgbotapi.NewMessage(chatID, liveLocationInstructionMessage)
+	m.ReplyMarkup = kb
+	if _, err := bot.Send(m); err != nil {
+		log.Printf("driver: send live location instruction: %v", err)
+		return
 	}
 	nowStr := time.Now().UTC().Format("2006-01-02 15:04:05")
 	_, _ = db.ExecContext(ctx, `UPDATE drivers SET live_location_hint_last_sent_at = ?1 WHERE user_id = ?2`, nowStr, userID)
 }
+
 
 // sendOnOnlineLiveLocationInstruction sends the instruction when driver goes Online, only if not sharing live (8h cooldown).
 func sendOnOnlineLiveLocationInstruction(bot *tgbotapi.BotAPI, db *sql.DB, chatID, driverUserID int64) {
