@@ -989,6 +989,10 @@ func handleApplicationPhoto(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config
 				}
 			}
 
+			// Instruction text for admin (approve/reject) via admin bot.
+			if _, err := adminBot.Send(tgbotapi.NewMessage(adminChatID, "Haydovchini tasdiqlang yoki rad eting.")); err != nil {
+				log.Printf("driver: admin approval instruction send error user_id=%d: %v", userID, err)
+			}
 		}
 
 		// Inline buttons for approve/reject must be sent by the driver bot so callbacks hit the driver bot.
@@ -999,7 +1003,8 @@ func handleApplicationPhoto(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config
 					tgbotapi.NewInlineKeyboardButtonData("❌ Reject", fmt.Sprintf("reject_driver_%d", userID)),
 				),
 			)
-			inlineMsg := tgbotapi.NewMessage(adminChatID, "Haydovchini tasdiqlang yoki rad eting.")
+			// Send only buttons; text is sent above by the admin bot.
+			inlineMsg := tgbotapi.NewMessage(adminChatID, "")
 			inlineMsg.ReplyMarkup = kb
 			if _, err := bot.Send(inlineMsg); err != nil {
 				log.Printf("driver: admin approval inline buttons send error via driver bot user_id=%d: %v", userID, err)
