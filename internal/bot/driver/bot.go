@@ -43,7 +43,7 @@ const (
 	// Bilingual instruction line for all Live Location prompts.
 	liveLocationBilingualInstruction = "📎 → Геопозиция / Location → Транслировать геопозицию / Share Live Location"
 	// Instruction when driver presses "Jonli lokatsiya yoqish" and is not sharing live.
-	liveLocationInstructionMessage = "📍 Jonli lokatsiyani yoqsangiz, yaqin buyurtmalar sizga tezroq keladi.\n\n" + liveLocationBilingualInstruction
+	liveLocationInstructionMessage = "📍 Жонли локацияни улаш\n1. Чат ойнасида 📎 (скрепка) тугмасини босинг.\n2. Очилган менюдан Геопозиция ни танланг.\n3. Транслировать геопозицию ни босинг.\n4. Локация улашиш вақтини танланг (масалан 8 часов) ва Поделиться тугмасини босинг."
 	// Online but no Live: full reminder with numbered steps (shown once per 8h to avoid spam).
 	onlineNoLiveReminderMessage = "📡 Siz onlinesiz, lekin jonli lokatsiya yoqilmagan.\n\nBuyurtmalar olish uchun jonli lokatsiyani yoqing.\n\nQanday yoqiladi:\n\n1️⃣ Pastdagi 📎 tugmasini bosing\n2️⃣ Геопозиция / Location ni tanlang\n3️⃣ Транслировать геопозицию / Share Live Location ni bosing\n4️⃣ 8 soat (8 hours) ni tanlang — tavsiya qilinadi"
 	// Short message when online but no live (within cooldown): accurate, never claim "So'rovlar keladi".
