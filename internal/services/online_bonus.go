@@ -85,8 +85,9 @@ func runOnlineBonusAccrual(ctx context.Context, db *sql.DB, driverBot *tgbotapi.
 			continue
 		}
 
-		// 2000 so'm per hour
-		toAdd := int64(onlineBonusSoMPerHour * elapsed.Seconds() / 3600)
+		// 2000 so'm per hour, credited in whole 2000 so'm steps only.
+		raw := int64(onlineBonusSoMPerHour * elapsed.Seconds() / 3600)
+		toAdd := (raw / onlineBonusSoMPerHour) * onlineBonusSoMPerHour
 		if toAdd <= 0 {
 			continue
 		}

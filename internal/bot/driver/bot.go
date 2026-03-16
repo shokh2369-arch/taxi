@@ -7,7 +7,6 @@ import (
 	"log"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	"unicode"
 
@@ -24,6 +23,7 @@ const (
 	btnStopWork     = "🔴 Ishni to'xtatish"
 	btnOffline      = "🔴 Offlinega o'tish"
 	btnLiveLocation = "📡 Jonli lokatsiya yoqish"
+	btnPending      = "⏳ Tasdiqlash kutilmoqda"
 	cbAccept        = "accept:"
 
 	// Live Location = only edited_message.location updates; active only when last_live_location_at within 90s.
@@ -241,6 +241,17 @@ func handleLiveLocationInstruction(bot *tgbotapi.BotAPI, db *sql.DB, chatID, tel
 		send(bot, chatID, "Xatolik.")
 		return
 	}
+	var verificationStatus sql.NullString
+	_ = db.QueryRowContext(ctx, `SELECT verification_status FROM drivers WHERE user_id = ?1`, userID).Scan(&verificationStatus)
+	if !verificationStatus.Valid || strings.TrimSpace(verificationStatus.String) != "approved" {
+		kb := driverKeyboardForVerificationPending()
+		m := tgbotapi.NewMessage(chatID, "Tasdiqlash kutilmoqda. Admin profilingizni tekshirmoqda.")
+		m.ReplyMarkup = kb
+		if _, err := bot.Send(m); err != nil {
+			log.Printf("driver: send pending verification live-location message: %v", err)
+		}
+		return
+	}
 	if isDriverSharingLiveLocation(ctx, db, userID) {
 		return
 	}
@@ -340,8 +351,15 @@ func KeyboardForOffline() tgbotapi.ReplyKeyboardMarkup {
 	return driverKeyboardForStatus(false)
 }
 
-// pinnedStatusMessageIDs stores chatID -> messageID for the pinned driver status panel (in-memory only).
-var pinnedStatusMessageIDs sync.Map
+func driverKeyboardForVerificationPending() tgbotapi.ReplyKeyboardMarkup {
+	kb := tgbotapi.NewReplyKeyboard(
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton(btnPending),
+		),
+	)
+	kb.ResizeKeyboard = true
+	return kb
+}
 
 // formatStatusPanelText returns the status panel text (same layout as /status and pinned panel), including today's online bonus.
 func formatStatusPanelText(ctx context.Context, db *sql.DB, userID int64) (string, error) {
@@ -377,17 +395,16 @@ func sendOrUpdatePinnedStatus(bot *tgbotapi.BotAPI, db *sql.DB, chatID, userID i
 	if bot == nil {
 		return
 	}
-	if v, ok := pinnedStatusMessageIDs.Load(chatID); ok {
-		if msgID, ok2 := v.(int); ok2 && msgID != 0 {
-			edit := tgbotapi.NewEditMessageText(chatID, msgID, text)
-			if _, err := bot.Request(edit); err != nil {
-				pinnedStatusMessageIDs.Delete(chatID)
-			} else {
-				return
-			}
+	var statusMsgID sql.NullInt64
+	_ = db.QueryRowContext(ctx, `SELECT status_message_id FROM drivers WHERE user_id = ?1`, userID).Scan(&statusMsgID)
+	if statusMsgID.Valid && statusMsgID.Int64 != 0 {
+		edit := tgbotapi.NewEditMessageText(chatID, int(statusMsgID.Int64), text)
+		if _, err := bot.Request(edit); err != nil {
+			log.Printf("driver: edit pinned status failed user_id=%d msg_id=%d: %v", userID, statusMsgID.Int64, err)
 		}
+		return
 	}
-	// Create new status message and pin it.
+	// Create first status message and pin it once.
 	m := tgbotapi.NewMessage(chatID, text)
 	m.ReplyMarkup = getDriverKeyboard(db, userID)
 	sent, err := bot.Send(m)
@@ -395,7 +412,7 @@ func sendOrUpdatePinnedStatus(bot *tgbotapi.BotAPI, db *sql.DB, chatID, userID i
 		log.Printf("driver: send pinned status: %v", err)
 		return
 	}
-	pinnedStatusMessageIDs.Store(chatID, sent.MessageID)
+	_, _ = db.ExecContext(ctx, `UPDATE drivers SET status_message_id = ?1 WHERE user_id = ?2`, sent.MessageID, userID)
 	pin := tgbotapi.PinChatMessageConfig{ChatID: chatID, MessageID: sent.MessageID}
 	if _, err := bot.Request(pin); err != nil {
 		log.Printf("driver: pin status message: %v", err)
@@ -865,6 +882,19 @@ func handleOnline(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 	}
 	var userID int64
 	_ = db.QueryRowContext(ctx, `SELECT id FROM users WHERE telegram_id = ?1`, telegramID).Scan(&userID)
+	if userID != 0 {
+		var verificationStatus sql.NullString
+		_ = db.QueryRowContext(ctx, `SELECT verification_status FROM drivers WHERE user_id = ?1`, userID).Scan(&verificationStatus)
+		if !verificationStatus.Valid || strings.TrimSpace(verificationStatus.String) != "approved" {
+			kb := driverKeyboardForVerificationPending()
+			m := tgbotapi.NewMessage(chatID, "Tasdiqlash kutilmoqda. Admin profilingizni tekshirmoqda.")
+			m.ReplyMarkup = kb
+			if _, err := bot.Send(m); err != nil {
+				log.Printf("driver: send pending verification online message: %v", err)
+			}
+			return
+		}
+	}
 	if !lastLat.Valid || !lastLng.Valid {
 		kb := getDriverKeyboard(db, userID)
 		m := tgbotapi.NewMessage(chatID, "Avval lokatsiyangizni yuboring (Telegramda 📎 → Location). So'rovlar olish uchun lokatsiya kerak.")
@@ -931,11 +961,8 @@ func handleOffline(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) {
 	}
 }
 
-const referralBonusOnApplicationSoM = 20000   // so'm paid to referrer when referred driver completes application
-const referralStage1MaxPayments = 5           // driver can receive 20k at most 5 times from referral (5 × 20k)
-
-// rewardReferrerOnApplicationComplete pays 20k to the referrer when a referred driver completes the application.
-// A referrer can receive this at most 5 times (5 × 20k so'm). Idempotent: only runs if referred_by is set and referral_stage1_reward_paid is 0.
+// rewardReferrerOnApplicationComplete notifies the referrer when a referred driver completes registration (docs submitted).
+// It does NOT add any balance; actual referral reward is paid in TripService.FinishTrip after 5 successful trips with live location.
 func rewardReferrerOnApplicationComplete(bot *tgbotapi.BotAPI, db *sql.DB, newDriverUserID int64) {
 	ctx := context.Background()
 	var referredBy sql.NullString
@@ -947,26 +974,12 @@ func rewardReferrerOnApplicationComplete(bot *tgbotapi.BotAPI, db *sql.DB, newDr
 	if err := db.QueryRowContext(ctx, `SELECT id, telegram_id FROM users WHERE referral_code = ?1`, referredBy.String).Scan(&referrerUserID, &referrerTelegramID); err != nil || referrerUserID == 0 {
 		return
 	}
-	// How many 20k payments has this referrer already received (excluding this new driver)?
-	var alreadyPaidCount int64
-	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE referred_by = ?1 AND COALESCE(referral_stage1_reward_paid, 0) = 1`, referredBy.String).Scan(&alreadyPaidCount)
-	// Mark this referred user as stage1 processed (so we don't try again).
+	// Mark this referred user as stage1 processed (notification sent).
 	_, _ = db.ExecContext(ctx, `UPDATE users SET referral_stage1_reward_paid = 1 WHERE id = ?1`, newDriverUserID)
-	if alreadyPaidCount >= referralStage1MaxPayments {
-		return // referrer already got 5 × 20k; no more payment or notification
-	}
-	res, err := db.ExecContext(ctx, `UPDATE drivers SET balance = balance + ?1 WHERE user_id = ?2`, referralBonusOnApplicationSoM, referrerUserID)
-	if err != nil {
-		log.Printf("driver: referral reward update balance: %v", err)
-		return
-	}
-	if nr, _ := res.RowsAffected(); nr == 0 {
-		return
-	}
 	var newDriverName string
 	_ = db.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(TRIM(name), ''), 'Yangi haydovchi') FROM users WHERE id = ?1`, newDriverUserID).Scan(&newDriverName)
 	if referrerTelegramID != 0 && bot != nil {
-		msg := fmt.Sprintf("🎉 Do'stingiz %s taklif havolangiz orqali haydovchi bo'lib ro'yxatdan o'tdi. Hisobingizga 20 000 so'm qo'shildi.", newDriverName)
+		msg := fmt.Sprintf("🎉 Do'stingiz %s taklif havolangiz orqali haydovchi bo'lib ro'yxatdan o'tdi.\n\nU 5 ta safar bajargandan keyin siz\n100 000 so'm referral bonus olasiz.", newDriverName)
 		if _, err := bot.Send(tgbotapi.NewMessage(referrerTelegramID, msg)); err != nil {
 			log.Printf("driver: notify referrer: %v", err)
 		}
@@ -1042,7 +1055,8 @@ func handleBonuslar(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) 
 	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE referred_by = ?1 AND COALESCE(referral_stage1_reward_paid, 0) = 1`, code).Scan(&stage1Count)
 	var stage2Count int64
 	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE referred_by = ?1 AND COALESCE(referral_stage2_reward_paid, 0) = 1`, code).Scan(&stage2Count)
-	totalEarnings := stage1Count*referralBonusOnApplicationSoM + stage2Count*100000
+	// Stage1 no longer pays money; only stage2 (100k after 5 trips) contributes to earnings.
+	totalEarnings := stage2Count * 100000
 	text := fmt.Sprintf("📊 Referral statistikasi\n\nTaklif qilgan haydovchilar: %d\nReferral bonus: %d so'm", referredCount, totalEarnings)
 	text += "\n\n🔗 Taklif havolasi: /referral"
 	kb := getDriverKeyboard(db, userID)
@@ -1108,17 +1122,8 @@ func handleStatus(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) {
 		send(bot, chatID, "Avval /start bosing.")
 		return
 	}
-	text, err := formatStatusPanelText(ctx, db, userID)
-	if err != nil {
-		send(bot, chatID, "Xatolik.")
-		return
-	}
-	kb := getDriverKeyboard(db, userID)
-	m := tgbotapi.NewMessage(chatID, text)
-	m.ReplyMarkup = kb
-	if _, err := bot.Send(m); err != nil {
-		log.Printf("driver: send status: %v", err)
-	}
+	// Update the pinned status panel instead of sending a new status message.
+	sendOrUpdatePinnedStatus(bot, db, chatID, userID)
 }
 
 func handleRequestLocation(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) {
@@ -1161,6 +1166,12 @@ func handleLiveLocationUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Conf
 		if err != sql.ErrNoRows {
 			log.Printf("driver: get user (live): %v", err)
 		}
+		return
+	}
+	var verificationStatus sql.NullString
+	_ = db.QueryRowContext(ctx, `SELECT verification_status FROM drivers WHERE user_id = ?1`, userID).Scan(&verificationStatus)
+	if !verificationStatus.Valid || strings.TrimSpace(verificationStatus.String) != "approved" {
+		// Ignore live updates for unapproved drivers (no auto-online, no dispatch).
 		return
 	}
 
