@@ -832,30 +832,12 @@ func handleApplicationPhoto(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config
 		if err != nil {
 			log.Printf("driver: create admin bot for approval user_id=%d: %v", userID, err)
 		} else {
-			// Header text
+			// Header text + inline buttons via admin bot
 			if _, err := adminBot.Send(tgbotapi.NewMessage(adminChatID, adminText)); err != nil {
 				log.Printf("driver: admin approval header send error user_id=%d: %v", userID, err)
 			} else {
 				log.Printf("driver: admin approval header sent user_id=%d", userID)
 			}
-
-			// Photos: first license, then tex passport (current fileID)
-			var licenseID sql.NullString
-			_ = db.QueryRowContext(ctx, `SELECT license_photo_file_id FROM drivers WHERE user_id = ?1`, userID).Scan(&licenseID)
-			if licenseID.Valid && licenseID.String != "" {
-				if _, err := adminBot.Send(tgbotapi.NewPhoto(adminChatID, tgbotapi.FileID(licenseID.String))); err != nil {
-					log.Printf("driver: admin approval license photo send error user_id=%d: %v", userID, err)
-				} else {
-					log.Printf("driver: admin approval license photo sent user_id=%d", userID)
-				}
-			}
-			if _, err := adminBot.Send(tgbotapi.NewPhoto(adminChatID, tgbotapi.FileID(fileID))); err != nil {
-				log.Printf("driver: admin approval vehicle doc photo send error user_id=%d: %v", userID, err)
-			} else {
-				log.Printf("driver: admin approval vehicle doc photo sent user_id=%d", userID)
-			}
-
-			// Inline buttons for approve/reject.
 			kb := tgbotapi.NewInlineKeyboardMarkup(
 				tgbotapi.NewInlineKeyboardRow(
 					tgbotapi.NewInlineKeyboardButtonData("✅ Approve", fmt.Sprintf("approve_driver_%d", userID)),
@@ -868,6 +850,25 @@ func handleApplicationPhoto(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config
 				log.Printf("driver: admin approval inline buttons send error user_id=%d: %v", userID, err)
 			} else {
 				log.Printf("driver: admin approval request sent user_id=%d", userID)
+			}
+		}
+
+		// Photos must be sent by the driver bot (file_id is owned by driver bot, not admin bot).
+		// Send license photo first (if any), then tex passport (current fileID).
+		var licenseID sql.NullString
+		_ = db.QueryRowContext(ctx, `SELECT license_photo_file_id FROM drivers WHERE user_id = ?1`, userID).Scan(&licenseID)
+		if bot != nil {
+			if licenseID.Valid && licenseID.String != "" {
+				if _, err := bot.Send(tgbotapi.NewPhoto(adminChatID, tgbotapi.FileID(licenseID.String))); err != nil {
+					log.Printf("driver: admin approval license photo send error via driver bot user_id=%d: %v", userID, err)
+				} else {
+					log.Printf("driver: admin approval license photo sent via driver bot user_id=%d", userID)
+				}
+			}
+			if _, err := bot.Send(tgbotapi.NewPhoto(adminChatID, tgbotapi.FileID(fileID))); err != nil {
+				log.Printf("driver: admin approval vehicle doc photo send error via driver bot user_id=%d: %v", userID, err)
+			} else {
+				log.Printf("driver: admin approval vehicle doc photo sent via driver bot user_id=%d", userID)
 			}
 		}
 	}
