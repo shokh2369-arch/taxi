@@ -821,35 +821,36 @@ func handleApplicationPhoto(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config
 		SELECT COALESCE(first_name, ''), COALESCE(last_name, ''), COALESCE(phone, ''), COALESCE(car_type, ''), COALESCE(color, ''), COALESCE(plate_number, '')
 		FROM drivers WHERE user_id = ?1`, userID).Scan(&firstName, &lastName, &phone, &carModel, &color, &plateNumber); err != nil {
 		log.Printf("driver: load driver info for admin approval user_id=%d: %v", userID, err)
-	} else if cfg != nil && cfg.AdminID != 0 && bot != nil {
+	} else if cfg != nil && cfg.AdminID != 0 && cfg.AdminBotToken != "" {
 		fullName := strings.TrimSpace(strings.TrimSpace(firstName.String) + " " + strings.TrimSpace(lastName.String))
 		adminText := fmt.Sprintf(
 			"🚕 Yangi haydovchi tasdiqlash uchun\n\n👤 Ism familiya: %s\n📞 Telefon: %s\n🚗 Mashina: %s\n🎨 Rang: %s\n🔢 Raqam: %s\n👤 Telegram ID: %d\n\n📄 Hujjatlar quyida",
 			fullName, phone.String, carModel.String, color.String, plateNumber.String, telegramID,
 		)
 		adminChatID := cfg.AdminID
-		if _, err := bot.Send(tgbotapi.NewMessage(adminChatID, adminText)); err != nil {
-			log.Printf("driver: admin approval header send error user_id=%d: %v", userID, err)
+		adminBot, err := tgbotapi.NewBotAPI(cfg.AdminBotToken)
+		if err != nil {
+			log.Printf("driver: create admin bot for approval user_id=%d: %v", userID, err)
 		} else {
-			log.Printf("driver: admin approval header sent user_id=%d", userID)
-		}
-		// Send media group with license and vehicle docs (best-effort; ignore errors).
-		var licenseID sql.NullString
-		_ = db.QueryRowContext(ctx, `SELECT license_photo_file_id FROM drivers WHERE user_id = ?1`, userID).Scan(&licenseID)
-		_ = licenseID
-		// Inline buttons for approve/reject.
-		kb := tgbotapi.NewInlineKeyboardMarkup(
-			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("✅ Approve", fmt.Sprintf("approve_driver_%d", userID)),
-				tgbotapi.NewInlineKeyboardButtonData("❌ Reject", fmt.Sprintf("reject_driver_%d", userID)),
-			),
-		)
-		inlineMsg := tgbotapi.NewMessage(adminChatID, "Haydovchini tasdiqlang yoki rad eting.")
-		inlineMsg.ReplyMarkup = kb
-		if _, err := bot.Send(inlineMsg); err != nil {
-			log.Printf("driver: admin approval inline buttons send error user_id=%d: %v", userID, err)
-		} else {
-			log.Printf("driver: admin approval request sent user_id=%d", userID)
+			if _, err := adminBot.Send(tgbotapi.NewMessage(adminChatID, adminText)); err != nil {
+				log.Printf("driver: admin approval header send error user_id=%d: %v", userID, err)
+			} else {
+				log.Printf("driver: admin approval header sent user_id=%d", userID)
+			}
+			// Inline buttons for approve/reject.
+			kb := tgbotapi.NewInlineKeyboardMarkup(
+				tgbotapi.NewInlineKeyboardRow(
+					tgbotapi.NewInlineKeyboardButtonData("✅ Approve", fmt.Sprintf("approve_driver_%d", userID)),
+					tgbotapi.NewInlineKeyboardButtonData("❌ Reject", fmt.Sprintf("reject_driver_%d", userID)),
+				),
+			)
+			inlineMsg := tgbotapi.NewMessage(adminChatID, "Haydovchini tasdiqlang yoki rad eting.")
+			inlineMsg.ReplyMarkup = kb
+			if _, err := adminBot.Send(inlineMsg); err != nil {
+				log.Printf("driver: admin approval inline buttons send error user_id=%d: %v", userID, err)
+			} else {
+				log.Printf("driver: admin approval request sent user_id=%d", userID)
+			}
 		}
 	}
 
