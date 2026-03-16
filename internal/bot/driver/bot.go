@@ -1010,7 +1010,7 @@ func handleApplicationPhoto(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config
 			if _, err := bot.Send(inlineMsg); err != nil {
 				log.Printf("driver: admin approval inline buttons send error via driver bot user_id=%d: %v", userID, err)
 			} else {
-				log.Printf("driver: admin approval request sent via driver bot user_id=%d", userID)
+				log.Printf("driver: admin approval buttons sent via driver bot (callbacks) user_id=%d", userID)
 			}
 		}
 	}
