@@ -2,6 +2,7 @@ package driver
 
 import (
 	"context"
+	_ "embed"
 	"database/sql"
 	"fmt"
 	"io"
@@ -19,6 +20,9 @@ import (
 	"taxi-mvp/internal/services"
 	"taxi-mvp/internal/utils"
 )
+
+//go:embed live_location_steps.png
+var liveLocationStepsPNG []byte
 
 const (
 	btnOnline       = "🟢 Onlinega o'tish"
@@ -268,11 +272,10 @@ func handleLiveLocationInstruction(bot *tgbotapi.BotAPI, db *sql.DB, chatID, tel
 		}
 	}
 	kb := getDriverKeyboard(db, userID)
-	photo := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath("assets/live_location_steps.png"))
+	photo := tgbotapi.NewPhoto(chatID, tgbotapi.FileBytes{Name: "live_location_steps.png", Bytes: liveLocationStepsPNG})
 	photo.Caption = liveLocationInstructionMessage
 	photo.ReplyMarkup = kb
 	if _, err := bot.Send(photo); err != nil {
-		// Fallback to plain text if photo can't be sent (e.g. missing file in runtime).
 		log.Printf("driver: send live location instruction photo failed: %v", err)
 		m := tgbotapi.NewMessage(chatID, liveLocationInstructionMessage)
 		m.ReplyMarkup = kb
@@ -372,6 +375,19 @@ func getDriverKeyboard(db *sql.DB, driverUserID int64) tgbotapi.ReplyKeyboardMar
 // KeyboardForOffline returns the reply keyboard for offline state (e.g. after deployment), so the driver sees "Online" and can go online.
 func KeyboardForOffline() tgbotapi.ReplyKeyboardMarkup {
 	return driverKeyboardForStatus(false)
+}
+
+// SendKeyboardForDriver sends a message with the driver reply keyboard (Ishni boshlash / Jonli lokatsiya yoqish) so the driver sees the buttons after approval.
+func SendKeyboardForDriver(bot *tgbotapi.BotAPI, db *sql.DB, chatID, userID int64) {
+	if bot == nil || db == nil {
+		return
+	}
+	kb := getDriverKeyboard(db, userID)
+	m := tgbotapi.NewMessage(chatID, "Quyidagi tugmalardan foydalaning:")
+	m.ReplyMarkup = kb
+	if _, err := bot.Send(m); err != nil {
+		log.Printf("driver: send keyboard for driver user_id=%d: %v", userID, err)
+	}
 }
 
 func driverKeyboardForVerificationPending() tgbotapi.ReplyKeyboardMarkup {

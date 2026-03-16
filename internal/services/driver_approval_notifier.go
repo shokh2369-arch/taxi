@@ -65,6 +65,20 @@ func notifyApprovedDrivers(ctx context.Context, db *sql.DB, driverBot *tgbotapi.
 			}
 		}
 
+		// 3) Reply keyboard with "Ishni boshlash" and "Jonli lokatsiya yoqish" so driver sees the buttons.
+		kb := tgbotapi.NewReplyKeyboard(
+			tgbotapi.NewKeyboardButtonRow(
+				tgbotapi.NewKeyboardButton("🟢 Ishni boshlash"),
+				tgbotapi.NewKeyboardButton("📡 Jonli lokatsiya yoqish"),
+			),
+		)
+		kb.ResizeKeyboard = true
+		keyboardMsg := tgbotapi.NewMessage(telegramID, "Quyidagi tugmalardan foydalaning:")
+		keyboardMsg.ReplyMarkup = kb
+		if _, err := driverBot.Send(keyboardMsg); err != nil {
+			log.Printf("driver_approval_notifier: send keyboard user_id=%d: %v", userID, err)
+		}
+
 		// Mark as notified so we don't resend.
 		_, _ = db.ExecContext(ctx, `UPDATE drivers SET approval_notified = 1 WHERE user_id = ?1`, userID)
 	}
