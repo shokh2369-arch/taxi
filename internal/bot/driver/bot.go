@@ -438,7 +438,7 @@ func formatStatusPanelText(ctx context.Context, db *sql.DB, userID int64) (strin
 	}
 
 	text := "📊 Haydovchi holati\n\n"
-	text += fmt.Sprintf("Holat: %s\nLokatsiya: %s\n\n", holat, liveLine)
+	text += fmt.Sprintf("Holat: %s\nLokatsiya: %s\n💰 Balans: %d so'm\n\n", holat, liveLine, balance)
 
 	switch {
 	// A) online + location on (bonusActive)
@@ -1349,8 +1349,7 @@ func handleStatus(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) {
 		send(bot, chatID, "Avval /start bosing.")
 		return
 	}
-	// Render the current status text and send it as a message,
-	// and also update the pinned status panel.
+	// Send a single status message (do not also update pinned here to avoid duplicate).
 	text, err := formatStatusPanelText(ctx, db, userID)
 	if err != nil {
 		send(bot, chatID, "Xatolik.")
@@ -1362,7 +1361,6 @@ func handleStatus(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) {
 	if _, err := bot.Send(m); err != nil {
 		log.Printf("driver: send status: %v", err)
 	}
-	sendOrUpdatePinnedStatus(bot, db, chatID, userID)
 }
 
 func handleRequestLocation(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) {

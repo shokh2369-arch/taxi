@@ -442,9 +442,22 @@ func (s *TripService) FinishTrip(ctx context.Context, tripID string, driverUserI
 				log.Printf("trip_service: notify driver trips pending: %v", err)
 			}
 		}
-		// After trip finish: set driver inactive until next location. Do not set manual_offline so
-		// when the mini app sends location (or driver shares in bot), they become available again.
-		_, _ = s.db.ExecContext(ctx, `UPDATE drivers SET is_active = 0 WHERE user_id = ?1`, driverUserID)
+		// After trip finish: set driver inactive only if live location is off. If live is still on, keep them online.
+		var liveActive int
+		var lastLiveAt sql.NullString
+		if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(live_location_active, 0), last_live_location_at FROM drivers WHERE user_id = ?1`, driverUserID).Scan(&liveActive, &lastLiveAt); err == nil {
+			liveRecent := liveActive == 1 && lastLiveAt.Valid && lastLiveAt.String != ""
+			if t, err := time.ParseInLocation("2006-01-02 15:04:05", lastLiveAt.String, time.UTC); err == nil {
+				liveRecent = liveRecent && time.Since(t) <= 90*time.Second
+			} else {
+				liveRecent = false
+			}
+			if !liveRecent {
+				_, _ = s.db.ExecContext(ctx, `UPDATE drivers SET is_active = 0 WHERE user_id = ?1`, driverUserID)
+			}
+		} else {
+			_, _ = s.db.ExecContext(ctx, `UPDATE drivers SET is_active = 0 WHERE user_id = ?1`, driverUserID)
+		}
 		// Live-location reminder only when driver is NOT sharing live, every 3 trips, and location was not just auto-updated (e.g. mini app).
 		// Run after a short delay so mini app location update can land first; then we skip reminder if last_seen_at was recently updated.
 		go s.maybeSendLiveLocationHintAfterTripDelayed(driverUserID, driverTelegramID)
