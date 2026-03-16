@@ -1143,7 +1143,7 @@ func handleOffline(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) {
 	_ = db.QueryRowContext(ctx, `SELECT id FROM users WHERE telegram_id = ?1`, telegramID).Scan(&userID)
 	sendOrUpdatePinnedStatus(bot, db, chatID, userID)
 	kb := getDriverKeyboard(db, userID)
-	m := tgbotapi.NewMessage(chatID, "🔴 Siz oflaynsiz.")
+	m := tgbotapi.NewMessage(chatID, "🔴 Siz oflaynsiz.\n\n⚠️ Buyurtmalar kelmaydi.\n\nQayta ishlash uchun:\n🟢 Ishni boshlash ni bosing va jonli lokatsiyani ulang.")
 	m.ReplyMarkup = kb
 	if _, err := bot.Send(m); err != nil {
 		log.Printf("driver: send: %v", err)
