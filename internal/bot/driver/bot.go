@@ -989,28 +989,19 @@ func handleApplicationPhoto(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config
 				}
 			}
 
-			// Instruction text for admin (approve/reject) via admin bot.
-			if _, err := adminBot.Send(tgbotapi.NewMessage(adminChatID, "Haydovchini tasdiqlang yoki rad eting.")); err != nil {
-				log.Printf("driver: admin approval instruction send error user_id=%d: %v", userID, err)
-			}
-		}
-
-		// Inline buttons for approve/reject must be sent by the driver bot so callbacks hit the driver bot.
-		if bot != nil {
+			// Instruction text + inline buttons via admin bot (callbacks handled by admin bot).
 			kb := tgbotapi.NewInlineKeyboardMarkup(
 				tgbotapi.NewInlineKeyboardRow(
 					tgbotapi.NewInlineKeyboardButtonData("✅ Approve", fmt.Sprintf("approve_driver_%d", userID)),
 					tgbotapi.NewInlineKeyboardButtonData("❌ Reject", fmt.Sprintf("reject_driver_%d", userID)),
 				),
 			)
-			// Send only buttons; text is already sent above by the admin bot.
-			// Use a minimal visible marker so Telegram always shows the bubble with buttons.
-			inlineMsg := tgbotapi.NewMessage(adminChatID, "⬇️")
+			inlineMsg := tgbotapi.NewMessage(adminChatID, "Haydovchini tasdiqlang yoki rad eting.")
 			inlineMsg.ReplyMarkup = kb
-			if _, err := bot.Send(inlineMsg); err != nil {
-				log.Printf("driver: admin approval inline buttons send error via driver bot user_id=%d: %v", userID, err)
+			if _, err := adminBot.Send(inlineMsg); err != nil {
+				log.Printf("driver: admin approval inline buttons send error user_id=%d: %v", userID, err)
 			} else {
-				log.Printf("driver: admin approval buttons sent via driver bot (callbacks) user_id=%d", userID)
+				log.Printf("driver: admin approval buttons sent via admin bot user_id=%d", userID)
 			}
 		}
 	}

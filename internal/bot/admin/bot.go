@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"taxi-mvp/internal/config"
 	"taxi-mvp/internal/services"
+	"taxi-mvp/internal/utils"
 )
 
 const (
@@ -53,7 +55,7 @@ func (s *fareEditState) clear(telegramID int64) {
 }
 
 // Run starts the admin bot. Only cfg.AdminID can use fare menu. If AdminBotToken is empty, do not call Run.
-func Run(ctx context.Context, cfg *config.Config, bot *tgbotapi.BotAPI, fareSvc *services.FareService) error {
+func Run(ctx context.Context, cfg *config.Config, db *sql.DB, bot *tgbotapi.BotAPI, fareSvc *services.FareService) error {
 	if cfg == nil || cfg.AdminID == 0 || fareSvc == nil {
 		return nil
 	}
@@ -68,12 +70,17 @@ func Run(ctx context.Context, cfg *config.Config, bot *tgbotapi.BotAPI, fareSvc 
 			if !ok {
 				return nil
 			}
-			handleUpdate(bot, cfg, fareSvc, state, update)
+			handleUpdate(bot, cfg, db, fareSvc, state, update)
 		}
 	}
 }
 
-func handleUpdate(bot *tgbotapi.BotAPI, cfg *config.Config, fareSvc *services.FareService, state *fareEditState, update tgbotapi.Update) {
+func handleUpdate(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB, fareSvc *services.FareService, state *fareEditState, update tgbotapi.Update) {
+	// Handle callback queries (approve/reject driver verification) first.
+	if update.CallbackQuery != nil {
+		handleApprovalCallback(bot, cfg, db, update.CallbackQuery)
+		return
+	}
 	var chatID int64
 	var fromID int64
 	if update.Message != nil {
@@ -132,6 +139,99 @@ func handleUpdate(bot *tgbotapi.BotAPI, cfg *config.Config, fareSvc *services.Fa
 		// If not in edit state, show main menu
 		state.clear(fromID)
 		sendMainMenu(bot, chatID)
+	}
+}
+
+func handleApprovalCallback(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB, q *tgbotapi.CallbackQuery) {
+	if bot == nil || cfg == nil || db == nil || q == nil {
+		return
+	}
+	// Answer callback immediately to stop retries/spam.
+	if q.ID != "" {
+		_, _ = bot.Request(tgbotapi.NewCallback(q.ID, ""))
+	}
+	if q.From == nil || q.From.ID != cfg.AdminID {
+		return
+	}
+	data := q.Data
+	if !strings.HasPrefix(data, "approve_driver_") && !strings.HasPrefix(data, "reject_driver_") {
+		return
+	}
+	parts := strings.Split(data, "_")
+	if len(parts) < 3 {
+		return
+	}
+	driverIDStr := parts[len(parts)-1]
+	driverUserID, err := strconv.ParseInt(driverIDStr, 10, 64)
+	if err != nil || driverUserID <= 0 {
+		return
+	}
+	ctx := context.Background()
+	var driverTgID int64
+	var currentStatus string
+	var approvalNotified int
+	if err := db.QueryRowContext(ctx, `
+		SELECT u.telegram_id, COALESCE(d.verification_status, ''), COALESCE(d.approval_notified, 0)
+		FROM drivers d JOIN users u ON u.id = d.user_id
+		WHERE d.user_id = ?1`, driverUserID).Scan(&driverTgID, &currentStatus, &approvalNotified); err != nil {
+		log.Printf("admin bot: load driver for verify callback user_id=%d: %v", driverUserID, err)
+		return
+	}
+	lang := "latn"
+	{
+		var l sql.NullString
+		_ = db.QueryRowContext(ctx, `SELECT lang FROM users WHERE id = ?1`, driverUserID).Scan(&l)
+		if l.Valid && strings.TrimSpace(l.String) != "" {
+			lang = strings.TrimSpace(l.String)
+		}
+	}
+
+	if strings.HasPrefix(data, "approve_driver_") {
+		if currentStatus == "approved" {
+			return
+		}
+		if _, err := db.ExecContext(ctx, `UPDATE drivers SET verification_status = 'approved' WHERE user_id = ?1`, driverUserID); err != nil {
+			log.Printf("admin bot: approve driver update error user_id=%d: %v", driverUserID, err)
+			return
+		}
+		if driverTgID == 0 || approvalNotified != 0 {
+			return
+		}
+		msg := tgbotapi.NewMessage(driverTgID, utils.Tr(lang,
+			"🎉 Profilingiz tasdiqlandi!\n\nEndi siz buyurtmalar qabul qilishingiz mumkin.\n\n🟢 Ishni boshlash\n📡 Jonli lokatsiyani yoqing",
+			"🎉 Профилингиз тасдиқланди!\n\nЭнди сиз буюртмалар қабул қилишингиз мумкин.\n\n🟢 Ишни бошлаш\n📡 Жонли локацияни ёқиш",
+		))
+		if _, err := bot.Send(msg); err != nil {
+			log.Printf("admin bot: notify approved driver send error user_id=%d: %v", driverUserID, err)
+			return
+		}
+		_, _ = db.ExecContext(ctx, `UPDATE drivers SET approval_notified = 1 WHERE user_id = ?1`, driverUserID)
+		return
+	}
+
+	// reject_driver_
+	if currentStatus == "approved" {
+		return
+	}
+	if _, err := db.ExecContext(ctx, `
+		UPDATE drivers
+		SET verification_status = 'rejected',
+		    license_photo_file_id = NULL,
+		    vehicle_doc_file_id = NULL,
+		    application_step = 'license_photo'
+		WHERE user_id = ?1`, driverUserID); err != nil {
+		log.Printf("admin bot: reject driver update error user_id=%d: %v", driverUserID, err)
+		return
+	}
+	if driverTgID == 0 {
+		return
+	}
+	rej := tgbotapi.NewMessage(driverTgID, utils.Tr(lang,
+		"❌ Hujjatlaringiz tasdiqlanmadi.\nIltimos, aniqroq rasm yuboring.",
+		"❌ Ҳужжатларингиз тасдиқланмади.\nИлтимос, аниқроқ расм юборинг.",
+	))
+	if _, err := bot.Send(rej); err != nil {
+		log.Printf("admin bot: notify rejected driver send error user_id=%d: %v", driverUserID, err)
 	}
 }
 

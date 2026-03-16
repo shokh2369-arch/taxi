@@ -113,7 +113,7 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			bot.RunAdminBot(ctx, cfg, adminBot, fareSvc)
+			bot.RunAdminBot(ctx, cfg, database, adminBot, fareSvc)
 		}()
 	}
 

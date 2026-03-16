@@ -30,11 +30,11 @@ func RunDriverBot(ctx context.Context, cfg *config.Config, db *sql.DB, driverBot
 }
 
 // RunAdminBot runs the admin bot until ctx is cancelled. Only starts if cfg.AdminBotToken and cfg.AdminID are set.
-func RunAdminBot(ctx context.Context, cfg *config.Config, adminBot *tgbotapi.BotAPI, fareSvc *services.FareService) {
+func RunAdminBot(ctx context.Context, cfg *config.Config, db *sql.DB, adminBot *tgbotapi.BotAPI, fareSvc *services.FareService) {
 	if adminBot == nil || fareSvc == nil || cfg == nil || cfg.AdminID == 0 {
 		return
 	}
-	if err := admin.Run(ctx, cfg, adminBot, fareSvc); err != nil {
+	if err := admin.Run(ctx, cfg, db, adminBot, fareSvc); err != nil {
 		log.Printf("admin bot: %v", err)
 	}
 	log.Println("admin bot: stopped")
