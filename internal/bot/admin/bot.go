@@ -12,7 +12,6 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"taxi-mvp/internal/config"
 	"taxi-mvp/internal/services"
-	"taxi-mvp/internal/utils"
 )
 
 const (
@@ -177,15 +176,6 @@ func handleApprovalCallback(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB
 		log.Printf("admin bot: load driver for verify callback user_id=%d: %v", driverUserID, err)
 		return
 	}
-	lang := "latn"
-	{
-		var l sql.NullString
-		_ = db.QueryRowContext(ctx, `SELECT lang FROM users WHERE id = ?1`, driverUserID).Scan(&l)
-		if l.Valid && strings.TrimSpace(l.String) != "" {
-			lang = strings.TrimSpace(l.String)
-		}
-	}
-
 	if strings.HasPrefix(data, "approve_driver_") {
 		if currentStatus == "approved" {
 			return
@@ -197,10 +187,7 @@ func handleApprovalCallback(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB
 		if driverTgID == 0 || approvalNotified != 0 {
 			return
 		}
-		msg := tgbotapi.NewMessage(driverTgID, utils.Tr(lang,
-			"🎉 Profilingiz tasdiqlandi!\n\nEndi siz buyurtmalar qabul qilishingiz mumkin.\n\n🟢 Ishni boshlash\n📡 Jonli lokatsiyani yoqing",
-			"🎉 Профилингиз тасдиқланди!\n\nЭнди сиз буюртмалар қабул қилишингиз мумкин.\n\n🟢 Ишни бошлаш\n📡 Жонли локацияни ёқиш",
-		))
+		msg := tgbotapi.NewMessage(driverTgID, "🎉 Profilingiz tasdiqlandi!\n\nEndi siz buyurtmalar qabul qilishingiz mumkin.\n\n🟢 Ishni boshlash\n📡 Jonli lokatsiyani yoqing")
 		if _, err := bot.Send(msg); err != nil {
 			log.Printf("admin bot: notify approved driver send error user_id=%d: %v", driverUserID, err)
 			return
@@ -226,10 +213,7 @@ func handleApprovalCallback(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB
 	if driverTgID == 0 {
 		return
 	}
-	rej := tgbotapi.NewMessage(driverTgID, utils.Tr(lang,
-		"❌ Hujjatlaringiz tasdiqlanmadi.\nIltimos, aniqroq rasm yuboring.",
-		"❌ Ҳужжатларингиз тасдиқланмади.\nИлтимос, аниқроқ расм юборинг.",
-	))
+	rej := tgbotapi.NewMessage(driverTgID, "❌ Hujjatlaringiz tasdiqlanmadi.\nIltimos, aniqroq rasm yuboring.")
 	if _, err := bot.Send(rej); err != nil {
 		log.Printf("admin bot: notify rejected driver send error user_id=%d: %v", driverUserID, err)
 	}
