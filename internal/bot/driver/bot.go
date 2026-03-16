@@ -240,7 +240,8 @@ func sendOfflineButLiveReminderIfNeeded(bot *tgbotapi.BotAPI, db *sql.DB, chatID
 }
 
 // liveLocationButtonInstructionCooldownMin: do not resend the same instruction if sent this recently (button press spam).
-const liveLocationButtonInstructionCooldownMin = 3
+// Set to 0 to show instruction every time the button is tapped.
+const liveLocationButtonInstructionCooldownMin = 0
 
 // handleLiveLocationInstruction runs when the driver presses "📡 Jonli lokatsiya yoqish". If already sharing live, ignore. Else send instruction once per cooldown to avoid spam.
 func handleLiveLocationInstruction(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) {
