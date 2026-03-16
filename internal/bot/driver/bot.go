@@ -868,8 +868,10 @@ func handleApplicationPhoto(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config
 					}
 				}
 			}
+		}
 
-			// Inline buttons for approve/reject via admin bot.
+		// Inline buttons for approve/reject must be sent by the driver bot so callbacks hit the driver bot.
+		if bot != nil {
 			kb := tgbotapi.NewInlineKeyboardMarkup(
 				tgbotapi.NewInlineKeyboardRow(
 					tgbotapi.NewInlineKeyboardButtonData("✅ Approve", fmt.Sprintf("approve_driver_%d", userID)),
@@ -878,10 +880,10 @@ func handleApplicationPhoto(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config
 			)
 			inlineMsg := tgbotapi.NewMessage(adminChatID, "Haydovchini tasdiqlang yoki rad eting.")
 			inlineMsg.ReplyMarkup = kb
-			if _, err := adminBot.Send(inlineMsg); err != nil {
-				log.Printf("driver: admin approval inline buttons send error user_id=%d: %v", userID, err)
+			if _, err := bot.Send(inlineMsg); err != nil {
+				log.Printf("driver: admin approval inline buttons send error via driver bot user_id=%d: %v", userID, err)
 			} else {
-				log.Printf("driver: admin approval request sent user_id=%d", userID)
+				log.Printf("driver: admin approval request sent via driver bot user_id=%d", userID)
 			}
 		}
 	}
