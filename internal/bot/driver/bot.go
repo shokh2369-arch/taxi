@@ -1073,6 +1073,16 @@ func handleApplicationText(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID 
 			send(bot, chatID, "❌ Noto‘g‘ri raqam formati.\n\nTo‘g‘ri format: 20N306ZB\nIltimos, davlat raqamini to‘liq kiriting.")
 			return true
 		}
+		// Enforce unique plate: if another driver already registered this plate, block and ask for a different one.
+		var existingUserID int64
+		if err := db.QueryRowContext(ctx, `
+			SELECT user_id FROM drivers
+			WHERE (COALESCE(plate_number,'') = ?1 OR COALESCE(plate,'') = ?1) AND user_id != ?2
+			LIMIT 1`,
+			plate, userID).Scan(&existingUserID); err == nil && existingUserID != 0 {
+			send(bot, chatID, "❌ Bu raqam allaqachon ro'yxatdan o'tgan.\n\nIltimos, boshqa davlat raqamini kiriting.")
+			return true
+		}
 		log.Printf("driver: plate validated user_id=%d plate=%s", userID, plate)
 		_, err = db.ExecContext(ctx, `UPDATE drivers SET plate = ?1, plate_number = ?1, application_step = 'license_photo' WHERE user_id = ?2`, plate, userID)
 		if err != nil {
