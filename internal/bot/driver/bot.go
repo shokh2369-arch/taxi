@@ -1658,6 +1658,13 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, assign
 			return
 		}
 		send(bot, chatID, "✅ Shartnoma qabul qilindi.\n\nMa'lumotlaringiz admin tomonidan tekshiriladi.")
+		// After acceptance, show the standard pending-status message (with keyboard).
+		{
+			kb := getDriverKeyboard(db, userID)
+			m := tgbotapi.NewMessage(chatID, "Tasdiqlash kutilmoqda. Holatni /status buyrug'i orqali tekshiring.")
+			m.ReplyMarkup = kb
+			_, _ = bot.Send(m)
+		}
 		// Show general platform terms once (anti-spam via users.terms_accepted).
 		showTermsShortOnce(bot, db, chatID, telegramID)
 		// Continue normal flow: send admin approval request now that agreement is accepted.
