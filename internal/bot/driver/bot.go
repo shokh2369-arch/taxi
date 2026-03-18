@@ -1546,6 +1546,10 @@ func handleLiveLocationUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Conf
 	// Update pinned panel when live becomes active (do not send a second status message).
 	if !wasLiveActive {
 		sendOrUpdatePinnedStatus(bot, db, chatID, userID)
+		// Explicit notification once when Live Location becomes active again.
+		if _, err := bot.Send(tgbotapi.NewMessage(chatID, liveLocationConfirmMessage)); err != nil {
+			log.Printf("driver: send live location confirm: %v", err)
+		}
 	}
 
 	// If driver has STARTED trip, add point (no chat message)
