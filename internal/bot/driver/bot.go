@@ -1516,7 +1516,11 @@ func handleLiveLocationUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Conf
 
 	var prevLat, prevLng sql.NullFloat64
 	var lastSeenAt, lastLiveAt sql.NullString
-	_ = db.QueryRowContext(ctx, `SELECT last_lat, last_lng, last_seen_at, last_live_location_at FROM drivers WHERE user_id = ?1`, userID).Scan(&prevLat, &prevLng, &lastSeenAt, &lastLiveAt)
+	var prevLiveActive int
+	_ = db.QueryRowContext(ctx, `
+		SELECT last_lat, last_lng, last_seen_at, last_live_location_at, COALESCE(live_location_active, 0)
+		FROM drivers WHERE user_id = ?1`,
+		userID).Scan(&prevLat, &prevLng, &lastSeenAt, &lastLiveAt, &prevLiveActive)
 	stale := false
 	if lastSeenAt.Valid && lastSeenAt.String != "" {
 		if parsed, err := parseUTC(lastSeenAt.String); err == nil && !updateTime.After(parsed) {
@@ -1524,13 +1528,10 @@ func handleLiveLocationUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Conf
 			stale = true
 		}
 	}
-	// Live was inactive if last_live_location_at is null or older than 90s; then this update "activates" live — send confirmation once (only when fully registered).
-	wasLiveActive := false
-	if lastLiveAt.Valid && lastLiveAt.String != "" {
-		if t, err := parseUTC(lastLiveAt.String); err == nil && time.Since(t) <= time.Duration(liveLocationActiveSeconds)*time.Second {
-			wasLiveActive = true
-		}
-	}
+	// Pin gating:
+	// Telegram may update live coordinates with gaps > 90s. We only want to pin once per live session,
+	// therefore we use `drivers.live_location_active` as the state source (reset only when stop sharing).
+	wasLiveActive := prevLiveActive == 1
 
 	gridID := utils.GridID(lat, lng)
 	nowStr := updateTime.UTC().Format("2006-01-02 15:04:05")
