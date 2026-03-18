@@ -1647,8 +1647,15 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, assign
 		}
 		_, _ = bot.Request(tgbotapi.NewCallback(q.ID, ""))
 		if affected == 0 {
-			// Already accepted; do not resend admin request.
-			send(bot, chatID, "✅ Shartnoma qabul qilingan.")
+			// Already accepted: if driver is still pending approval, ensure the admin application is sent.
+			var st sql.NullString
+			_ = db.QueryRowContext(ctx, `SELECT verification_status FROM drivers WHERE user_id = ?1`, userID).Scan(&st)
+			if strings.TrimSpace(st.String) == "pending_approval" {
+				sendAdminApprovalRequest(ctx, bot, db, cfg, userID, telegramID)
+				send(bot, chatID, "✅ Shartnoma qabul qilingan.\n\nArizangiz adminga yuborildi.")
+			} else {
+				send(bot, chatID, "✅ Shartnoma qabul qilingan.")
+			}
 			return
 		}
 		send(bot, chatID, "✅ Shartnoma qabul qilindi.\n\nMa'lumotlaringiz admin tomonidan tekshiriladi.")
