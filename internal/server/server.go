@@ -31,6 +31,7 @@ func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc
 	tryDriverID := auth.TryDriverIDHeader(db)
 	driverAuth := auth.RequireDriverAuth(db, cfg.DriverBotToken, cfg.EnableDriverIDHeader)
 	riderAuth := auth.RequireRiderAuth(db, cfg.RiderBotToken)
+	appUserAuth := auth.RequireMiniAppAuthDriverOrRider(db, cfg.DriverBotToken, cfg.RiderBotToken)
 
 	if hub != nil {
 		r.GET("/ws", func(c *gin.Context) {
@@ -47,6 +48,10 @@ func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc
 	r.GET("/driver/referral-link", tryDriverID, driverAuth, handlers.DriverReferralLink(db, driverBot))
 	r.POST("/trip/cancel/rider", riderAuth, handlers.TripCancelRider(db, tripSvc))
 	r.GET("/rider/referral-link", riderAuth, handlers.RiderReferralLink(db, riderBot))
+
+	// Legal: active documents + accept (active versions only; X-Driver-Id allowed when enabled).
+	r.GET("/legal/active", tryDriverID, appUserAuth, handlers.LegalActiveDocuments(db))
+	r.POST("/legal/accept", tryDriverID, appUserAuth, handlers.LegalAccept(db))
 
 	r.Static("/webapp", "./webapp")
 

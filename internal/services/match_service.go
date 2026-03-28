@@ -13,6 +13,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"taxi-mvp/internal/config"
 	"taxi-mvp/internal/domain"
+	"taxi-mvp/internal/legal"
 	"taxi-mvp/internal/utils"
 )
 
@@ -137,7 +138,7 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 		WHERE d.is_active = 1`+balanceCond+`
 		  AND COALESCE(d.live_location_active, 0) = 1
 		  AND d.verification_status = 'approved'
-		  AND COALESCE(d.terms_accepted, 0) = 1
+		  AND `+legal.SQLDriverDispatchLegalOK+`
 		  AND d.last_live_location_at IS NOT NULL AND d.last_live_location_at >= ?2
 		  AND d.last_seen_at IS NOT NULL AND d.last_seen_at >= ?1
 		  AND d.last_lat IS NOT NULL AND d.last_lng IS NOT NULL
@@ -155,7 +156,7 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 			WHERE d.is_active = 1`+balanceCond+`
 			  AND COALESCE(d.live_location_active, 0) = 1
 			  AND d.verification_status = 'approved'
-			  AND COALESCE(d.terms_accepted, 0) = 1
+			  AND `+legal.SQLDriverDispatchLegalOK+`
 			  AND d.last_live_location_at IS NOT NULL AND d.last_live_location_at >= ?2
 			  AND d.last_seen_at IS NOT NULL AND d.last_seen_at >= ?1
 			  AND d.last_lat IS NOT NULL AND d.last_lng IS NOT NULL
@@ -317,7 +318,7 @@ func (s *MatchService) NotifyDriverOfPendingRequests(ctx context.Context, driver
 	err := s.db.QueryRowContext(ctx, `
 		SELECT u.telegram_id, d.last_lat, d.last_lng, d.is_active, d.last_seen_at, d.last_live_location_at, COALESCE(d.live_location_active, 0)
 		FROM drivers d JOIN users u ON u.id = d.user_id
-		WHERE d.user_id = ?1 AND d.verification_status = 'approved' AND COALESCE(d.terms_accepted, 0) = 1 AND d.last_lat IS NOT NULL AND d.last_lng IS NOT NULL`+balanceCond,
+		WHERE d.user_id = ?1 AND d.verification_status = 'approved' AND `+legal.SQLDriverDispatchLegalOK+` AND d.last_lat IS NOT NULL AND d.last_lng IS NOT NULL`+balanceCond,
 		driverUserID).Scan(&telegramID, &lat, &lng, &isActive, &lastSeenAt, &lastLiveAt, &liveLocationActive)
 	if err != nil {
 		return

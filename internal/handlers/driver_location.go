@@ -11,6 +11,7 @@ import (
 	"taxi-mvp/internal/auth"
 	"taxi-mvp/internal/config"
 	"taxi-mvp/internal/domain"
+	"taxi-mvp/internal/legal"
 	"taxi-mvp/internal/logger"
 	"taxi-mvp/internal/services"
 	"taxi-mvp/internal/utils"
@@ -55,6 +56,15 @@ func DriverLocation(db *sql.DB, tripSvc *services.TripService, matchSvc *service
 		}
 		ctx := c.Request.Context()
 		driverID := u.UserID
+		legalSvc := legal.NewService(db)
+		var activeTrip string
+		_ = db.QueryRowContext(ctx, `
+			SELECT id FROM trips WHERE driver_user_id = ?1 AND status IN ('WAITING','STARTED') LIMIT 1`,
+			driverID).Scan(&activeTrip)
+		if activeTrip == "" && !legalSvc.DriverHasActiveLegal(ctx, driverID) {
+			c.JSON(http.StatusForbidden, gin.H{"error": legal.ErrCodeRequired})
+			return
+		}
 		if reason := IgnoreReasonAccuracy(req.Accuracy); reason != "" {
 			logger.DriverLocation("", driverID, "ignored", reason)
 			c.JSON(http.StatusOK, gin.H{"ok": true, "ignored": reason})
@@ -131,7 +141,7 @@ func DriverLocation(db *sql.DB, tripSvc *services.TripService, matchSvc *service
 		_ = db.QueryRowContext(ctx, `
 			SELECT id FROM trips WHERE driver_user_id = ?1 AND status IN ('WAITING','STARTED') LIMIT 1`,
 			driverID).Scan(&hasActiveTrip)
-		if hasActiveTrip == "" {
+		if hasActiveTrip == "" && legalSvc.DriverHasActiveLegal(ctx, driverID) {
 			var balance int64
 			_ = db.QueryRowContext(ctx, `SELECT COALESCE(balance, 0) FROM drivers WHERE user_id = ?1`, driverID).Scan(&balance)
 			allowOnline := balance > 0 || (cfg != nil && cfg.InfiniteDriverBalance)

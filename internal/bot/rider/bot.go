@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +27,11 @@ const (
 	btnHelp        = "ℹ️ Yordam"
 	btnTrackDriver = "📍 Haydovchini kuzatish"
 	cbRiderAcceptTerms = "rider_accept_terms"
+
+	resumeRiderLocation     = "rider_location"
+	resumeRiderTaxi         = "rider_taxi"
+	resumeRiderSearchAgain = "rider_search_again"
+	resumeRiderTrack       = "rider_track"
 )
 
 // Run starts the rider bot and blocks until ctx is cancelled.
@@ -123,7 +129,11 @@ func handleUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 		return
 	}
 	if msg.Command() == "terms" {
-		send(bot, chatID, legal.TermsFullMessage)
+		sendActiveUserTerms(bot, db, chatID)
+		return
+	}
+	if msg.Command() == "privacy" {
+		sendActivePrivacy(bot, db, chatID)
 		return
 	}
 	if msg.Command() == "cancel" {
@@ -131,20 +141,65 @@ func handleUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 		return
 	}
 
-	// Block usage until rider accepts agreement.
-	if !isRiderTermsAccepted(context.Background(), db, telegramID) {
-		send(bot, chatID, "⚠️ Davom etish uchun avval qoidalarni qabul qilishingiz kerak.\n\n/start buyrug'ini bosing.")
-		return
-	}
+	ctx := context.Background()
+	var riderUserID int64
+	_ = db.QueryRowContext(ctx, `SELECT id FROM users WHERE telegram_id = ?1`, telegramID).Scan(&riderUserID)
 
-	// Always require phone number before allowing order creation.
 	if msg.Contact != nil {
 		handlePhoneContact(bot, db, chatID, telegramID, msg.Contact.PhoneNumber)
 		return
 	}
 
 	if msg.Location != nil {
+		if riderUserID == 0 {
+			send(bot, chatID, "Avval /start bosing.")
+			return
+		}
+		if !legal.NewService(db).RiderHasActiveLegal(ctx, riderUserID) {
+			lSvc := legal.NewService(db)
+			_ = lSvc.SetPendingResume(ctx, riderUserID, resumeRiderLocation, fmt.Sprintf("%f,%f", msg.Location.Latitude, msg.Location.Longitude))
+			sendRiderLegalScreens(bot, db, chatID)
+			return
+		}
 		handleLocation(bot, db, cfg, matchService, chatID, telegramID, msg.Location.Latitude, msg.Location.Longitude)
+		return
+	}
+
+	if msg.Text == btnTaxiCall || msg.Text == btnTaxiNew {
+		if riderUserID == 0 {
+			send(bot, chatID, "Avval /start bosing.")
+			return
+		}
+		if !legal.NewService(db).RiderHasActiveLegal(ctx, riderUserID) {
+			_ = legal.NewService(db).SetPendingResume(ctx, riderUserID, resumeRiderTaxi, "")
+			sendRiderLegalScreens(bot, db, chatID)
+			return
+		}
+		handleTaxiCall(bot, db, chatID, telegramID)
+		return
+	}
+
+	if msg.Text == btnTrackDriver {
+		if riderUserID == 0 {
+			send(bot, chatID, "Avval /start bosing.")
+			return
+		}
+		if !legal.NewService(db).RiderHasActiveLegal(ctx, riderUserID) {
+			_ = legal.NewService(db).SetPendingResume(ctx, riderUserID, resumeRiderTrack, "")
+			sendRiderLegalScreens(bot, db, chatID)
+			return
+		}
+		handleTrackDriver(bot, db, cfg, chatID, telegramID)
+		return
+	}
+
+	// Block usage until rider accepts active legal documents.
+	if riderUserID == 0 || !legal.NewService(db).RiderHasActiveLegal(ctx, riderUserID) {
+		if riderUserID != 0 {
+			sendRiderLegalScreens(bot, db, chatID)
+		} else {
+			send(bot, chatID, "⚠️ Davom etish uchun avval qoidalarni qabul qilishingiz kerak.\n\n/start buyrug'ini bosing.")
+		}
 		return
 	}
 
@@ -152,16 +207,8 @@ func handleUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 		handleCancel(bot, db, cfg, tripService, chatID, telegramID)
 		return
 	}
-	if msg.Text == btnTaxiCall || msg.Text == btnTaxiNew {
-		handleTaxiCall(bot, db, chatID, telegramID)
-		return
-	}
 	if msg.Text == btnHelp {
 		handleHelp(bot, chatID)
-		return
-	}
-	if msg.Text == btnTrackDriver {
-		handleTrackDriver(bot, db, cfg, chatID, telegramID)
 		return
 	}
 }
@@ -171,6 +218,7 @@ func setBotCommands(bot *tgbotapi.BotAPI) {
 		tgbotapi.BotCommand{Command: "start", Description: "Bosh menyu"},
 		tgbotapi.BotCommand{Command: "cancel", Description: "Bekor qilish"},
 		tgbotapi.BotCommand{Command: "terms", Description: "Foydalanish qoidalari"},
+		tgbotapi.BotCommand{Command: "privacy", Description: "Maxfiylik siyosati"},
 	)
 	if _, err := bot.Request(cmd); err != nil {
 		log.Printf("rider bot: SetMyCommands: %v", err)
@@ -184,14 +232,58 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 	if q.Data == cbRiderAcceptTerms {
 		ctx := context.Background()
 		telegramID := q.From.ID
-		// Ensure user exists (idempotent).
 		_, _ = db.ExecContext(ctx, `
 			INSERT INTO users (telegram_id, role) VALUES (?1, ?2)
 			ON CONFLICT (telegram_id) DO UPDATE SET role = excluded.role`,
 			telegramID, domain.RoleRider)
-		_, _ = db.ExecContext(ctx, `UPDATE users SET terms_accepted = 1 WHERE telegram_id = ?1`, telegramID)
+		var userID int64
+		if err := db.QueryRowContext(ctx, `SELECT id FROM users WHERE telegram_id = ?1`, telegramID).Scan(&userID); err != nil || userID == 0 {
+			send(bot, q.Message.Chat.ID, "Xatolik.")
+			return
+		}
+		lSvc := legal.NewService(db)
+		if err := lSvc.AcceptActiveForTypes(ctx, userID, []string{legal.DocUserTerms, legal.DocPrivacyPolicy}, "", "telegram-bot"); err != nil {
+			log.Printf("rider: legal accept: %v", err)
+			send(bot, q.Message.Chat.ID, "Xatolik. Keyinroq urinib ko'ring.")
+			return
+		}
 		send(bot, q.Message.Chat.ID, "✅ Qoidalar qabul qilindi.\n\nEndi siz bemalol buyurtma berishingiz mumkin.")
-		// Continue normal flow: ensure phone, then show menu.
+		kind, payload, ok := lSvc.TakePendingResume(ctx, userID)
+		if ok {
+			switch kind {
+			case resumeRiderLocation:
+				parts := strings.Split(payload, ",")
+				if len(parts) == 2 {
+					lat, e1 := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
+					lng, e2 := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+					if e1 == nil && e2 == nil {
+						if ensureRiderPhone(bot, db, q.Message.Chat.ID, telegramID) {
+							return
+						}
+						handleLocation(bot, db, cfg, matchService, q.Message.Chat.ID, telegramID, lat, lng)
+						return
+					}
+				}
+			case resumeRiderTaxi:
+				if ensureRiderPhone(bot, db, q.Message.Chat.ID, telegramID) {
+					return
+				}
+				handleTaxiCall(bot, db, q.Message.Chat.ID, telegramID)
+				return
+			case resumeRiderSearchAgain:
+				if ensureRiderPhone(bot, db, q.Message.Chat.ID, telegramID) {
+					return
+				}
+				sendLocationPrompt(bot, q.Message.Chat.ID)
+				return
+			case resumeRiderTrack:
+				if ensureRiderPhone(bot, db, q.Message.Chat.ID, telegramID) {
+					return
+				}
+				handleTrackDriver(bot, db, cfg, q.Message.Chat.ID, telegramID)
+				return
+			}
+		}
 		if ensureRiderPhone(bot, db, q.Message.Chat.ID, telegramID) {
 			return
 		}
@@ -200,12 +292,17 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 	}
 
 	if q.Data == "search_again" {
+		ctx := context.Background()
 		telegramID := q.From.ID
-		if !isRiderTermsAccepted(context.Background(), db, telegramID) {
-			sendRiderAgreement(bot, q.Message.Chat.ID)
+		var userID int64
+		_ = db.QueryRowContext(ctx, `SELECT id FROM users WHERE telegram_id = ?1`, telegramID).Scan(&userID)
+		if userID == 0 || !legal.NewService(db).RiderHasActiveLegal(ctx, userID) {
+			if userID != 0 {
+				_ = legal.NewService(db).SetPendingResume(ctx, userID, resumeRiderSearchAgain, "")
+			}
+			sendRiderLegalScreens(bot, db, q.Message.Chat.ID)
 			return
 		}
-		// Ask phone first (always), then location.
 		if ensureRiderPhone(bot, db, q.Message.Chat.ID, telegramID) {
 			return
 		}
@@ -241,33 +338,55 @@ func handleStart(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64, telegramID int6
 	if ensureRiderPhone(bot, db, chatID, telegramID) {
 		return
 	}
-	// Show rider agreement once on first start, before allowing usage.
-	if !isRiderTermsAccepted(ctx, db, telegramID) {
-		sendRiderAgreement(bot, chatID)
+	var userID int64
+	if err := db.QueryRowContext(ctx, `SELECT id FROM users WHERE telegram_id = ?1`, telegramID).Scan(&userID); err != nil || userID == 0 {
+		send(bot, chatID, "Xatolik.")
+		return
+	}
+	if !legal.NewService(db).RiderHasActiveLegal(ctx, userID) {
+		sendRiderLegalScreens(bot, db, chatID)
 		return
 	}
 	sendMainMenu(bot, chatID)
 }
 
-func isRiderTermsAccepted(ctx context.Context, db *sql.DB, telegramID int64) bool {
-	var accepted int
-	if err := db.QueryRowContext(ctx, `SELECT COALESCE(terms_accepted, 0) FROM users WHERE telegram_id = ?1`, telegramID).Scan(&accepted); err != nil {
-		return false
+func sendRiderLegalScreens(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64) {
+	ctx := context.Background()
+	text, err := legal.NewService(db).RiderAgreementPromptMessage(ctx)
+	if err != nil {
+		log.Printf("rider: legal prompt: %v", err)
+		text = legal.RiderAgreementMessage
 	}
-	return accepted != 0
-}
-
-func sendRiderAgreement(bot *tgbotapi.BotAPI, chatID int64) {
 	kb := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("✅ Qabul qilaman", cbRiderAcceptTerms),
 		),
 	)
-	m := tgbotapi.NewMessage(chatID, legal.RiderAgreementMessage)
+	m := tgbotapi.NewMessage(chatID, text)
 	m.ReplyMarkup = kb
 	if _, err := bot.Send(m); err != nil {
-		log.Printf("rider: send agreement: %v", err)
+		log.Printf("rider: send legal screens: %v", err)
 	}
+}
+
+func sendActiveUserTerms(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64) {
+	ctx := context.Background()
+	_, content, err := legal.NewService(db).ActiveDocument(ctx, legal.DocUserTerms)
+	if err != nil {
+		send(bot, chatID, legal.TermsFullMessage)
+		return
+	}
+	send(bot, chatID, content)
+}
+
+func sendActivePrivacy(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64) {
+	ctx := context.Background()
+	_, content, err := legal.NewService(db).ActiveDocument(ctx, legal.DocPrivacyPolicy)
+	if err != nil {
+		send(bot, chatID, "Maxfiylik siyosati hozircha yuklanmadi. /start orqali qayta urinib ko'ring.")
+		return
+	}
+	send(bot, chatID, content)
 }
 
 // sendMainMenu shows the persistent main menu: Taxi chaqirish, Yordam.

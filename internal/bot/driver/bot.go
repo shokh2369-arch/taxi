@@ -32,8 +32,11 @@ const (
 	btnOffline      = "🔴 Offlinega o'tish"
 	btnLiveLocation = "📡 Jonli lokatsiya yoqish"
 	btnPending      = "⏳ Tasdiqlash kutilmoqda"
-	cbAccept        = "accept:"
+	cbAccept            = "accept:"
 	cbDriverAcceptTerms = "driver_accept_terms"
+
+	resumeDriverOnline = "driver_online"
+	resumeDriverAccept = "driver_accept"
 
 	// Live Location = only edited_message.location updates; active only when last_live_location_at within 90s.
 	liveLocationActiveSeconds = 90
@@ -74,20 +77,33 @@ func driverAgreementInlineKeyboard() tgbotapi.InlineKeyboardMarkup {
 	)
 }
 
-func sendDriverAgreement(bot *tgbotapi.BotAPI, chatID int64) {
-	m := tgbotapi.NewMessage(chatID, legal.DriverAgreementMessage)
+func sendDriverAgreement(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64) {
+	ctx := context.Background()
+	text, err := legal.NewService(db).DriverAgreementPromptMessage(ctx)
+	if err != nil {
+		log.Printf("driver: legal prompt: %v", err)
+		text = legal.DriverAgreementMessage
+	}
+	m := tgbotapi.NewMessage(chatID, text)
 	m.ReplyMarkup = driverAgreementInlineKeyboard()
 	if _, err := bot.Send(m); err != nil {
 		log.Printf("driver: send agreement: %v", err)
 	}
 }
 
-func driverHasAcceptedAgreement(ctx context.Context, db *sql.DB, userID int64) bool {
-	var accepted int
-	if err := db.QueryRowContext(ctx, `SELECT COALESCE(terms_accepted, 0) FROM drivers WHERE user_id = ?1`, userID).Scan(&accepted); err != nil {
-		return false
+// driverLegalAllowsLiveSharing: approved drivers need full active legal; unapproved need active driver_terms only.
+func driverLegalAllowsLiveSharing(ctx context.Context, db *sql.DB, userID int64) bool {
+	var verificationStatus sql.NullString
+	_ = db.QueryRowContext(ctx, `SELECT verification_status FROM drivers WHERE user_id = ?1`, userID).Scan(&verificationStatus)
+	svc := legal.NewService(db)
+	if verificationStatus.Valid && strings.TrimSpace(verificationStatus.String) == "approved" {
+		return svc.DriverHasActiveLegal(ctx, userID)
 	}
-	return accepted != 0
+	return svc.DriverHasDriverTermsOnly(ctx, userID)
+}
+
+func driverHasAcceptedAgreement(ctx context.Context, db *sql.DB, userID int64) bool {
+	return legal.NewService(db).DriverHasActiveLegal(ctx, userID)
 }
 var (
 	carTypes = []string{"Cobalt", "Nexia", "Nexia 2", "Nexia 3", "Matiz", "Gentra", "Lacetti", "Malibu", "BYD", "Lada", "Damas", carTypeBoshqa}
@@ -550,7 +566,7 @@ func UpdatePinnedStatusForChat(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64) {
 
 func handleUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchService *services.MatchService, assignmentService *services.AssignmentService, tripService *services.TripService, update tgbotapi.Update) {
 	if update.CallbackQuery != nil {
-		handleCallback(bot, db, cfg, assignmentService, tripService, update.CallbackQuery)
+		handleCallback(bot, db, cfg, matchService, assignmentService, tripService, update.CallbackQuery)
 		return
 	}
 	// Live location: Telegram sends repeated updates as edited_message with new coordinates.
@@ -600,7 +616,22 @@ func handleUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 		handleLeaderboard(bot, db, chatID, telegramID)
 		return
 	case "terms":
-		send(bot, chatID, legal.TermsFullMessage)
+		ctx := context.Background()
+		_, content, err := legal.NewService(db).ActiveDocument(ctx, legal.DocUserTerms)
+		if err != nil {
+			send(bot, chatID, legal.TermsFullMessage)
+		} else {
+			send(bot, chatID, content)
+		}
+		return
+	case "privacy":
+		ctx := context.Background()
+		_, content, err := legal.NewService(db).ActiveDocument(ctx, legal.DocPrivacyPolicy)
+		if err != nil {
+			send(bot, chatID, "Maxfiylik siyosati yuklanmadi.")
+		} else {
+			send(bot, chatID, content)
+		}
 		return
 	case "online":
 		handleOnline(bot, db, cfg, matchService, chatID, telegramID)
@@ -702,22 +733,6 @@ func handleStart(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64, ref
 	}
 	sendWelcomeBonusMessageIfNeeded(bot, db, chatID, userID)
 	sendOrUpdatePinnedStatus(bot, db, chatID, userID)
-}
-
-func showTermsShortOnce(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) {
-	ctx := context.Background()
-	var termsAccepted int
-	if err := db.QueryRowContext(ctx, `SELECT COALESCE(terms_accepted, 0) FROM users WHERE telegram_id = ?1`, telegramID).Scan(&termsAccepted); err != nil {
-		return
-	}
-	if termsAccepted != 0 {
-		return
-	}
-	if _, err := bot.Send(tgbotapi.NewMessage(chatID, legal.TermsShortMessage)); err != nil {
-		log.Printf("driver: send terms short: %v", err)
-		return
-	}
-	_, _ = db.ExecContext(ctx, `UPDATE users SET terms_accepted = 1 WHERE telegram_id = ?1`, telegramID)
 }
 
 // inferApplicationStep returns the next application step and whether the application is complete.
@@ -925,7 +940,7 @@ func handleApplicationPhoto(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config
 
 	// Require driver agreement (oferta) before sending admin approval request.
 	if !driverHasAcceptedAgreement(ctx, db, userID) {
-		sendDriverAgreement(bot, chatID)
+		sendDriverAgreement(bot, db, chatID)
 		// Notify driver that we're waiting for acceptance + admin.
 		send(bot, chatID, "⚠️ Avval shartnomani qabul qilishingiz kerak.")
 		return true
@@ -935,7 +950,6 @@ func handleApplicationPhoto(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config
 
 	// Notify driver.
 		send(bot, chatID, "✅ Ma’lumotlaringiz qabul qilindi.\nAdmin tasdiqlashidan so‘ng sizga xabar beriladi.")
-	showTermsShortOnce(bot, db, chatID, telegramID)
 	rewardReferrerOnApplicationComplete(bot, db, userID)
 	kb := getDriverKeyboard(db, userID)
 	m := tgbotapi.NewMessage(chatID, "Tasdiqlash kutilmoqda. Holatni /status buyrug'i orqali tekshiring.")
@@ -1184,11 +1198,10 @@ func handleOnline(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 			}
 			return
 		}
-		// Block until agreement accepted.
 		if !driverHasAcceptedAgreement(ctx, db, userID) {
-		// Show agreement first, then warning.
-		sendDriverAgreement(bot, chatID)
-		send(bot, chatID, "⚠️ Avval shartnomani qabul qilishingiz kerak.")
+			_ = legal.NewService(db).SetPendingResume(ctx, userID, resumeDriverOnline, "")
+			sendDriverAgreement(bot, db, chatID)
+			send(bot, chatID, "⚠️ Avval barcha hujjatlarni qabul qilishingiz kerak.")
 			return
 		}
 	}
@@ -1459,10 +1472,9 @@ func handleLiveLocationUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Conf
 		if err := db.QueryRowContext(ctx, `SELECT id FROM users WHERE telegram_id = ?1`, telegramID).Scan(&userID); err != nil {
 			return
 		}
-		// Block until agreement accepted.
-		if !driverHasAcceptedAgreement(ctx, db, userID) {
+		if !driverLegalAllowsLiveSharing(ctx, db, userID) {
 			send(bot, chatID, "⚠️ Avval shartnomani qabul qilishingiz kerak.")
-			sendDriverAgreement(bot, chatID)
+			sendDriverAgreement(bot, db, chatID)
 			return
 		}
 		_, _ = db.ExecContext(ctx, `UPDATE drivers SET live_location_active = 0, last_live_location_at = NULL WHERE user_id = ?1`, userID)
@@ -1485,10 +1497,8 @@ func handleLiveLocationUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Conf
 		}
 		return
 	}
-	// Block until agreement accepted.
-	if !driverHasAcceptedAgreement(ctx, db, userID) {
-		// Show agreement first, then warning.
-		sendDriverAgreement(bot, chatID)
+	if !driverLegalAllowsLiveSharing(ctx, db, userID) {
+		sendDriverAgreement(bot, db, chatID)
 		send(bot, chatID, "⚠️ Avval shartnomani qabul qilishingiz kerak.")
 		return
 	}
@@ -1564,7 +1574,7 @@ func handleLiveLocationUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Conf
 	// No active trip: only set online and push pending requests if driver is not manually offline (rule 5: while offline, live updates update position but do not send ride requests).
 	var manualOffline int
 	_ = db.QueryRowContext(ctx, `SELECT COALESCE(manual_offline, 0) FROM drivers WHERE user_id = ?1`, userID).Scan(&manualOffline)
-	if manualOffline == 0 && isDriverBalanceSufficient(ctx, db, userID, cfg) {
+	if manualOffline == 0 && isDriverBalanceSufficient(ctx, db, userID, cfg) && driverHasAcceptedAgreement(ctx, db, userID) {
 		onlineNowStr := updateTime.UTC().Format("2006-01-02 15:04:05")
 		if stale {
 			onlineNowStr = time.Now().UTC().Format("2006-01-02 15:04:05")
@@ -1626,7 +1636,7 @@ func handleLocation(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 	handleLiveLocationUpdate(bot, db, cfg, matchService, tripService, chatID, telegramID, loc, updateTime)
 }
 
-func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, assignmentService *services.AssignmentService, tripService *services.TripService, q *tgbotapi.CallbackQuery) {
+func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchService *services.MatchService, assignmentService *services.AssignmentService, tripService *services.TripService, q *tgbotapi.CallbackQuery) {
 	chatID := q.Message.Chat.ID
 	telegramID := q.From.ID
 	data := q.Data
@@ -1637,21 +1647,32 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, assign
 		if err := db.QueryRowContext(ctx, `SELECT id FROM users WHERE telegram_id = ?1`, telegramID).Scan(&userID); err != nil || userID == 0 {
 			return
 		}
-		// Idempotent accept: only proceed when we flipped 0->1.
-		res, err := db.ExecContext(ctx, `UPDATE drivers SET terms_accepted = 1 WHERE user_id = ?1 AND COALESCE(terms_accepted, 0) = 0`, userID)
-		if err != nil {
-			log.Printf("driver: accept agreement update error user_id=%d: %v", userID, err)
-		}
-		affected := int64(0)
-		if res != nil {
-			affected, _ = res.RowsAffected()
+		lSvc := legal.NewService(db)
+		before := lSvc.DriverHasActiveLegal(ctx, userID)
+		if err := lSvc.AcceptActiveForTypes(ctx, userID, []string{legal.DocDriverTerms, legal.DocUserTerms, legal.DocPrivacyPolicy}, "", "telegram-bot"); err != nil {
+			log.Printf("driver: legal accept user_id=%d: %v", userID, err)
+			_, _ = bot.Request(tgbotapi.NewCallback(q.ID, ""))
+			send(bot, chatID, "Xatolik. Keyinroq urinib ko'ring.")
+			return
 		}
 		_, _ = bot.Request(tgbotapi.NewCallback(q.ID, ""))
-		if affected == 0 {
-			// Already accepted: if driver is still pending approval, ensure the admin application is sent.
-			var st sql.NullString
-			_ = db.QueryRowContext(ctx, `SELECT verification_status FROM drivers WHERE user_id = ?1`, userID).Scan(&st)
-			if strings.TrimSpace(st.String) == "pending_approval" {
+		kind, payload, ok := lSvc.TakePendingResume(ctx, userID)
+		if ok {
+			switch kind {
+			case resumeDriverOnline:
+				handleOnline(bot, db, cfg, matchService, chatID, telegramID)
+			case resumeDriverAccept:
+				rid := strings.TrimSpace(payload)
+				if rid != "" && assignmentService != nil {
+					handleAccept(bot, db, cfg, assignmentService, tripService, chatID, telegramID, rid, q)
+				}
+			}
+		}
+		var st sql.NullString
+		_ = db.QueryRowContext(ctx, `SELECT verification_status FROM drivers WHERE user_id = ?1`, userID).Scan(&st)
+		stStr := strings.TrimSpace(st.String)
+		if before {
+			if stStr == "pending_approval" {
 				sendAdminApprovalRequest(ctx, bot, db, cfg, userID, telegramID)
 				send(bot, chatID, "✅ Shartnoma qabul qilingan.\n\nArizangiz adminga yuborildi.")
 			} else {
@@ -1660,16 +1681,10 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, assign
 			return
 		}
 		send(bot, chatID, "✅ Shartnoma qabul qilindi.\n\nMa'lumotlaringiz admin tomonidan tekshiriladi.")
-		// After acceptance, show the standard pending-status message (with keyboard).
-		{
-			kb := getDriverKeyboard(db, userID)
-			m := tgbotapi.NewMessage(chatID, "Tasdiqlash kutilmoqda. Holatni /status buyrug'i orqali tekshiring.")
-			m.ReplyMarkup = kb
-			_, _ = bot.Send(m)
-		}
-		// Show general platform terms once (anti-spam via users.terms_accepted).
-		showTermsShortOnce(bot, db, chatID, telegramID)
-		// Continue normal flow: send admin approval request now that agreement is accepted.
+		kb := getDriverKeyboard(db, userID)
+		m := tgbotapi.NewMessage(chatID, "Tasdiqlash kutilmoqda. Holatni /status buyrug'i orqali tekshiring.")
+		m.ReplyMarkup = kb
+		_, _ = bot.Send(m)
 		sendAdminApprovalRequest(ctx, bot, db, cfg, userID, telegramID)
 		return
 	}
@@ -1757,6 +1772,12 @@ func handleAccept(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, assignme
 	err := db.QueryRowContext(ctx, `SELECT id FROM users WHERE telegram_id = ?1`, telegramID).Scan(&userID)
 	if err != nil || userID == 0 {
 		send(bot, chatID, "Xatolik.")
+		return
+	}
+	if !legal.NewService(db).DriverHasActiveLegal(ctx, userID) {
+		_ = legal.NewService(db).SetPendingResume(ctx, userID, resumeDriverAccept, requestID)
+		sendDriverAgreement(bot, db, chatID)
+		send(bot, chatID, "⚠️ Buyurtma qabul qilish uchun avval barcha hujjatlarni qabul qiling.")
 		return
 	}
 	if assignmentService == nil {

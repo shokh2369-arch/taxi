@@ -107,3 +107,43 @@ func RequireDriverAuth(db *sql.DB, driverBotToken string, enableDriverIDHeader b
 func RequireRiderAuth(db *sql.DB, riderBotToken string) gin.HandlerFunc {
 	return RequireMiniAppAuth(db, riderBotToken)
 }
+
+// RequireMiniAppAuthDriverOrRider verifies initData against the driver bot token first, then the rider bot token.
+// Use for shared endpoints (e.g. legal) where the Mini App may be opened from either bot.
+func RequireMiniAppAuthDriverOrRider(db *sql.DB, driverBotToken, riderBotToken string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if u := UserFromContext(c.Request.Context()); u != nil {
+			c.Next()
+			return
+		}
+		initData := c.GetHeader(HeaderInitData)
+		if initData == "" {
+			initData = c.Query("init_data")
+		}
+		if initData == "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing init data"})
+			return
+		}
+		try := func(token string) bool {
+			telegramUserID, err := VerifyMiniAppInitData(token, initData)
+			if err != nil {
+				return false
+			}
+			userID, role, err := ResolveUserFromTelegramID(c.Request.Context(), db, telegramUserID)
+			if err != nil {
+				return false
+			}
+			c.Request = c.Request.WithContext(WithUser(c.Request.Context(), &User{
+				UserID:         userID,
+				TelegramUserID: telegramUserID,
+				Role:           role,
+			}))
+			return true
+		}
+		if try(driverBotToken) || try(riderBotToken) {
+			c.Next()
+			return
+		}
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid init data"})
+	}
+}
