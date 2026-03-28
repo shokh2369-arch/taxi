@@ -16,6 +16,7 @@ import (
 	driverbot "taxi-mvp/internal/bot/driver"
 	"taxi-mvp/internal/config"
 	"taxi-mvp/internal/db"
+	"taxi-mvp/internal/db/legalrepair"
 	"taxi-mvp/internal/server"
 	"taxi-mvp/internal/repositories"
 	"taxi-mvp/internal/services"
@@ -33,6 +34,9 @@ func main() {
 		log.Fatalf("db: %v", err)
 	}
 	defer db.Close(database)
+	if err := legalrepair.Ensure(context.Background(), database); err != nil {
+		log.Fatalf("legal schema repair: %v", err)
+	}
 
 	riderBot, err := tgbotapi.NewBotAPI(cfg.RiderBotToken)
 	if err != nil {

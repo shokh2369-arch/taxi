@@ -12,6 +12,8 @@ import (
 	"github.com/joho/godotenv"
 	_ "github.com/tursodatabase/libsql-client-go/libsql"
 	"github.com/pressly/goose/v3"
+
+	"taxi-mvp/internal/db/legalrepair"
 )
 
 func main() {
@@ -59,6 +61,9 @@ func main() {
 	if *up {
 		if err := goose.RunContext(ctx, "up", db, dir); err != nil {
 			log.Fatalf("migrate up: %v", err)
+		}
+		if err := legalrepair.Ensure(ctx, db); err != nil {
+			log.Fatalf("legal schema repair: %v", err)
 		}
 		log.Println("migrations up: ok")
 	} else {
