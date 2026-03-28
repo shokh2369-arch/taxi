@@ -26,10 +26,6 @@ import (
 var liveLocationStepsPNG []byte
 
 const (
-	btnOnline       = "🟢 Onlinega o'tish"
-	btnStartWork    = "🟢 Ishni boshlash"
-	btnStopWork     = "🔴 Ishni to'xtatish"
-	btnOffline      = "🔴 Offlinega o'tish"
 	btnLiveLocation = "📡 Jonli lokatsiya yoqish"
 	btnPending      = "⏳ Tasdiqlash kutilmoqda"
 	cbAccept            = "accept:"
@@ -43,7 +39,7 @@ const (
 	// Live Location = only edited_message.location updates; active only when last_live_location_at within 90s.
 	liveLocationActiveSeconds = 90
 	// Onboarding: shown when driver completes registration.
-	onboardingMessage = "🚕 YettiQanot Haydovchi\n\nBuyurtmalar olish uchun 2 ta qadam:\n\n1️⃣ Ishni boshlash (online bo'lish)\n2️⃣ Jonli lokatsiyani yoqish\n\nShundan keyin sizga yaqin buyurtmalar keladi."
+	onboardingMessage = "🚕 YettiQanot Haydovchi\n\nBuyurtmalar olish uchun Telegramda jonli lokatsiyani ulashing (📎 → Location → Share Live Location).\n\nJonli lokatsiya yoqilganda siz avtomatik onlayn bo‘lasiz; to‘xtatilsa — oflayn."
 
 	// Welcome bonus message: explains all driver bonuses (shown once after registration).
 	welcomeBonusMessage = "🎁 Haydovchi bonuslari\n\n1️⃣ Yangi haydovchi bonusi: 100 000 so'm platform krediti (hisobingizga qo'shildi)\n\n2️⃣ Online bonus: 1 soat online → +2 000 so'm. Kunlik limit: 20 000 so'm"
@@ -51,18 +47,14 @@ const (
 	liveLocationBilingualInstruction = "📎 → Геопозиция / Location → Транслировать геопозицию / Share Live Location"
 	// Instruction when driver presses "Jonli lokatsiya yoqish" and is not sharing live.
 	liveLocationInstructionMessage = "📍 Жонли локацияни улаш\n1. Чат ойнасида 📎 (скрепка) тугмасини босинг.\n2. Очилган менюдан Геопозиция ни танланг.\n3. Транслировать геопозицию ни босинг.\n4. Локация улашиш вақтини танланг (масалан 8 часов) ва Поделиться тугмасини босинг."
-	// Online but no Live: full reminder with numbered steps (shown once per 8h to avoid spam).
-	onlineNoLiveReminderMessage = "📡 Siz onlinesiz, lekin jonli lokatsiya yoqilmagan.\n\nBuyurtmalar olish uchun jonli lokatsiyani yoqing.\n\nQanday yoqiladi:\n\n1️⃣ Pastdagi 📎 tugmasini bosing\n2️⃣ Геопозиция / Location ni tanlang\n3️⃣ Транслировать геопозицию / Share Live Location ni bosing\n4️⃣ 8 soat (8 hours) ni tanlang — tavsiya qilinadi"
-	// Short message when online but no live (within cooldown): accurate, never claim "So'rovlar keladi".
-	onlineNoLiveShortMessage = "🟢 Siz onlinesiz.\n\nBuyurtmalar olish uchun jonli lokatsiyani yoqing.\n\n📎 → Геопозиция / Location → Транслировать геопозицию / Share Live Location"
 	// When Live Location becomes active (once).
-	liveLocationConfirmMessage = "📡 Jonli lokatsiya qabul qilindi.\nEndi sizga yaqin buyurtmalar keladi."
+	liveLocationConfirmMessage = "📡 Jonli lokatsiya qabul qilindi.\nSiz onlinesiz — yaqin buyurtmalar keladi.\n\n💰 Online bonus: 1 soat → +2 000 so'm (kunlik limit 20 000 so'm)."
 	// One-time warning when Live Location becomes inactive.
 	liveLocationInactiveWarningMessage = "📍 Jonli lokatsiya o'chdi.\n\nBuyurtmalar kelmaydi.\n\nQayta yoqish uchun:\n\n📎 → Геопозиция / Location →\nТранслировать геопозицию / Share Live Location"
 	// When driver goes offline.
 	offlineMessage = "🔴 Siz oflaynsiz.\n\nBuyurtmalar kelmaydi."
-	// Offline but sharing Live Location: remind to go online (once per cooldown).
-	offlineButLiveReminderMessage = "📡 Jonli lokatsiya yoqilgan, lekin siz oflaynsiz.\n\nBuyurtmalar olish uchun onlinega o'ting."
+	// Live is on but driver cannot receive orders (e.g. low balance); once per cooldown.
+	offlineButLiveReminderMessage = "📡 Jonli lokatsiya yoqilgan.\n\nBuyurtmalar olish uchun balansingiz yetarli bo‘lishi kerak. Balansni to‘ldiring."
 	liveLocationHintCooldownHours   = 8
 	insufficientBalanceMessage        = "Balansingiz yetarli emas. So'rovlar olish uchun balansni to'ldiring."
 	staticLocationRejectionMessage    = "❌ Oddiy lokatsiya qabul qilinmaydi.\n\nBuyurtmalar olish uchun jonli lokatsiya ulashing.\n\n" + liveLocationBilingualInstruction
@@ -252,42 +244,9 @@ func shouldShowLiveLocationInstructionForStatic(ctx context.Context, db *sql.DB,
 	return true
 }
 
-// shouldShowOnlineNoLiveReminder returns true if we have not sent the "online but no live" reminder in the last 8 hours (send once per 8h).
-func shouldShowOnlineNoLiveReminder(ctx context.Context, db *sql.DB, driverUserID int64) bool {
-	var lastHint sql.NullString
-	_ = db.QueryRowContext(ctx, `SELECT live_location_hint_last_sent_at FROM drivers WHERE user_id = ?1`, driverUserID).Scan(&lastHint)
-	cutoff := time.Now().UTC().Add(-time.Duration(liveLocationHintCooldownHours) * time.Hour)
-	if lastHint.Valid && lastHint.String != "" {
-		if t, err := parseUTC(lastHint.String); err == nil && t.After(cutoff) {
-			return false
-		}
-	}
-	return true
-}
-
-// shouldShowOnOnlineLiveLocationMessage returns true if we should show the long "on Online" hint:
-// driver has not used live location in the last 8h and we have not sent the on-online hint in the last 8h.
-// Uses a separate cooldown so the long message is sent when they tap Online even if the short hint was shown at /start.
-func shouldShowOnOnlineLiveLocationMessage(ctx context.Context, db *sql.DB, driverUserID int64) bool {
-	var lastLive, onOnlineHint sql.NullString
-	_ = db.QueryRowContext(ctx, `SELECT last_live_location_at, live_location_on_online_hint_last_sent_at FROM drivers WHERE user_id = ?1`, driverUserID).Scan(&lastLive, &onOnlineHint)
-	cutoff := time.Now().UTC().Add(-time.Duration(liveLocationHintCooldownHours) * time.Hour)
-	if lastLive.Valid && lastLive.String != "" {
-		if t, err := time.Parse("2006-01-02 15:04:05", lastLive.String); err == nil && t.After(cutoff) {
-			return false
-		}
-	}
-	if onOnlineHint.Valid && onOnlineHint.String != "" {
-		if t, err := time.Parse("2006-01-02 15:04:05", onOnlineHint.String); err == nil && t.After(cutoff) {
-			return false
-		}
-	}
-	return true
-}
-
 const offlineLiveReminderCooldownMin = 60
 
-// sendOfflineButLiveReminderIfNeeded sends a one-time reminder when driver is offline but sharing Live Location (cooldown 1 hour).
+// sendOfflineButLiveReminderIfNeeded sends a throttled reminder when live is on but the driver cannot receive orders (e.g. low balance).
 func sendOfflineButLiveReminderIfNeeded(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64, driverUserID int64) {
 	ctx := context.Background()
 	var lastSent sql.NullString
@@ -366,31 +325,12 @@ func handleLiveLocationInstruction(bot *tgbotapi.BotAPI, db *sql.DB, chatID, tel
 	_, _ = db.ExecContext(ctx, `UPDATE drivers SET live_location_hint_last_sent_at = ?1 WHERE user_id = ?2`, nowStr, userID)
 }
 
-
-// sendOnOnlineLiveLocationInstruction sends the instruction when driver goes Online, only if not sharing live (8h cooldown).
-func sendOnOnlineLiveLocationInstruction(bot *tgbotapi.BotAPI, db *sql.DB, chatID, driverUserID int64) {
-	ctx := context.Background()
-	if !shouldShowOnOnlineLiveLocationMessage(ctx, db, driverUserID) {
-		return
-	}
-	kb := getDriverKeyboard(db, driverUserID)
-	m := tgbotapi.NewMessage(chatID, liveLocationInstructionMessage)
-	m.ReplyMarkup = kb
-	if _, err := bot.Send(m); err != nil {
-		log.Printf("driver: send on-online live location instruction: %v", err)
-		return
-	}
-	nowStr := time.Now().UTC().Format("2006-01-02 15:04:05")
-	_, _ = db.ExecContext(ctx, `UPDATE drivers SET live_location_on_online_hint_last_sent_at = ?1 WHERE user_id = ?2`, nowStr, driverUserID)
-}
-
 // Run starts the driver bot and blocks until ctx is cancelled.
 // bot is the driver Telegram bot API; matchService for dispatch and pending-request push; assignmentService for Accept; tripService for START/AddPoint/FINISH (may be nil).
 func Run(ctx context.Context, cfg *config.Config, db *sql.DB, bot *tgbotapi.BotAPI, matchService *services.MatchService, assignmentService *services.AssignmentService, tripService *services.TripService) error {
 	log.Printf("driver bot: started @%s", bot.Self.UserName)
 
-	// Set command panel (global, Latin descriptions):
-		// /start, /status, /bonuslar, /referral, /leaderboard (online/offline via buttons only).
+	// Set command panel (global, Latin descriptions).
 	driverCommands := tgbotapi.NewSetMyCommands(
 		tgbotapi.BotCommand{Command: "start", Description: "Botni boshlash"},
 		tgbotapi.BotCommand{Command: "status", Description: "Holat va balans"},
@@ -421,43 +361,37 @@ func Run(ctx context.Context, cfg *config.Config, db *sql.DB, bot *tgbotapi.BotA
 	}
 }
 
-// driverKeyboardForStatus returns main control panel: offline [Ishni boshlash, Jonli lokatsiya yoqish], online [Ishni to'xtatish, Jonli lokatsiya yoqish].
-func driverKeyboardForStatus(isOnline bool) tgbotapi.ReplyKeyboardMarkup {
-	// Note: driverKeyboardForStatus is used when we don't know telegramID/lang;
-	// buttons themselves are emojis + short text, kept in Latin to avoid DB lookups here.
-	var row []tgbotapi.KeyboardButton
-	if isOnline {
-		row = append(row, tgbotapi.NewKeyboardButton(btnStopWork), tgbotapi.NewKeyboardButton(btnLiveLocation))
-	} else {
-		row = append(row, tgbotapi.NewKeyboardButton(btnStartWork), tgbotapi.NewKeyboardButton(btnLiveLocation))
-	}
-	kb := tgbotapi.NewReplyKeyboard(tgbotapi.NewKeyboardButtonRow(row...))
+// driverKeyboardApprovedMain is the main reply keyboard for approved drivers: only the live-location help button
+// (online/offline follow Telegram live location share/stop).
+func driverKeyboardApprovedMain() tgbotapi.ReplyKeyboardMarkup {
+	kb := tgbotapi.NewReplyKeyboard(
+		tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton(btnLiveLocation)),
+	)
 	kb.ResizeKeyboard = true
 	return kb
 }
 
-// getDriverKeyboard returns the keyboard for the driver's current status (single row: Jonli + Online or Offline).
+// getDriverKeyboard returns the keyboard for the driver (pending verification vs live-location help only).
 func getDriverKeyboard(db *sql.DB, driverUserID int64) tgbotapi.ReplyKeyboardMarkup {
 	ctx := context.Background()
-	var isActive int
 	var verificationStatus sql.NullString
-	_ = db.QueryRowContext(ctx, `SELECT COALESCE(is_active, 0), verification_status FROM drivers WHERE user_id = ?1`, driverUserID).
-		Scan(&isActive, &verificationStatus)
+	_ = db.QueryRowContext(ctx, `SELECT verification_status FROM drivers WHERE user_id = ?1`, driverUserID).
+		Scan(&verificationStatus)
 
 	// Agar haydovchi hali tasdiqlanmagan bo'lsa, faqat "⏳ Tasdiqlash kutilmoqda" tugmasi ko'rinadi.
 	if !verificationStatus.Valid || strings.TrimSpace(verificationStatus.String) != "approved" {
 		return driverKeyboardForVerificationPending()
 	}
 
-	return driverKeyboardForStatus(isActive == 1)
+	return driverKeyboardApprovedMain()
 }
 
-// KeyboardForOffline returns the reply keyboard for offline state (e.g. after deployment), so the driver sees "Online" and can go online.
+// KeyboardForOffline returns the standard driver reply keyboard (same as approved main: live-location help).
 func KeyboardForOffline() tgbotapi.ReplyKeyboardMarkup {
-	return driverKeyboardForStatus(false)
+	return driverKeyboardApprovedMain()
 }
 
-// SendKeyboardForDriver sends a message with the driver reply keyboard (Ishni boshlash / Jonli lokatsiya yoqish) so the driver sees the buttons after approval.
+// SendKeyboardForDriver sends a message with the driver reply keyboard so the driver sees the live-location help button after approval.
 func SendKeyboardForDriver(bot *tgbotapi.BotAPI, db *sql.DB, chatID, userID int64) {
 	if bot == nil || db == nil {
 		return
@@ -481,7 +415,7 @@ func driverKeyboardForVerificationPending() tgbotapi.ReplyKeyboardMarkup {
 }
 
 // formatStatusPanelText returns the status panel text (same layout as /status and pinned panel), including today's online bonus.
-// Holat (Online/Offline) follows is_active so it matches "Siz onlinesiz" / "Ishni boshlash"; lokatsiya and bonus text use liveRecent.
+// Holat (Online/Offline) follows is_active (driven by live location share/stop); lokatsiya and bonus text use liveRecent.
 func formatStatusPanelText(ctx context.Context, db *sql.DB, userID int64) (string, error) {
 	var isActive int
 	var balance int64
@@ -499,7 +433,7 @@ func formatStatusPanelText(ctx context.Context, db *sql.DB, userID int64) (strin
 		}
 	}
 
-	// Holat = is_active so panel never contradicts "Siz onlinesiz" / "Ishni boshlash".
+	// Holat = is_active (synced with live location when applicable).
 	holat := "🔴 Offline"
 	if isActive == 1 {
 		holat = "🟢 Online"
@@ -513,13 +447,13 @@ func formatStatusPanelText(ctx context.Context, db *sql.DB, userID int64) (strin
 	case isActive == 1 && liveRecent:
 		text += "✅ Buyurtmalar olishga tayyor.\n💰 Bonus ishlayapti."
 
-	// C) offline + location on (lokatsiya bor, lekin offline)
+	// C) offline + location on (e.g. low balance or brief race)
 	case isActive == 0 && liveRecent:
-		text += "⚠️ Buyurtma olish uchun online bo‘ling."
+		text += "⚠️ Buyurtmalar uchun balans yoki holatni tekshiring."
 
-	// B / D) location off (offline deb ko‘rsatamiz)
+	// B / D) location off
 	default:
-		text += "⚠️ Ishlash uchun online bo‘ling va lokatsiyani yoqing."
+		text += "⚠️ Buyurtmalar olish uchun jonli lokatsiyani ulashing."
 	}
 
 	return text, nil
@@ -662,12 +596,6 @@ func handleUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 			send(bot, chatID, content)
 		}
 		return
-	case "online":
-		handleOnline(bot, db, cfg, matchService, chatID, telegramID)
-		return
-	case "offline":
-		handleOffline(bot, db, chatID, telegramID)
-		return
 	}
 
 	// Application flow: phone -> first_name -> last_name -> car_type -> color -> plate -> license_photo -> vehicle_doc
@@ -683,12 +611,6 @@ func handleUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 
 	// Handle keyboard button presses first so they always work (e.g. Live Location instruction even during registration).
 	switch msg.Text {
-	case btnOnline, btnStartWork:
-		handleOnline(bot, db, cfg, matchService, chatID, telegramID)
-		return
-	case btnOffline, btnStopWork:
-		handleOffline(bot, db, chatID, telegramID)
-		return
 	case btnLiveLocation:
 		handleLiveLocationInstruction(bot, db, chatID, telegramID)
 		return
@@ -1200,115 +1122,6 @@ func handleApplicationText(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID 
 	return true
 }
 
-func handleOnline(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchService *services.MatchService, chatID, telegramID int64) {
-	ctx := context.Background()
-	// Require driver application (phone, car type, color, plate) and location
-	var phone, carType, color, plate sql.NullString
-	var lastLat, lastLng sql.NullFloat64
-	_ = db.QueryRowContext(ctx, `
-		SELECT d.phone, d.car_type, d.color, d.plate, d.last_lat, d.last_lng
-		FROM drivers d JOIN users u ON u.id = d.user_id WHERE u.telegram_id = ?1`,
-		telegramID).Scan(&phone, &carType, &color, &plate, &lastLat, &lastLng)
-	if !phone.Valid || phone.String == "" || !carType.Valid || carType.String == "" || !color.Valid || color.String == "" || !plate.Valid || plate.String == "" {
-		send(bot, chatID, "Avval ilovani to'ldiring: /start bosing va telefon, mashina turi, rangi, davlat raqamini yuboring.")
-		return
-	}
-	var userID int64
-	_ = db.QueryRowContext(ctx, `SELECT id FROM users WHERE telegram_id = ?1`, telegramID).Scan(&userID)
-	if userID != 0 {
-		var verificationStatus sql.NullString
-		_ = db.QueryRowContext(ctx, `SELECT verification_status FROM drivers WHERE user_id = ?1`, userID).Scan(&verificationStatus)
-		if !verificationStatus.Valid || strings.TrimSpace(verificationStatus.String) != "approved" {
-			kb := driverKeyboardForVerificationPending()
-			m := tgbotapi.NewMessage(chatID, "Tasdiqlash kutilmoqda. Admin profilingizni tekshirmoqda.")
-			m.ReplyMarkup = kb
-			if _, err := bot.Send(m); err != nil {
-				log.Printf("driver: send pending verification online message: %v", err)
-			}
-			return
-		}
-		if !driverHasAcceptedAgreement(ctx, db, userID) {
-			lSvc := legal.NewService(db)
-			if driverWasOnlineOrLiveIntent(ctx, db, userID) {
-				_ = lSvc.SetPendingResume(ctx, userID, resumeDriverRelive, "")
-			} else {
-				_ = lSvc.SetPendingResume(ctx, userID, resumeDriverOnline, "")
-			}
-			sendDriverAgreement(bot, db, chatID)
-			send(bot, chatID, "⚠️ Avval barcha hujjatlarni qabul qilishingiz kerak.")
-			return
-		}
-	}
-	if userID != 0 && !isDriverBalanceSufficient(ctx, db, userID, cfg) {
-		kb := getDriverKeyboard(db, userID)
-		m := tgbotapi.NewMessage(chatID, insufficientBalanceMessage)
-		m.ReplyMarkup = kb
-		if _, err := bot.Send(m); err != nil {
-			log.Printf("driver: send: %v", err)
-		}
-		return
-	}
-	// Require active live location before going online and starting bonus.
-	var liveActive int
-	_ = db.QueryRowContext(ctx, `SELECT COALESCE(live_location_active, 0) FROM drivers WHERE user_id = ?1`, userID).Scan(&liveActive)
-	if liveActive == 0 {
-		kb := getDriverKeyboard(db, userID)
-		m := tgbotapi.NewMessage(chatID, "Online bo'lish uchun avval jonli lokatsiyani yoqing.\n\n" + liveLocationBilingualInstruction)
-		m.ReplyMarkup = kb
-		if _, err := bot.Send(m); err != nil {
-			log.Printf("driver: send require live location: %v", err)
-		}
-		return
-	}
-
-	_, err := db.ExecContext(ctx, `
-		UPDATE drivers SET is_active = 1, manual_offline = 0, last_seen_at = ?1
-		WHERE user_id = (SELECT id FROM users WHERE telegram_id = ?2)`,
-		time.Now().UTC().Format("2006-01-02 15:04:05"), telegramID)
-	if err != nil {
-		log.Printf("driver: online: %v", err)
-		send(bot, chatID, "Xatolik.")
-		return
-	}
-	sendOrUpdatePinnedStatus(bot, db, chatID, userID)
-	// Message with keyboard and online bonus explanation.
-	kb := driverKeyboardForStatus(true)
-	m := tgbotapi.NewMessage(chatID, "🟢 Siz onlinesiz.\n\n💰 Online bonus ishlayapti.\n1 soat → +2 000 so'm\n\nBugungi limit:\n20 000 so'm")
-	m.ReplyMarkup = kb
-	if _, err := bot.Send(m); err != nil {
-		log.Printf("driver: send: %v", err)
-	}
-	if shouldShowOnlineNoLiveReminder(ctx, db, userID) {
-		nowStr := time.Now().UTC().Format("2006-01-02 15:04:05")
-		_, _ = db.ExecContext(ctx, `UPDATE drivers SET live_location_hint_last_sent_at = ?1 WHERE user_id = ?2`, nowStr, userID)
-	}
-	if userID != 0 && matchService != nil {
-		go matchService.NotifyDriverOfPendingRequests(context.Background(), userID)
-	}
-}
-
-func handleOffline(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) {
-	ctx := context.Background()
-	_, err := db.ExecContext(ctx, `
-		UPDATE drivers SET is_active = 0, manual_offline = 1
-		WHERE user_id = (SELECT id FROM users WHERE telegram_id = ?1)`,
-		telegramID)
-	if err != nil {
-		log.Printf("driver: offline: %v", err)
-		send(bot, chatID, "Xatolik.")
-		return
-	}
-	var userID int64
-	_ = db.QueryRowContext(ctx, `SELECT id FROM users WHERE telegram_id = ?1`, telegramID).Scan(&userID)
-	sendOrUpdatePinnedStatus(bot, db, chatID, userID)
-	kb := getDriverKeyboard(db, userID)
-	m := tgbotapi.NewMessage(chatID, "🔴 Siz oflaynsiz.\n\n⚠️ Buyurtmalar kelmaydi.\n\nQayta ishlash uchun:\n🟢 Ishni boshlash ni bosing va jonli lokatsiyani ulang.")
-	m.ReplyMarkup = kb
-	if _, err := bot.Send(m); err != nil {
-		log.Printf("driver: send: %v", err)
-	}
-}
-
 // rewardReferrerOnApplicationComplete notifies the referrer when a referred driver completes registration (docs submitted).
 // It does NOT add any balance; actual referral reward is paid in TripService.FinishTrip after 5 successful trips with live location.
 func rewardReferrerOnApplicationComplete(bot *tgbotapi.BotAPI, db *sql.DB, newDriverUserID int64) {
@@ -1497,7 +1310,7 @@ func handleRequestLocation(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID 
 }
 
 // handleLiveLocationUpdate processes edited_message.location (live update or live end) or message.location with live_period (live start).
-// If loc.LivePeriod <= 0 when from edited_message, treats as live end: sets live_location_active = 0 and returns.
+// If loc.LivePeriod <= 0 when from edited_message, treats as live end: clears live state and sets driver offline (is_active=0).
 func handleLiveLocationUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchService *services.MatchService, tripService *services.TripService, chatID, telegramID int64, loc *tgbotapi.Location, updateTime time.Time) {
 	ctx := context.Background()
 	// Live end: edited_message with location.live_period null/0 — stop accepting updates and clear live state; send one-time warning.
@@ -1511,11 +1324,13 @@ func handleLiveLocationUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Conf
 			sendDriverAgreement(bot, db, chatID)
 			return
 		}
-		_, _ = db.ExecContext(ctx, `UPDATE drivers SET live_location_active = 0, last_live_location_at = NULL WHERE user_id = ?1`, userID)
+		_, _ = db.ExecContext(ctx, `
+			UPDATE drivers SET is_active = 0, manual_offline = 0, live_location_active = 0, last_live_location_at = NULL
+			WHERE user_id = ?1`, userID)
 		log.Printf("driver: live_location end user_id=%d", userID)
 		sendOrUpdatePinnedStatus(bot, db, chatID, userID)
 		kb := getDriverKeyboard(db, userID)
-		m := tgbotapi.NewMessage(chatID, "📍 Jonli lokatsiya o'chdi.\n\n⚠️ Buyurtmalar kelmaydi.\n\nQayta jonli lokatsiya ulash uchun:\n📎 → Location → Share Live Location")
+		m := tgbotapi.NewMessage(chatID, liveLocationInactiveWarningMessage)
 		m.ReplyMarkup = kb
 		if _, err := bot.Send(m); err != nil {
 			log.Printf("driver: send: %v", err)
@@ -1606,16 +1421,19 @@ func handleLiveLocationUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Conf
 		return
 	}
 
-	// No active trip: only set online and push pending requests if driver is not manually offline (rule 5: while offline, live updates update position but do not send ride requests).
-	var manualOffline int
-	_ = db.QueryRowContext(ctx, `SELECT COALESCE(manual_offline, 0) FROM drivers WHERE user_id = ?1`, userID).Scan(&manualOffline)
-	if manualOffline == 0 && isDriverBalanceSufficient(ctx, db, userID, cfg) && driverHasAcceptedAgreement(ctx, db, userID) {
+	// No active trip: sharing live location means eligible drivers go online (balance + legal).
+	if isDriverBalanceSufficient(ctx, db, userID, cfg) && driverHasAcceptedAgreement(ctx, db, userID) {
 		onlineNowStr := updateTime.UTC().Format("2006-01-02 15:04:05")
 		if stale {
 			onlineNowStr = time.Now().UTC().Format("2006-01-02 15:04:05")
 		}
+		var prevActive int
+		_ = db.QueryRowContext(ctx, `SELECT COALESCE(is_active, 0) FROM drivers WHERE user_id = ?1`, userID).Scan(&prevActive)
 		_, _ = db.ExecContext(ctx, `UPDATE drivers SET is_active = 1, manual_offline = 0, last_seen_at = ?1 WHERE user_id = ?2`,
 			onlineNowStr, userID)
+		if prevActive == 0 {
+			sendOrUpdatePinnedStatus(bot, db, chatID, userID)
+		}
 		if matchService != nil {
 			log.Printf("driver: live_location auto_online user_id=%d lat=%.6f lng=%.6f grid=%s", userID, lat, lng, gridID)
 			go matchService.NotifyDriverOfPendingRequests(context.Background(), userID)
@@ -1631,7 +1449,12 @@ func handleLiveLocationUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Conf
 			}
 		}
 	} else {
-		// Driver is offline but sharing Live Location: remind to go online (once per cooldown).
+		var wasActive int
+		_ = db.QueryRowContext(ctx, `SELECT COALESCE(is_active, 0) FROM drivers WHERE user_id = ?1`, userID).Scan(&wasActive)
+		_, _ = db.ExecContext(ctx, `UPDATE drivers SET is_active = 0, manual_offline = 0 WHERE user_id = ?1`, userID)
+		if wasActive == 1 {
+			sendOrUpdatePinnedStatus(bot, db, chatID, userID)
+		}
 		sendOfflineButLiveReminderIfNeeded(bot, db, chatID, userID)
 	}
 }
@@ -1702,7 +1525,7 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 				send(bot, chatID, postLegalReliveMessage(payload))
 				handleLiveLocationInstruction(bot, db, chatID, telegramID)
 			case resumeDriverOnline:
-				handleOnline(bot, db, cfg, matchService, chatID, telegramID)
+				handleLiveLocationInstruction(bot, db, chatID, telegramID)
 			case resumeDriverAccept:
 				rid := strings.TrimSpace(payload)
 				if rid != "" && assignmentService != nil {
@@ -1799,7 +1622,7 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 			if err := db.QueryRowContext(ctx, `SELECT telegram_id FROM users WHERE id = ?1`, driverUserID).Scan(&driverTgID); err != nil || driverTgID == 0 {
 				return
 			}
-			msg := tgbotapi.NewMessage(driverTgID, "🎉 Profilingiz tasdiqlandi!\n\nEndi siz buyurtmalar qabul qilishingiz mumkin.\n\n🟢 Ishni boshlash\n📡 Jonli lokatsiyani yoqing")
+			msg := tgbotapi.NewMessage(driverTgID, "🎉 Profilingiz tasdiqlandi!\n\nEndi siz buyurtmalar qabul qilishingiz mumkin.\n\n📡 Telegramda jonli lokatsiyani ulang — ulanganda avtomatik onlayn bo‘lasiz.")
 			if _, err := bot.Send(msg); err != nil {
 				log.Printf("driver: notify approved driver send error user_id=%d: %v", driverUserID, err)
 				return

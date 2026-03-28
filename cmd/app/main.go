@@ -140,7 +140,7 @@ func notifyDriversOfDeployment(dbConn *sql.DB, driverBot *tgbotapi.BotAPI) {
 	if driverBot == nil {
 		return
 	}
-	const text = "Tizim yangilandi. Buyurtmalar olish uchun iltimos qayta online bo‘ling."
+	const text = "Tizim yangilandi. Buyurtmalar olish uchun jonli lokatsiyani qayta ulang (ulanganda avtomatik onlayn bo‘lasiz)."
 	rows, err := dbConn.Query(`
 		SELECT u.telegram_id
 		FROM users u

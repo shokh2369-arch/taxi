@@ -415,12 +415,11 @@ func (s *TripService) FinishTrip(ctx context.Context, tripID string, driverUserI
 		}
 	}
 	if driverTelegramID != 0 {
-		// Trip finish: status message + distance/fare; keyboard single row [Jonli lokatsiya yoqish | Ishni boshlash].
+		// Trip finish: status message + distance/fare; keyboard = live-location help only (online follows live share).
 		driverSummary := formatDriverTripCompletionMessage(distanceM, fareAmount)
 		kb := tgbotapi.NewReplyKeyboard(
 			tgbotapi.NewKeyboardButtonRow(
 				tgbotapi.NewKeyboardButton("📡 Jonli lokatsiya yoqish"),
-				tgbotapi.NewKeyboardButton("🟢 Ishni boshlash"),
 			),
 		)
 		kb.ResizeKeyboard = true
@@ -521,11 +520,9 @@ func (s *TripService) maybeSendLiveLocationHintAfterTrip(ctx context.Context, dr
 			return // already sent recently, avoid spam
 		}
 	}
-	// Driver is offline after trip: keyboard single row [Jonli lokatsiya yoqish | Online]
 	kb := tgbotapi.NewReplyKeyboard(
 		tgbotapi.NewKeyboardButtonRow(
 			tgbotapi.NewKeyboardButton("📡 Jonli lokatsiya yoqish"),
-			tgbotapi.NewKeyboardButton("🟢 Ishni boshlash"),
 		),
 	)
 	kb.ResizeKeyboard = true
