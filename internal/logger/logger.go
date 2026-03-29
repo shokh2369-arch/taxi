@@ -60,6 +60,15 @@ func WebSocketEvent(event string, tripID string, userID int64, attrs ...slog.Att
 	Log.LogAttrs(context.Background(), slog.LevelInfo, "websocket", a...)
 }
 
+// ArrivedNotify logs structured POST /trip/arrived notification lifecycle (sent, skipped, summary).
+// msg is the stable event name, e.g. arrived_notify_rider_sent, arrived_notify_summary.
+func ArrivedNotify(msg string, tripID string, attrs ...slog.Attr) {
+	a := make([]slog.Attr, 0, 1+len(attrs))
+	a = append(a, slog.String("trip_id", tripID))
+	a = append(a, attrs...)
+	Log.LogAttrs(context.Background(), slog.LevelInfo, msg, a...)
+}
+
 // AuthFailure logs auth failure (missing/invalid init data, not authorized).
 func AuthFailure(reason string, attrs ...slog.Attr) {
 	a := []slog.Attr{slog.String("reason", reason)}

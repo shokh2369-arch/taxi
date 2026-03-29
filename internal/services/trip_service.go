@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"log/slog"
 	"math"
 	"time"
 
@@ -30,12 +31,17 @@ func parseDriverLiveAtUTC(s string) (time.Time, error) {
 	return time.Parse(time.RFC3339, s)
 }
 
+// telegramBotAPI is implemented by *tgbotapi.BotAPI; narrowed for tests.
+type telegramBotAPI interface {
+	Send(c tgbotapi.Chattable) (tgbotapi.Message, error)
+}
+
 // TripService handles trip lifecycle: start, add points, finish, cancel; notifies rider and driver.
 type TripService struct {
 	db                   *sql.DB
 	tripRepo             *repositories.TripRepo
-	riderBot             *tgbotapi.BotAPI
-	driverBot            *tgbotapi.BotAPI
+	riderBot             telegramBotAPI
+	driverBot            telegramBotAPI
 	cfg                  *config.Config
 	hub                  HubBroadcaster
 	fareSvc              *FareService                   // optional; if set, fare comes from DB tiered settings
@@ -55,7 +61,8 @@ type TripActionResult struct {
 }
 
 // NewTripService returns a TripService. hub, fareSvc, and payments can be nil.
-func NewTripService(db *sql.DB, tripRepo *repositories.TripRepo, riderBot, driverBot *tgbotapi.BotAPI, cfg *config.Config, hub HubBroadcaster, fareSvc *FareService, payments repositories.PaymentRepository) *TripService {
+// riderBot and driverBot may be *tgbotapi.BotAPI or any type implementing telegramBotAPI (e.g. in tests).
+func NewTripService(db *sql.DB, tripRepo *repositories.TripRepo, riderBot, driverBot telegramBotAPI, cfg *config.Config, hub HubBroadcaster, fareSvc *FareService, payments repositories.PaymentRepository) *TripService {
 	if tripRepo == nil {
 		tripRepo = repositories.NewTripRepo(db)
 	}
@@ -295,52 +302,88 @@ func (s *TripService) notifyArrivedAtPickup(ctx context.Context, tripID string, 
 	const riderText = "Haydovchi sizning manzilingizga yetib keldi."
 	const driverText = "✅ Mijozga yetib keldingiz. Yo‘lovchiga xabar yuborildi. Safarni boshlashingiz mumkin."
 
-	riderOK := false
-	driverOK := false
+	riderSent := false
+	driverSent := false
 
 	if riderUserID == 0 {
-		log.Printf("trip_service: arrived notify rider skipped trip_id=%s reason=no_rider_user_id_on_trip", tripID)
+		logger.ArrivedNotify("arrived_notify_rider_skipped", tripID, slog.String("reason", "no_rider_user_id"))
 	} else if s.riderBot == nil {
-		log.Printf("trip_service: arrived notify rider skipped trip_id=%s rider_user_id=%d reason=rider_bot_nil", tripID, riderUserID)
+		logger.ArrivedNotify("arrived_notify_rider_skipped", tripID,
+			slog.String("reason", "rider_bot_nil"),
+			slog.Int64("rider_user_id", riderUserID))
 	} else {
 		var riderTelegramID int64
 		err := s.db.QueryRowContext(ctx, `SELECT telegram_id FROM users WHERE id = ?1`, riderUserID).Scan(&riderTelegramID)
 		if err != nil {
-			log.Printf("trip_service: arrived notify rider skipped trip_id=%s rider_user_id=%d reason=user_lookup_error detail=%v", tripID, riderUserID, err)
+			logger.ArrivedNotify("arrived_notify_rider_skipped", tripID,
+				slog.String("reason", "db_error"),
+				slog.Int64("rider_user_id", riderUserID),
+				slog.String("detail", err.Error()))
 		} else if riderTelegramID == 0 {
-			log.Printf("trip_service: arrived notify rider skipped trip_id=%s rider_user_id=%d reason=rider_telegram_id_zero", tripID, riderUserID)
+			logger.ArrivedNotify("arrived_notify_rider_skipped", tripID,
+				slog.String("reason", "rider_telegram_id_missing"),
+				slog.Int64("rider_user_id", riderUserID))
 		} else {
 			if _, err := s.riderBot.Send(tgbotapi.NewMessage(riderTelegramID, riderText)); err != nil {
-				log.Printf("trip_service: arrived notify rider send_failed trip_id=%s rider_user_id=%d telegram_id=%d detail=%v", tripID, riderUserID, riderTelegramID, err)
+				logger.ArrivedNotify("arrived_notify_rider_skipped", tripID,
+					slog.String("reason", "rider_send_failed"),
+					slog.Int64("rider_user_id", riderUserID),
+					slog.Int64("rider_telegram_id", riderTelegramID),
+					slog.String("detail", err.Error()))
 			} else {
-				riderOK = true
+				riderSent = true
+				logger.ArrivedNotify("arrived_notify_rider_sent", tripID,
+					slog.Int64("rider_user_id", riderUserID),
+					slog.Int64("rider_telegram_id", riderTelegramID))
 			}
 		}
 	}
 
 	if s.driverBot == nil {
-		log.Printf("trip_service: arrived notify driver skipped trip_id=%s driver_user_id=%d reason=driver_bot_nil", tripID, driverUserID)
-		log.Printf("trip_service: arrived_notify_summary trip_id=%s rider_telegram_ok=%v driver_telegram_ok=%v", tripID, riderOK, driverOK)
+		logger.ArrivedNotify("arrived_notify_driver_skipped", tripID,
+			slog.String("reason", "driver_bot_nil"),
+			slog.Int64("driver_user_id", driverUserID))
+		logger.ArrivedNotify("arrived_notify_summary", tripID,
+			slog.Bool("rider_sent", riderSent),
+			slog.Bool("driver_sent", driverSent))
 		return
 	}
 	var driverTelegramID int64
 	err := s.db.QueryRowContext(ctx, `SELECT telegram_id FROM users WHERE id = ?1`, driverUserID).Scan(&driverTelegramID)
 	if err != nil {
-		log.Printf("trip_service: arrived notify driver skipped trip_id=%s driver_user_id=%d reason=user_lookup_error detail=%v", tripID, driverUserID, err)
-		log.Printf("trip_service: arrived_notify_summary trip_id=%s rider_telegram_ok=%v driver_telegram_ok=%v", tripID, riderOK, driverOK)
+		logger.ArrivedNotify("arrived_notify_driver_skipped", tripID,
+			slog.String("reason", "db_error"),
+			slog.Int64("driver_user_id", driverUserID),
+			slog.String("detail", err.Error()))
+		logger.ArrivedNotify("arrived_notify_summary", tripID,
+			slog.Bool("rider_sent", riderSent),
+			slog.Bool("driver_sent", driverSent))
 		return
 	}
 	if driverTelegramID == 0 {
-		log.Printf("trip_service: arrived notify driver skipped trip_id=%s driver_user_id=%d reason=driver_telegram_id_zero", tripID, driverUserID)
-		log.Printf("trip_service: arrived_notify_summary trip_id=%s rider_telegram_ok=%v driver_telegram_ok=%v", tripID, riderOK, driverOK)
+		logger.ArrivedNotify("arrived_notify_driver_skipped", tripID,
+			slog.String("reason", "driver_telegram_id_missing"),
+			slog.Int64("driver_user_id", driverUserID))
+		logger.ArrivedNotify("arrived_notify_summary", tripID,
+			slog.Bool("rider_sent", riderSent),
+			slog.Bool("driver_sent", driverSent))
 		return
 	}
 	if _, err := s.driverBot.Send(tgbotapi.NewMessage(driverTelegramID, driverText)); err != nil {
-		log.Printf("trip_service: arrived notify driver send_failed trip_id=%s driver_user_id=%d telegram_id=%d detail=%v", tripID, driverUserID, driverTelegramID, err)
+		logger.ArrivedNotify("arrived_notify_driver_skipped", tripID,
+			slog.String("reason", "driver_send_failed"),
+			slog.Int64("driver_user_id", driverUserID),
+			slog.Int64("driver_telegram_id", driverTelegramID),
+			slog.String("detail", err.Error()))
 	} else {
-		driverOK = true
+		driverSent = true
+		logger.ArrivedNotify("arrived_notify_driver_sent", tripID,
+			slog.Int64("driver_user_id", driverUserID),
+			slog.Int64("driver_telegram_id", driverTelegramID))
 	}
-	log.Printf("trip_service: arrived_notify_summary trip_id=%s rider_telegram_ok=%v driver_telegram_ok=%v", tripID, riderOK, driverOK)
+	logger.ArrivedNotify("arrived_notify_summary", tripID,
+		slog.Bool("rider_sent", riderSent),
+		slog.Bool("driver_sent", driverSent))
 }
 
 // MinSpeedKmh is the minimum speed (km/h) for a segment to count toward fare distance (avoids GPS noise).
