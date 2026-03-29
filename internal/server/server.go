@@ -62,6 +62,8 @@ func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc
 	adminSvc := services.NewAdminService(db, adminDriverRepo, paymentRepo, tripStatsRepo)
 	adminHandlers := handlers.NewAdminHandlers(adminSvc, driverBot, db)
 	adminHandlers.Register(r)
+	// Legal admin API for dashboards (always mount when DB is available; do not depend on handler wiring).
+	handlers.RegisterAdminLegalRoutes(r, db)
 	return r
 }
 

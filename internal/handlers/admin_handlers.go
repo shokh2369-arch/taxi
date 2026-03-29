@@ -38,9 +38,6 @@ func (h *AdminHandlers) Register(r *gin.Engine) {
 		g.GET("/payments", h.ListPayments)
 		g.GET("/dashboard", h.Dashboard)
 	}
-	if h.db != nil {
-		registerAdminLegalRoutes(g, h.db)
-	}
 }
 
 // ListRiders returns admin rider DTOs (GET /admin/riders).

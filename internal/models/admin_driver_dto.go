@@ -18,15 +18,18 @@ type AdminDriverDTO struct {
 	DriverTermsOK bool `json:"driver_terms_ok"`
 	UserTermsOK   bool `json:"user_terms_ok"`
 	PrivacyOK     bool `json:"privacy_ok"`
+	// Legacy column on users (and mirrored for drivers in the app); dashboard fallback when legal API/tables are unavailable.
+	TermsAccepted int `json:"terms_accepted"`
 }
 
 // AdminRiderDTO is the admin-facing view of a rider with legal flags.
 type AdminRiderDTO struct {
-	ID           int64  `json:"id"`
-	TelegramID   int64  `json:"telegram_id"`
-	Name         string `json:"name"`
-	Phone        string `json:"phone"`
-	UserTermsOK  bool   `json:"user_terms_ok"`
-	PrivacyOK    bool   `json:"privacy_ok"`
+	ID            int64  `json:"id"`
+	TelegramID    int64  `json:"telegram_id"`
+	Name          string `json:"name"`
+	Phone         string `json:"phone"`
+	UserTermsOK   bool   `json:"user_terms_ok"`
+	PrivacyOK     bool   `json:"privacy_ok"`
+	TermsAccepted int    `json:"terms_accepted"`
 }
 

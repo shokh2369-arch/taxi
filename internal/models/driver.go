@@ -18,5 +18,7 @@ type Driver struct {
 	HasDriverTerms int `db:"has_driver_terms"`
 	HasUserTerms   int `db:"has_user_terms"`
 	HasPrivacy     int `db:"has_privacy"`
+	// users.terms_accepted — surfaced on admin driver rows for dashboard fallback.
+	UserTermsAcceptedLegacy int `db:"user_terms_accepted"`
 }
 

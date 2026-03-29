@@ -73,6 +73,7 @@ func (s *AdminService) ListDrivers(ctx context.Context) ([]models.AdminDriverDTO
 			DriverTermsOK:      d.HasDriverTerms != 0,
 			UserTermsOK:        d.HasUserTerms != 0,
 			PrivacyOK:          d.HasPrivacy != 0,
+			TermsAccepted:      d.UserTermsAcceptedLegacy,
 		})
 	}
 	return out, nil

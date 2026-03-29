@@ -10,24 +10,58 @@ import (
 	"taxi-mvp/internal/legal"
 )
 
-// registerAdminLegalRoutes mounts /admin/legal/* for dashboards (monitoring, issues, documents, per-user history).
+// RegisterAdminLegalRoutes mounts GET/HEAD /admin/legal/* on the API (dashboard legal monitoring, issues, documents).
+// Call from server startup with the same *sql.DB as the app; safe no-op if r or db is nil.
+func RegisterAdminLegalRoutes(r *gin.Engine, db *sql.DB) {
+	if r == nil || db == nil {
+		return
+	}
+	g := r.Group("/admin")
+	registerAdminLegalRoutes(g, db)
+}
+
+// registerAdminLegalRoutes mounts /admin/legal/* under an existing /admin RouterGroup.
 func registerAdminLegalRoutes(g *gin.RouterGroup, db *sql.DB) {
-	if db == nil {
+	if g == nil || db == nil {
 		return
 	}
 	h := &adminLegalHTTP{db: db}
 	lg := g.Group("/legal")
 	{
 		lg.GET("", h.monitoring)
+		lg.HEAD("", h.monitoringHead)
 		lg.GET("/monitoring", h.monitoring)
+		lg.HEAD("/monitoring", h.monitoringHead)
 		lg.GET("/status", h.monitoring)
+		lg.HEAD("/status", h.monitoringHead)
 		lg.GET("/summary", h.monitoring)
 		lg.GET("/health", h.monitoring)
+		lg.HEAD("/health", h.monitoringHead)
 		lg.GET("/issues", h.issues)
+		lg.HEAD("/issues", h.issuesHead)
 		lg.GET("/problems", h.issues)
+		lg.HEAD("/problems", h.issuesHead)
 		lg.GET("/documents", h.documents)
+		lg.HEAD("/documents", h.documentsHead)
 		lg.GET("/users/:user_id/acceptances", h.userAcceptances)
+		lg.HEAD("/users/:user_id/acceptances", h.userAcceptancesHead)
 	}
+}
+
+func (h *adminLegalHTTP) monitoringHead(c *gin.Context) {
+	c.Status(http.StatusOK)
+}
+
+func (h *adminLegalHTTP) issuesHead(c *gin.Context) {
+	c.Status(http.StatusOK)
+}
+
+func (h *adminLegalHTTP) documentsHead(c *gin.Context) {
+	c.Status(http.StatusOK)
+}
+
+func (h *adminLegalHTTP) userAcceptancesHead(c *gin.Context) {
+	c.Status(http.StatusOK)
 }
 
 type adminLegalHTTP struct {
