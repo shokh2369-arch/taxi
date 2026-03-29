@@ -88,14 +88,32 @@ func splitStringByRunes(s string, maxRunes int) []string {
 }
 
 func sendDriverAgreement(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64) {
+	if bot == nil {
+		log.Printf("driver: sendDriverAgreement: bot is nil")
+		return
+	}
 	ctx := context.Background()
 	text, err := legal.NewService(db).DriverAgreementPromptMessage(ctx)
 	if err != nil {
 		log.Printf("driver: legal prompt: %v", err)
 		text = legal.DriverAgreementMessage
 	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		text = legal.DriverAgreementMessage
+	}
 	const maxRunes = 3800
-	chunks := splitStringByRunes(text, maxRunes)
+	raw := splitStringByRunes(text, maxRunes)
+	var chunks []string
+	for _, ch := range raw {
+		if strings.TrimSpace(ch) != "" {
+			chunks = append(chunks, ch)
+		}
+	}
+	if len(chunks) == 0 {
+		chunks = []string{legal.DriverAgreementMessage}
+	}
+	log.Printf("driver: sendDriverAgreement chat_id=%d chunks=%d", chatID, len(chunks))
 	kb := driverAgreementInlineKeyboard()
 	for i, chunk := range chunks {
 		m := tgbotapi.NewMessage(chatID, chunk)
@@ -630,6 +648,15 @@ func handleUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 			return
 		}
 	}
+	// Many users send license/vehicle images as a "file" (Document) instead of a gallery photo — same handler.
+	if msg.Document != nil && strings.TrimSpace(msg.Document.FileID) != "" {
+		mime := strings.ToLower(strings.TrimSpace(msg.Document.MimeType))
+		if mime == "" || strings.HasPrefix(mime, "image/") {
+			if handleApplicationPhoto(bot, db, cfg, chatID, telegramID, msg.Document.FileID) {
+				return
+			}
+		}
+	}
 
 	// Handle keyboard button presses first so they always work (e.g. Live Location instruction even during registration).
 	switch msg.Text {
@@ -696,14 +723,12 @@ func handleStart(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, chatID, t
 		return
 	}
 	clearApplicationStep(ctx, db, userID)
-	// Application is "complete" once both doc photos exist (including pending_approval). /start no longer walks the form,
-	// so if the first oferta send failed (e.g. message too long) or the user missed it, offer again here.
-	var verificationStatus sql.NullString
-	_ = db.QueryRowContext(ctx, `SELECT verification_status FROM drivers WHERE user_id = ?1`, userID).Scan(&verificationStatus)
-	st := strings.TrimSpace(verificationStatus.String)
-	if (st == "pending_approval" || st == "approved") && !driverHasAcceptedAgreement(ctx, db, userID) {
+	// Application is "complete" once both doc photos exist. /start does not re-run the form, so resend oferta whenever
+	// the driver still owes active legal acceptances (any verification_status, incl. NULL or rejected+re-upload edge cases).
+	if !driverHasAcceptedAgreement(ctx, db, userID) {
+		send(bot, chatID, "📄 Haydovchi shartnomasi (oferta). Quyidagi xabar(lar)ni o‘qing va oxiridagi «Qabul qilaman» tugmasini bosing.")
 		sendDriverAgreement(bot, db, chatID)
-		send(bot, chatID, "⚠️ Avval shartnomani qabul qilishingiz kerak. Pastdagi «Qabul qilaman» tugmasini bosing.")
+		send(bot, chatID, "⚠️ Admin tasdiqigacha buyurtma olish uchun shartnomani qabul qilishingiz kerak.")
 	}
 	// Rewards and signup bonus are paid when docs are submitted (handleApplicationPhoto).
 	var statusMsgID sql.NullInt64
@@ -934,8 +959,8 @@ func handleApplicationPhoto(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config
 
 	// Require driver agreement (oferta) before sending admin approval request.
 	if !driverHasAcceptedAgreement(ctx, db, userID) {
+		send(bot, chatID, "📄 Haydovchi shartnomasi (oferta). Quyidagi xabar(lar)ni o‘qing va oxiridagi «Qabul qilaman» tugmasini bosing.")
 		sendDriverAgreement(bot, db, chatID)
-		// Notify driver that we're waiting for acceptance + admin.
 		send(bot, chatID, "⚠️ Avval shartnomani qabul qilishingiz kerak.")
 		return true
 	}
