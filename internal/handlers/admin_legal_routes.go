@@ -10,14 +10,16 @@ import (
 	"taxi-mvp/internal/legal"
 )
 
-// RegisterAdminLegalRoutes mounts GET/HEAD /admin/legal/* on the API (dashboard legal monitoring, issues, documents).
-// Call from server startup with the same *sql.DB as the app; safe no-op if r or db is nil.
+// RegisterAdminLegalRoutes mounts GET/HEAD .../admin/legal/* on the API.
+// Registers under /admin, /api/admin, /api/v1/admin, and /v1/admin so dashboards that probe different API prefixes all work.
 func RegisterAdminLegalRoutes(r *gin.Engine, db *sql.DB) {
 	if r == nil || db == nil {
 		return
 	}
-	g := r.Group("/admin")
-	registerAdminLegalRoutes(g, db)
+	for _, base := range []string{"/admin", "/api/admin", "/api/v1/admin", "/v1/admin"} {
+		g := r.Group(base)
+		registerAdminLegalRoutes(g, db)
+	}
 }
 
 // registerAdminLegalRoutes mounts /admin/legal/* under an existing /admin RouterGroup.
@@ -43,6 +45,8 @@ func registerAdminLegalRoutes(g *gin.RouterGroup, db *sql.DB) {
 		lg.HEAD("/problems", h.issuesHead)
 		lg.GET("/documents", h.documents)
 		lg.HEAD("/documents", h.documentsHead)
+		lg.GET("/acceptances", h.allAcceptances)
+		lg.HEAD("/acceptances", h.allAcceptancesHead)
 		lg.GET("/users/:user_id/acceptances", h.userAcceptances)
 		lg.HEAD("/users/:user_id/acceptances", h.userAcceptancesHead)
 	}
@@ -61,6 +65,10 @@ func (h *adminLegalHTTP) documentsHead(c *gin.Context) {
 }
 
 func (h *adminLegalHTTP) userAcceptancesHead(c *gin.Context) {
+	c.Status(http.StatusOK)
+}
+
+func (h *adminLegalHTTP) allAcceptancesHead(c *gin.Context) {
 	c.Status(http.StatusOK)
 }
 
@@ -199,6 +207,69 @@ func (h *adminLegalHTTP) documents(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true, "documents": out})
+}
+
+// allAcceptances returns all rows from legal_acceptances (newest first) for admin dashboards.
+// Query: limit (default 2000, max 10000), offset (default 0).
+func (h *adminLegalHTTP) allAcceptances(c *gin.Context) {
+	ctx := c.Request.Context()
+	limit := 2000
+	if s := c.Query("limit"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > 10000 {
+		limit = 10000
+	}
+	offset := 0
+	if s := c.Query("offset"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+	rows, err := h.db.QueryContext(ctx, `
+		SELECT la.user_id,
+		       la.document_type,
+		       la.version,
+		       la.accepted_at,
+		       EXISTS(SELECT 1 FROM legal_documents ld
+		              WHERE ld.document_type = la.document_type AND ld.version = la.version AND ld.is_active = 1) AS matches_active,
+		       COALESCE(u.role, '') AS role,
+		       COALESCE(u.name, '') AS user_name
+		FROM legal_acceptances la
+		LEFT JOIN users u ON u.id = la.user_id
+		ORDER BY la.accepted_at DESC, la.user_id DESC
+		LIMIT ?1 OFFSET ?2`, limit, offset)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	var list []gin.H
+	for rows.Next() {
+		var uid int64
+		var dt, at, role, name string
+		var ver, match int
+		if err := rows.Scan(&uid, &dt, &ver, &at, &match, &role, &name); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
+			return
+		}
+		list = append(list, gin.H{
+			"user_id":                uid,
+			"document_type":          dt,
+			"version":                ver,
+			"accepted_at":            at,
+			"matches_active_version": match != 0,
+			"role":                   role,
+			"user_name":              name,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "acceptances": list, "count": len(list), "limit": limit, "offset": offset})
 }
 
 func (h *adminLegalHTTP) userAcceptances(c *gin.Context) {
