@@ -1,245 +1,291 @@
-# Taxi MVP
+# YettiQanot (Taxi MVP)
 
-## Setup
+Telegram-first taxi aggregator: **rider bot**, **driver bot**, optional **admin bot**, **Mini App** map, and a single **Go** HTTP + WebSocket service. Production database is **Turso (libSQL / SQLite-compatible)**, not PostgreSQL.
 
-1. Copy the example env file and add your bot tokens:
+---
 
-   ```bash
-   cp .env.example .env
-   ```
+## Contents
 
-2. Edit `.env` and set:
-   - `RIDER_BOT_TOKEN` — Telegram bot token for the rider bot
-   - `DRIVER_BOT_TOKEN` — Telegram bot token for the driver bot
-   - **Turso database:** `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` (from [Turso](https://turso.tech)), or a single `DATABASE_URL=libsql://your-db.turso.io?authToken=...`
-   - `WEBAPP_URL` — Base URL where the webapp is served (e.g. `https://your-domain.com/webapp`). The backend serves static files at `r.Static("/webapp", "./webapp")`. Bot buttons open the **actual HTML files**: Driver → `WEBAPP_URL/index.html?trip_id=...&driver_id=...`, Rider → `WEBAPP_URL/rider-map.html?trip_id=...`. Must be HTTPS for Telegram Web App. Do not use the API base URL here—use the URL that serves the Mini App HTML.
-   - `API_ADDR` — HTTP API address (default `:8080`) for trip and driver location endpoints.
+1. [Overview](#overview)
+2. [Configuration](#configuration)
+3. [Run locally](#run-locally)
+4. [Database and migrations](#database-and-migrations)
+5. [HTTP API (reference)](#http-api-reference)
+6. [Deployment](#deployment)
+7. [Architecture](#architecture)
+8. [Fare and commission](#fare-and-commission)
+9. [Driver program: promo and referral](#driver-program-promo-and-referral-yettiqanot)
+10. [Manual test checklist](#manual-test-checklist)
+11. [Developer notes](#developer-notes)
 
-## Run with Docker
+---
+
+## Overview
+
+| Piece | Role |
+|--------|------|
+| **`cmd/app`** | HTTP API (Gin), Telegram bots (long polling), WebSocket hub, background workers |
+| **`internal/services`** | Dispatch, assignment, trip lifecycle, fare, admin, approval notifier |
+| **`internal/accounting`** | Promo/cash wallets, **`driver_ledger`** (append-only), commission offsets |
+| **`internal/bot/`** | Rider, driver, and optional admin Telegram handlers |
+| **`webapp/`** | Static Mini App (driver map, rider map); can be hosted on Vercel |
+| **`db/migrations/`** | Goose migrations (SQLite dialect) |
+
+**Dispatch:** closest-driver priority, timed batches; **`ride_requests`** tracks notify state. **Drivers** are considered for orders when **Telegram live location** is fresh, **balance** (promo + cash) is sufficient, **legal** is OK, and verification is **approved** where required.
+
+---
+
+## Configuration
+
+Create a **`.env`** in the project root (optional: use [godotenv](https://github.com/joho/godotenv) — `internal/config` loads it automatically).
+
+### Required
+
+| Variable | Description |
+|----------|-------------|
+| `RIDER_BOT_TOKEN` | [@BotFather](https://t.me/BotFather) token for the rider bot |
+| `DRIVER_BOT_TOKEN` | BotFather token for the driver bot |
+| `DATABASE_URL` | **or** `TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN` — Turso / libSQL connection string |
+
+### Common optional
+
+| Variable | Default / notes |
+|----------|------------------|
+| `WEBAPP_URL` | Base URL for Mini App (HTTPS in production), e.g. `https://your-app.vercel.app/webapp` |
+| `RIDER_MAP_URL` | If empty, derived from `WEBAPP_URL` + `/rider-map.html` |
+| `API_ADDR` | Listen address; `:8080`. If the platform sets **`PORT`**, it is used (e.g. Render/Railway). |
+| `STARTING_FEE`, `PRICE_PER_KM` | Legacy/config fare when DB fare settings are absent |
+| `MATCH_RADIUS_KM`, `EXPANDED_RADIUS_KM`, `RADIUS_EXPANSION_MINUTES` | Dispatch radii |
+| `REQUEST_EXPIRES_SECONDS`, `DRIVER_SEEN_SECONDS` | Request TTL and driver visibility window |
+| `ENABLE_DRIVER_ID_HEADER` | `true` / `1` to allow **`X-Driver-Id`** for Mini App calls (trust boundary) |
+| `ADMIN_BOT_TOKEN`, `ADMIN_ID` | Optional admin bot + Telegram user id for fare admin flows |
+| `INFINITE_DRIVER_BALANCE` | If `true`, dispatch ignores balance and trip commission is skipped |
+| `COMMISSION_PERCENT` | Platform commission on normalized fare when infinite balance is off |
+| `DISPATCH_WAIT_SECONDS`, `DISPATCH_DRIVER_COOLDOWN_SECONDS` | Batch wait and per-driver cooldown |
+
+Secrets must not be committed. This repo’s `.gitignore` ignores `.env*`.
+
+---
+
+## Run locally
+
+### Docker
 
 ```bash
 docker compose up --build
 ```
 
-This starts the **app** (rider + driver bots + API). The app connects to **Turso** (libSQL); set `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` in `.env`. Port 8080 is exposed for the API.
+Exposes the API (typically **8080**). Set Turso (or local libSQL) variables in `.env`.
 
-## Run migrations (Turso)
+### Migrations first
 
-Migrations use [goose](https://github.com/pressly/goose) with **SQLite dialect** and live in `db/migrations/`. Point at your Turso database:
-
-**Using the Go migration runner (recommended):**
+Apply schema before relying on the app:
 
 ```bash
-# From project root; uses DATABASE_URL or TURSO_DATABASE_URL + TURSO_AUTH_TOKEN from .env
 go run ./cmd/migrate -up
-go run ./cmd/migrate -down   # rollback last migration
 ```
 
-**Using Make:**
+---
 
-```bash
-make migrate-up
-make migrate-down
-```
+## Database and migrations
 
-Create a database at [turso.tech](https://turso.tech), then set `TURSO_DATABASE_URL` (e.g. `libsql://your-db-your-org.turso.io`) and `TURSO_AUTH_TOKEN` in `.env` before running migrations.
+- **Engine:** Turso / libSQL (SQLite-compatible).
+- **Tool:** [goose](https://github.com/pressly/goose); files in **`db/migrations/`**.
+- **Runner:** `go run ./cmd/migrate -up` (or `make migrate-up` if your Makefile defines it).
+
+**Startup repair** (non-destructive helpers) runs in `cmd/app` for legal schema, **`driver_ledger`** column names, and missing indexes (see **`internal/db/ledgerrepair`**).
+
+Notable migration themes:
+
+| Area | Examples |
+|------|----------|
+| Drivers / verification | `025_driver_verification.sql`, application steps, legal fingerprints |
+| Promo / ledger | `035_driver_promo_cash_ledger.sql`; `038` first-3-trip ledger uniqueness; `040` referral ledger uniqueness |
+| Referrals | `017_referral_fields.sql`, `019_driver_referral_reward_stages.sql`, **`039_driver_referrals.sql`** |
+| Legal | `034_legal_documents_schema_rebuild.sql` and later legal admin versions |
+
+---
+
+## HTTP API reference
+
+Public prefixes include **`/admin/...`** (dashboard), **`/api/...`**, **`/v1/...`** — see **`internal/handlers`** and **`internal/server`**.
+
+### Health and static
+
+| Method | Path | Auth |
+|--------|------|------|
+| `GET` / `HEAD` | `/health`, `/` | No |
+| `GET` | `/webapp/*` | Static files from `./webapp` |
+| `GET` | `/ws?trip_id=...` | Telegram initData (driver or rider on trip) |
+
+### Trip and driver (Mini App / bots)
+
+Driver routes use **`tryDriverID`** then **`RequireDriverAuth`** (Telegram initData and/or **`X-Driver-Id`** when enabled).
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/trip/:id` | Trip info |
+| `POST` | `/driver/location` | Driver location ping (map tracking; **live location** drives dispatch) |
+| `POST` | `/trip/start` | Start assigned trip |
+| `POST` | `/trip/finish` | Finish trip (triggers promos, referral reward evaluation, commission) |
+| `POST` | `/trip/cancel/driver` | Driver cancel |
+| `POST` | `/trip/cancel/rider` | Rider cancel (`riderAuth`) |
+| `GET` | `/driver/referral-link` | JSON `{ "referral_link": "..." }` |
+| `GET` | `/driver/promo-program` | Signup + first-3-trip promo progress + `promo_balance` |
+| `GET` | `/driver/referral-status` | If referred: inviter id, finished trip count, threshold 3, reward granted flag |
+
+### Legal (Mini App)
+
+| Method | Path | Auth |
+|--------|------|------|
+| `GET` | `/legal/active` | `appUserAuth` (+ optional `X-Driver-Id`) |
+| `POST` | `/legal/accept` | Same |
+
+CORS (see **`server.go`**): allows `X-Telegram-Init-Data`, `X-Driver-Id`. Full auth behavior: **`docs/AUTH.md`**.
+
+---
 
 ## Deployment
 
-You deploy two parts: the **Mini App** (static frontend) and the **backend** (Go API + Telegram bots + PostgreSQL).
+You deploy **(A)** static Mini App and **(B)** one **backend** process talking to **Turso**.
 
-### 1. Deploy Mini App (Vercel)
+### A. Mini App (e.g. Vercel)
 
-The Mini App is the map UI drivers open after accepting a ride.
+- Root **`webapp/`**, static output.
+- Set **`API_BASE`** in **`webapp/map.js`** (and rider map if needed) to your **HTTPS** API origin (no trailing slash).
 
-1. **Push your repo** to GitHub (if not already).
-2. In [Vercel](https://vercel.com): **Add New Project** → Import your repo.
-3. **Configure:**
-   - **Root Directory:** `webapp`
-   - **Framework Preset:** Other
-   - **Build Command:** leave empty
-   - **Output Directory:** `.`
-4. **Deploy.** You’ll get a URL like `https://your-app.vercel.app`.
-5. **Point the Mini App at your backend:**  
-   In `webapp/map.js`, set `API_BASE` to your Go backend URL (no trailing slash), e.g.:
-   ```javascript
-   var API_BASE = 'https://your-backend.railway.app';
-   ```
-   Commit and push; Vercel will redeploy.
+### B. Backend (Railway / Render / Fly / VPS)
 
-### 2. Deploy Backend + Telegram Bots (Railway / Render / Fly.io / VPS)
+1. Set **`RIDER_BOT_TOKEN`**, **`DRIVER_BOT_TOKEN`**, **Turso** URL + token (or **`DATABASE_URL`**).
+2. Set **`WEBAPP_URL`** to the **public** Mini App base (so “Open map” links work).
+3. Run migrations once against the **same** DB: `go run ./cmd/migrate -up`.
+4. **Telegram:** only **one** `getUpdates` consumer per bot token. On **Render**, set **instance count = 1** (see **`render.yaml`**). Duplicate instances cause `Conflict: terminated by other getUpdates request`.
 
-The backend runs the Go app (HTTP API on port 8080), rider bot, driver bot, and uses **Turso** (libSQL) as the database.
+### Connect everything
 
-**Option A: Railway**
+| Component | Value |
+|-----------|--------|
+| Mini App URL | e.g. `https://your-app.vercel.app/webapp` |
+| Backend API | e.g. `https://your-service.onrender.com` |
+| Backend **`WEBAPP_URL`** | Mini App base URL (HTTPS) |
+| **`webapp/map.js`** **`API_BASE`** | Backend API origin |
 
-1. Create a project at [railway.app](https://railway.app).
-2. **Turso:** Create a database at [turso.tech](https://turso.tech) and copy `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` (or set a single `DATABASE_URL=libsql://...?authToken=...`).
-3. **Go app:** Add a service → **GitHub Repo** (this repo) → **Dockerfile**.  
-   Railway will build the Dockerfile. Set **Root Directory** to repo root so it sees `Dockerfile` and `docker-compose` if needed.
-4. **Variables** for the app service:
-   - `RIDER_BOT_TOKEN` — from [@BotFather](https://t.me/BotFather)
-   - `DRIVER_BOT_TOKEN` — from BotFather
-   - `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` (or `DATABASE_URL` with full libsql URL)
-   - `WEBAPP_URL` — your Mini App URL, e.g. `https://your-app.vercel.app`
-   - Other vars from `.env.example` as needed (e.g. `PRICE_PER_KM`, `MATCH_RADIUS_KM`).
-5. **Port:** The app listens on `API_ADDR` (default `:8080`). If the platform sets `PORT` (e.g. Railway, Render), the app uses it automatically.
-6. **Migrations:** Run once (e.g. from your machine with `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` in `.env`):
-   ```bash
-   go run ./cmd/migrate -up
-   ```
-7. Copy the **public URL** of the app (e.g. `https://your-project.railway.app`) and use it as `API_BASE` in `webapp/map.js` (step 1.5 above). Ensure the backend allows CORS from your Vercel domain (your Gin app already uses a permissive CORS for development; restrict in production if desired).
+### Deployment troubleshooting
 
-**Option B: Render**
+| Symptom | Likely cause | Fix |
+|---------|----------------|-----|
+| `no such table: ...` | Empty DB / migrations not applied | Run `go run ./cmd/migrate -up` with production DB URL |
+| `getUpdates` conflict | Two replicas or local + cloud | Single instance; stop duplicate processes |
+| Render build cache errors | Stale cache | Clear build cache, redeploy |
 
-1. **Turso:** Create a database at [turso.tech](https://turso.tech); note `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`.
-2. **Web Service:** New **Web Service** → connect repo → use **Docker**. The Dockerfile runs **migrations automatically on startup** (so you no longer get `no such table: ride_requests` on first deploy).
-3. **Environment:** Add the same variables as in Railway; set `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`. Set `WEBAPP_URL` to your Vercel Mini App URL.
-4. **Use exactly 1 instance.** Telegram allows only one `getUpdates` connection per bot. In Render: **Settings** → **Scaling** → set **Instance count** to **1**. If you see "Conflict: terminated by other getUpdates request", you have more than one instance or the same bots running elsewhere — set instance count to **1** and restart. You can use the provided `render.yaml` (Blueprint) which sets `numInstances: 1` by default.
-5. Render will assign a URL like `https://your-service.onrender.com`. Use that as `API_BASE` in `map.js`.
+---
 
-**Option C: VPS (e.g. Ubuntu + Docker)**
+## Architecture
 
-1. On the server, clone the repo and copy `.env.example` to `.env`. Fill in bot tokens, `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` (or `DATABASE_URL` with full Turso URL), and `WEBAPP_URL=https://your-app.vercel.app`.
-2. Run:
-   ```bash
-   docker compose up -d --build
-   ```
-3. Run migrations (from server or your machine with Turso env vars set):
-   ```bash
-   go run ./cmd/migrate -up
-   ```
-4. Expose port **8080** (e.g. nginx reverse proxy or firewall). The public URL (e.g. `https://api.yourdomain.com`) is your `API_BASE` in `map.js`.
+| Layer | Path |
+|--------|------|
+| Handlers | `internal/handlers/` |
+| Services | `internal/services/` |
+| Repositories | `internal/repositories/` |
+| Models | `internal/models/` |
+| WebSocket | `internal/ws/` |
+| Bots | `internal/bot/` (rider, driver, admin) |
+| Auth | `internal/auth/` |
+| Config | `internal/config/` |
 
-### 3. Connect Everything
+**Trip flow:** PENDING request → assigned driver → STARTED → FINISHED (or cancelled). WebSocket events include location updates, start, finish, cancel.
 
-| What | Value |
-|------|--------|
-| **Mini App (Vercel)** | `https://your-app.vercel.app` |
-| **Backend API** | `https://your-backend.railway.app` (or Render/VPS URL) |
-| **In backend `.env`** | `WEBAPP_URL=https://your-app.vercel.app` (so the “Open Trip Map” button opens this URL with `?trip_id=...&driver_id=...`) |
-| **In `webapp/map.js`** | `API_BASE = 'https://your-backend.railway.app'` (so the Mini App calls your API) |
+---
 
-- Backend must be **HTTPS** in production so Telegram and browsers accept it.
-- In **BotFather**, you can set the **Menu Button** or **Web App** URL for the driver bot to your Mini App URL so users can open the map from the bot menu.
+## Fare and commission
 
-### 4. Checklist
+- **Fare:** Distance-based; may use **`FareService`** DB settings when present, otherwise config **`STARTING_FEE`** / **`PRICE_PER_KM`** (and rounding rules in code).
+- **Commission:** On **FINISHED** trips, internal **`COMMISSION_ACCRUED`** and offsets **`PROMO_APPLIED_TO_COMMISSION`** / **`CASH_APPLIED_TO_COMMISSION`** in **`driver_ledger`** — **not** bank settlement. Legacy **`payments`** rows may still be written for admin views; **ledger is authoritative** for bucket behavior.
 
-- [ ] Mini App deployed on Vercel; `map.js` has correct `API_BASE`.
-- [ ] Backend deployed (Railway/Render/VPS); Turso env vars set, migrations run.
-- [ ] `WEBAPP_URL` on backend = Vercel Mini App URL.
-- [ ] Backend URL is HTTPS and reachable; CORS allows your Vercel origin.
-- [ ] Rider and driver bots work in Telegram; driver sees “Open Trip Map” after accept and the map loads.
+---
 
-### 5. Troubleshooting (Render / deployment)
+## Driver program: promo and referral (YettiQanot)
 
-| Error | Cause | Fix |
-|-------|--------|-----|
-| `no such table: ride_requests` | Turso DB has no schema | If using the repo Dockerfile, migrations run on startup. If you use a custom build, run migrations once: `go run ./cmd/migrate -up` with the same `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` as Render. |
-| `Conflict: terminated by other getUpdates request` | Two+ instances or processes use same bot | Render: **Settings** → **Scaling** → **Instance count** = **1**. Stop any other app (e.g. local) using the same bot tokens. Restart the service. |
-| `tar: Unexpected EOF in archive` / `cache download failed` | Render build cache corrupted or too large | Render: **Settings** → **Build & Deploy** → **Clear build cache**, then trigger a new deploy. Build will run without cache and recreate it. |
+All amounts below are **promo platform credit** unless stated otherwise: **not real money**, **not withdrawable**, **not** paid via `cash_balance` or payouts.
 
-## Architecture (MVP)
+### Onboarding promo
 
-Single Go service; no microservices.
+| Rule | Amount | Idempotency |
+|------|--------|-------------|
+| Once on **approval** | **+20 000** promo | `signup_bonus_paid` + ledger `signup_promo` |
+| **1st / 2nd / 3rd** finished trip | **+10 000** each | Ledger `first_3_trip_bonus` + unique `(driver_id, trip_id)` |
 
-| Layer | Path | Role |
-|-------|------|------|
-| **Handlers** | `internal/handlers/` | HTTP only: bind JSON, call services, return status/body |
-| **Services** | `internal/services/` | Business logic: dispatch, assign, trip lifecycle, expiry, notify |
-| **Repositories** | `internal/repositories/` | Database queries only (e.g. `TripRepo.CancelByDriver`) |
-| **Models** | `internal/models/` | Domain structs (Trip, RideRequest) |
-| **WebSocket** | `internal/ws/` | Hub, `/ws?trip_id=xxx`, broadcast events (driver_location_update, trip_started, trip_finished, trip_cancelled) |
-| **Bot** | `internal/bot/` | Rider and driver Telegram bots |
-| **Config** | `internal/config/` | Env-loaded config |
+**Code:** `internal/accounting/driver_promo.go`, **`GET /driver/promo-program`**.
 
-- **Dispatch:** Priority (closest driver first), 8s wait per driver; `request_notifications` tracks SENT/ACCEPTED/REJECTED/TIMEOUT.
-- **Accept:** Atomic `UPDATE ride_requests SET status='ASSIGNED' WHERE id=? AND status='PENDING'`; check rows affected to avoid races.
-- **Expiry:** Background worker every 5s; PENDING requests past `expires_at` → EXPIRED; rider notified "Haydovchi topilmadi."
-- **Cancel:** `POST /trip/cancel/driver` and `POST /trip/cancel/rider`; trip status CANCELLED_BY_DRIVER / CANCELLED_BY_RIDER; driver set available; other party notified.
-- **Rate limits:** Rider — 1 active (PENDING) request; driver — max 1 notification per 5 seconds.
+### Referral reward (inviter)
 
-## Fare calculation
+| Rule | Amount | Idempotency |
+|------|--------|-------------|
+| Referred driver completes **3** trips **FINISHED**, **`verification_status = approved`** | Inviter **+20 000** promo | `users.referral_stage2_reward_paid` on **referred** user + ledger `referral_reward` + unique index |
 
-Trip fare is computed from distance and `PRICE_PER_KM` (from `.env`):
+- **Relation:** **`driver_referrals`** (`inviter_user_id`, **`referred_user_id` UNIQUE**), backfilled from `users.referred_by` / `referral_code`.
+- **Trigger:** only **`TripService.FinishTrip`** after successful status transition to FINISHED.
+- **Telegram** to inviter: **only after** DB commit with updated **`promo_balance`**.
 
-- **Formula:** `fare_amount = ceil(distance_m / 1000) * PRICE_PER_KM`
-- Distance is rounded up to full kilometers (e.g. 500 m → 1 km, 1001 m → 2 km).
-- Implemented in `internal/utils/money.go` as `FareFromMeters(distanceM, pricePerKm)`.
+**Code:** `internal/accounting/referral_reward.go`, **`GET /driver/referral-status`**.
 
-## Test scenario steps
+### Removed or disabled (do not re-enable without product review)
 
-1. **Start the app**  
-   Run `docker compose up --build` (or run the app locally with Postgres).
+- ~100k signup, 80k five-trip milestone, hourly **online bonus** worker (no-op stub remains for wiring).
 
-2. **Rider flow**  
-   - Open the rider bot in Telegram.  
-   - Send a ride request (e.g. set pickup and destination).  
-   - Confirm the request is created and see price (based on `PRICE_PER_KM` and distance).
+### Ledger quick reference
 
-3. **Driver flow**  
-   - Open the driver bot in Telegram.  
-   - Ensure the driver is sharing **Telegram live location** (and is in the matching pool).  
-   - Verify that new rider requests appear within `MATCH_RADIUS_KM` and that requests expire after `REQUEST_EXPIRES_SECONDS`.
+| `reference_type` (examples) | Meaning |
+|-----------------------------|--------|
+| `signup_promo` | Approval onboarding grant |
+| `first_3_trip_bonus` | Per-trip bonus, `reference_id` = trip id |
+| `referral_reward` | Inviter reward, `reference_id` = referred **user** id (string) |
+| `trip` | Commission accrual / offsets (see entry types) |
 
-4. **Matching**  
-   - With a rider request active, have a driver in range.  
-   - Check that the driver sees the request and can accept it.  
-   - Confirm the rider is notified when a driver accepts.
+---
 
-5. **Expiry and visibility**  
-   - Create a rider request and do not accept it; after `REQUEST_EXPIRES_SECONDS` it should expire.  
-   - Confirm drivers are considered “seen” for matching within `DRIVER_SEEN_SECONDS` of their last activity.
+## Manual test checklist
 
-6. **Driver Mini App (Trip Map)**  
-   - After a driver accepts a ride in the driver bot, they get an **"Open Trip Map"** button that opens the Mini App.  
-   - The Mini App (Leaflet + OpenStreetMap) shows: driver location, pickup marker, route driver→pickup, **START TRIP** and **FINISH TRIP** buttons.  
-   - Driver location is sent to the backend every few seconds via `POST /driver/location`.  
-   - **After FINISH TRIP:** When the driver presses "SAFARNI TUGATISH", the Mini App must call `POST /trip/finish` and may send `POST /driver/location` for map/trip tracking. **Matching and “online” for new orders use Telegram live location only** (`POST /driver/location` does not put the driver in the dispatch pool).  
-   - Set `WEBAPP_URL` in `.env` to the public URL where `/webapp` is served (same server as the API).
+1. **Start:** `docker compose up --build` (or local binary) with valid **Turso** env and **migrations applied**.
+2. **Rider:** Create request; confirm pricing and dispatch behavior.
+3. **Driver:** Share **live** location; accept request; open Mini App; **start** / **finish** trip.
+4. **Finish:** Rider and driver notifications; **promo** and **referral** grants visible in DB (`drivers.promo_balance`, `driver_ledger`).
+5. **Admin / legal:** If used, verify verification and legal acceptance flows.
+6. **Shutdown:** SIGINT/SIGTERM; process exits cleanly.
 
-7. **Shutdown**  
-   - Send SIGINT/SIGTERM to the app (e.g. Ctrl+C).  
-   - Verify both bots stop and the process exits without errors (graceful shutdown).
+---
 
 ## Developer notes
 
-### Legal DB schema (`document_type`)
+### Legal schema
 
-If logs show `no such column: document_type` on `legal_documents`, the database has an incompatible older `legal_*` layout (or a partial deploy). Run migrations through **`034_legal_documents_schema_rebuild.sql`**, which drops and recreates `legal_documents`, `legal_acceptances`, and `legal_pending_resume` with the schema the app expects. **Legal acceptance rows are cleared**; users/drivers accept again after migrate.
+If logs mention missing **`document_type`** or broken legal tables, run migrations through **`034_legal_documents_schema_rebuild.sql`** (and later). That rebuild **clears** legal acceptance rows — users re-accept active documents.
 
-### Admin legal API (dashboard / Vue)
+### Admin and legal HTTP API
 
-Routes are mounted on **`/admin/legal/...`**, **`/api/admin/legal/...`**, **`/api/v1/admin/legal/...`**, and **`/v1/admin/legal/...`** (same handlers).
+Admin routes (drivers, riders, payments, verification) are registered from **`handlers.NewAdminHandlers`**. Legal admin endpoints are under **`/admin/legal/...`** and mirrored paths (see **`RegisterAdminLegalRoutes`**). **Source of truth** for compliance is **`legal_acceptances`** vs **active** **`legal_documents`**.
 
-**Source of truth:** `legal_acceptances` rows must match the **currently active** row in `legal_documents` per `document_type` (`is_active = 1`). Compliance counts, `/missing`, and `/issues` compare stored `(document_type, version)` to that active version. Legacy columns `users.terms_accepted` / `drivers.terms_accepted` are **not** used for those endpoints; driver/rider list JSON exposes them only as `legacy_*` fields.
+### Driver bot UX (live location)
 
-**`GET .../legal/acceptances`** — optional `?user_id=` (same data as per-user route). Each row includes: `user_id`, `actor_id` (same), `document_type`, `document_code` (same), `version`, `document_version` (same), `version_label` / `version_string` (e.g. `v2`), `accepted_at`, `matches_active_version`, `client_ip`, `ip_address` (same), `user_agent`, `role`, `user_name`. Response also mirrors `acceptances` as `records` when filtered by `user_id`.
+- **Online** for matching = **Telegram live location** freshness (+ balance + legal + approval).
+- Pinned **status** message is edited when possible; **`/status`** refreshes it.
+- **`driver_ledger`** and **`GET /admin/drivers/:id/ledger`** expose promo vs cash audit.
 
-**`GET .../legal/users/:user_id/acceptances`** — `acceptances`, `records`, and `history` are the **same array** (for clients that expect different keys).
+### Schema drift helpers
 
-**`GET .../legal/stats`** — `stats` and `counts` include snake_case keys plus camelCase aliases (`driversTotal`, `totalAcceptances`, …). `total_acceptances` is `COUNT(*)` from `legal_acceptances`.
+- **`internal/db/legalrepair`**, **`legalfingerrepair`**, **`ledgerrepair`** — run at startup to align common drift (never substitute for running **goose** migrations on new environments).
 
-**`GET .../legal/missing`**, **`/issues`** — each entry: `user_id`, `actor_id`, `role`, **`missing_documents`** (e.g. `["user_terms","privacy_policy"]`) when not compliant.
+### Further reading
 
-**`GET .../admin/drivers`**, **`/admin/riders`** — legal OK flags follow `legal_acceptances` + active docs only; accepted versions are `*_accepted_version` integer fields (show as `v{N}` in UI).
+- **`docs/AUTH.md`** — authentication, **`X-Driver-Id`**, protected routes.
+- **`PLAN.md`** / **`render.yaml`** — internal planning and Render blueprint hints.
 
-### Driver bot: live location is the only “online” UX (YettiQanot)
+### GitHub Actions
 
-- **Visible state:** A driver is treated as **online** only while **Telegram live location** is active (fresh `last_live_location_at`, same window as dispatch). There is **no** separate reply-keyboard “go online / go offline” flow; `drivers.is_active` for matching is still updated from the live-location handler but eligibility is **live location + balance + legal**.
-- **Legal re-accept:** If legal changes interrupt an active live-location session, `legal_pending_resume.kind = driver_relive` is used. After acceptance we **clear** live/online fields and send a short message asking the driver to **re-share live location** (no generic “continue” and no auto-online). Telegram cannot resume a live session for the user.
-- **Messaging:** The pinned **status card** is **edited in place** when possible; `/status` refreshes that pin instead of sending a duplicate full status. Live-location **step-by-step instructions** are sent only on first onboarding (when appropriate), when the driver taps **“Jonli lokatsiyani ulashish”**, or in the legal re-share case above—not after every trip.
-- **Balances on the status card:** `drivers.balance` is the **sum** of `promo_balance` + `cash_balance`. **Promo** is internal promotional platform credit only (not real money, not withdrawable, not convertible to cash in app logic). **Cash** is the internal wallet for real top-ups when you add them later. The panel may still label totals as platform-oriented copy; admin API and `GET /admin/drivers/:id/ledger` expose the split and **append-only `driver_ledger`** (promo granted, commission accrued, promo applied to commission, etc.).
+CI workflows are optional; this repo may or may not define **`.github/workflows/*.yml`**. Run **`go test ./...`** locally before pushing.
 
-### Driver accounting model (YettiQanot — current stage)
+---
 
-- The platform is an **aggregator**; **live Click/bank settlement for customer fares is not implemented** in this version.
-- **Driver onboarding promo (active):** on approval, **20_000** promo credit **once** (`signup_bonus_paid` gate), ledger `PROMO_GRANTED` / `promo` bucket, metadata `source: signup_promo`. **First 3 completed trips:** **+10_000** promo each, one row per trip (`reference_type: first_3_trip_bonus`, `reference_id: trip_id`), idempotent via ledger + partial unique index. **Promo is not real money**, not withdrawable, not routed through `cash_balance` or payouts.
-- **Removed/disabled for drivers:** old ~100k signup, five-trip (80k) milestone bonus, and **online-time promo accrual** worker (no hourly online bonus).
-- **Driver referral reward (active):** table **`driver_referrals`** links inviter `users.id` → referred `users.id` (backfilled from `users.referred_by` + `referral_code`). On each trip **FINISHED**, if the driver was referred, has **`verification_status = approved`**, and has **≥ 3** finished trips, the **inviter** receives **+20_000 promo** once: `drivers.promo_balance` / `balance`, **`driver_ledger`** row `PROMO_GRANTED` / `promo`, `reference_type = referral_reward`, `reference_id = referred_user_id`, metadata `source: referral_reward`. Idempotency: `users.referral_stage2_reward_paid` on the **referred** user plus partial unique index on ledger. Telegram to inviter **only after** commit. Not cash / not payout.
-- **`GET /driver/referral-status`** — referred driver’s `finished_trip_count`, threshold **3**, `referral_reward_granted`, `inviter_user_id` (if any).
-- **Commission** on a finished trip is **`COMMISSION_ACCRUED`** plus **`PROMO_APPLIED_TO_COMMISSION`** / **`CASH_APPLIED_TO_COMMISSION`** as internal offsets—not bank payouts or “deducted from customer payment.”
-- **`promo_balance` must not** be withdrawn, transferred to `cash_balance`, or paid out; guards live in `internal/accounting` and admin **add-balance** tops up **cash** only (see `AdminService.AddDriverBalance` / `GrantCashTopUp`).
-- **`GET /driver/promo-program`** (driver auth) returns `promo_balance`, `signup_promo_granted`, finished-trip count, first-three bonus count, and remaining bonus slots (implementation: `internal/accounting/driver_promo.go`).
-- Migration **`035_driver_promo_cash_ledger.sql`** adds `promo_balance`, `cash_balance`, and `driver_ledger`. After migrate, `balance` stays equal to `promo_balance + cash_balance`.
-- **`payments`** rows for commission/deposit remain for legacy admin views; **`driver_ledger` is authoritative** for audit of promo vs cash behavior.
+## License / project
+
+Internal YettiQanot / taxi MVP codebase; adjust licensing as your organization requires.
