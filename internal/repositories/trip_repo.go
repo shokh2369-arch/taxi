@@ -62,6 +62,19 @@ func (r *TripRepo) UpdateToFinished(ctx context.Context, tripID string, driverUs
 	return n, nil
 }
 
+// UpdateToFinishedTx is the same as UpdateToFinished but uses an existing transaction (atomic finish + ledger + commission).
+func (r *TripRepo) UpdateToFinishedTx(ctx context.Context, tx *sql.Tx, tripID string, driverUserID int64, fareAmount int64, riderBonusUsed int64) (rowsAffected int64, err error) {
+	res, err := tx.ExecContext(ctx, `
+		UPDATE trips SET status = ?1, finished_at = datetime('now'), fare_amount = ?2, rider_bonus_used = ?3
+		WHERE id = ?4 AND driver_user_id = ?5 AND status = ?6`,
+		domain.TripStatusFinished, fareAmount, riderBonusUsed, tripID, driverUserID, domain.TripStatusStarted)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 // AddTripDistance increments trips.distance_m by segmentMeters only when status = STARTED (ensures live accumulation for GET /trip/:id).
 func (r *TripRepo) AddTripDistance(ctx context.Context, tripID string, segmentMeters int64) (rowsAffected int64, err error) {
 	res, err := r.db.ExecContext(ctx, `

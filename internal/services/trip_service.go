@@ -399,50 +399,63 @@ func (s *TripService) FinishTrip(ctx context.Context, tripID string, driverUserI
 	fareAmount := normalizeFare(rawFare)
 	// Rider bonus/discount is disabled: no referral bonus is applied for riders.
 	var riderBonusUsed int64
-	n, err := s.tripRepo.UpdateToFinished(ctx, tripID, driverUserID, fareAmount, riderBonusUsed)
+
+	pc := 5
+	if s.fareSvc != nil {
+		if settings, err := s.fareSvc.GetFareSettings(ctx); err == nil && settings != nil && settings.CommissionPercent > 0 {
+			pc = settings.CommissionPercent
+		}
+	}
+	if s.cfg != nil && pc <= 0 && s.cfg.CommissionPercent > 0 {
+		pc = s.cfg.CommissionPercent
+	}
+	if pc <= 0 {
+		pc = 5
+	}
+	inf := s.cfg != nil && s.cfg.InfiniteDriverBalance
+	var commission int64
+	if s.cfg != nil && fareAmount > 0 && !inf {
+		commission = (fareAmount * int64(pc)) / 100
+	}
+
+	var pay accounting.PaymentTXInserter
+	if s.payments != nil {
+		pay = s.payments
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	n, err := s.tripRepo.UpdateToFinishedTx(ctx, tx, tripID, driverUserID, fareAmount, riderBonusUsed)
 	if err != nil {
 		return nil, err
 	}
 	if n == 0 {
-		current, _ = s.tripRepo.GetStatus(ctx, tripID)
+		current, _ := s.tripRepo.GetStatus(ctx, tripID)
 		if current == domain.TripStatusFinished {
+			logger.TripEvent("trip_finish", tripID, "noop", logger.TripEventAttrs(driverUserID, riderUserID)...)
 			return &TripActionResult{Result: "noop", Status: domain.TripStatusFinished}, nil
 		}
 		return nil, domain.ErrInvalidTransition
 	}
-	firstThreeGranted := false
-	firstThreeTripNum := 0
-	refRewardRes := accounting.ReferralRewardResult{}
 
-	// UpdateToFinished commits first; promo + referral share one transaction (idempotent ledger inserts).
-	var gErr error
-	firstThreeGranted, firstThreeTripNum, refRewardRes, gErr = accounting.GrantTripFinishPromosAndReferral(ctx, s.db, driverUserID, tripID)
-	if gErr != nil {
-		log.Printf("trip_service: promo/referral grants trip_id=%s driver_user_id=%d: %v", tripID, driverUserID, gErr)
-		refRewardRes = accounting.ReferralRewardResult{Reason: accounting.ReferralRewardReasonDBError}
+	firstThreeGranted, firstThreeTripNum, refRewardRes, err := accounting.ExecuteTripFinishEffectsInTx(ctx, tx, s.db, pay, driverUserID, tripID, fareAmount, commission, pc, inf)
+	if err != nil {
+		log.Printf("trip_service: finish trip atomic ledger trip_id=%s driver_user_id=%d: %v", tripID, driverUserID, err)
+		return nil, fmt.Errorf("trip finish ledger: %w", err)
 	}
-	// Internal commission accrual; offset against promo then cash wallet (see driver_ledger); not bank settlement.
-	if s.cfg != nil && fareAmount > 0 {
-		pc := 5
-		if s.fareSvc != nil {
-			if settings, err := s.fareSvc.GetFareSettings(ctx); err == nil && settings != nil && settings.CommissionPercent > 0 {
-				pc = settings.CommissionPercent
-			}
-		}
-		if pc <= 0 && s.cfg.CommissionPercent > 0 {
-			pc = s.cfg.CommissionPercent
-		}
-		if pc <= 0 {
-			pc = 5
-		}
-		commission := (fareAmount * int64(pc)) / 100
-		if commission > 0 {
-			inf := s.cfg != nil && s.cfg.InfiniteDriverBalance
-			if err := accounting.ApplyTripCommission(ctx, s.db, s.payments, driverUserID, tripID, fareAmount, commission, pc, inf); err != nil {
-				log.Printf("trip_service: apply trip commission (trip=%s, driver=%d): %v", tripID, driverUserID, err)
-			}
-		}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("trip finish commit: %w", err)
 	}
+	committed = true
 	summary := formatTripSummary(distanceM, fareAmount, riderBonusUsed)
 	var riderTelegramID, driverTelegramID int64
 	_ = s.db.QueryRowContext(ctx, `SELECT telegram_id FROM users WHERE id = ?1`, riderUserID).Scan(&riderTelegramID)

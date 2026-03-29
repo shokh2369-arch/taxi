@@ -12,7 +12,8 @@ import (
 	"taxi-mvp/internal/repositories"
 )
 
-type paymentTxInserter interface {
+// PaymentTXInserter inserts a payment row inside an existing transaction (e.g. trip commission).
+type PaymentTXInserter interface {
 	InsertPaymentTx(ctx context.Context, tx *sql.Tx, p *models.Payment) error
 }
 
@@ -50,7 +51,7 @@ func GrantPromo(ctx context.Context, db *sql.DB, driverID int64, amount int64, r
 }
 
 // GrantCashTopUp records admin (or future gateway) cash top-up: increases cash_balance only + ledger + payments row.
-func GrantCashTopUp(ctx context.Context, db *sql.DB, pay paymentTxInserter, driverID int64, amount int64, note string) error {
+func GrantCashTopUp(ctx context.Context, db *sql.DB, pay PaymentTXInserter, driverID int64, amount int64, note string) error {
 	if amount <= 0 {
 		return fmt.Errorf("amount must be positive")
 	}
@@ -99,12 +100,32 @@ func GrantCashTopUp(ctx context.Context, db *sql.DB, pay paymentTxInserter, driv
 // ApplyTripCommission records internal commission accrual, offsets against promo then cash, writes ledger rows,
 // and optionally inserts a legacy payments row for admin exports. Does not represent bank settlement.
 // Skipped when infiniteBalanceMode is true (no deduction, no commission ledger for that trip).
-func ApplyTripCommission(ctx context.Context, db *sql.DB, pay paymentTxInserter, driverID int64, tripID string, fareAmount, commission int64, percent int, infiniteBalanceMode bool) error {
+func ApplyTripCommission(ctx context.Context, db *sql.DB, pay PaymentTXInserter, driverID int64, tripID string, fareAmount, commission int64, percent int, infiniteBalanceMode bool) error {
+	if infiniteBalanceMode || commission <= 0 {
+		return nil
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := ApplyTripCommissionInTx(ctx, tx, db, pay, driverID, tripID, fareAmount, commission, percent, infiniteBalanceMode); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ApplyTripCommissionInTx is ApplyTripCommission without starting/committing a transaction.
+// Reads driver balances from tx so promo/referral updates in the same transaction are visible.
+func ApplyTripCommissionInTx(ctx context.Context, tx *sql.Tx, db *sql.DB, pay PaymentTXInserter, driverID int64, tripID string, fareAmount, commission int64, percent int, infiniteBalanceMode bool) error {
+	if testSimulateCommissionError != nil {
+		return testSimulateCommissionError
+	}
 	if infiniteBalanceMode || commission <= 0 {
 		return nil
 	}
 	var promoBal, cashBal int64
-	if err := db.QueryRowContext(ctx, `SELECT COALESCE(promo_balance,0), COALESCE(cash_balance,0) FROM drivers WHERE user_id = ?1`, driverID).Scan(&promoBal, &cashBal); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(promo_balance,0), COALESCE(cash_balance,0) FROM drivers WHERE user_id = ?1`, driverID).Scan(&promoBal, &cashBal); err != nil {
 		return err
 	}
 	fromPromo := commission
@@ -118,24 +139,22 @@ func ApplyTripCommission(ctx context.Context, db *sql.DB, pay paymentTxInserter,
 	}
 	uncollected := rem - fromCash
 
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-
 	meta, _ := json.Marshal(map[string]interface{}{
-		"commission_so_m":    commission,
-		"fare_so_m":          fareAmount,
-		"percent":            percent,
-		"promo_offset_so_m":  fromPromo,
-		"cash_offset_so_m":   fromCash,
-		"uncollected_so_m":   uncollected,
-		"internal_accrual":   true,
+		"commission_so_m":     commission,
+		"fare_so_m":           fareAmount,
+		"percent":             percent,
+		"promo_offset_so_m":   fromPromo,
+		"cash_offset_so_m":    fromCash,
+		"uncollected_so_m":    uncollected,
+		"internal_accrual":    true,
 		"not_cash_settlement": true,
 	})
 	metaStr := string(meta)
 	refTrip := "trip"
+	// One ledger row per (driver_id, reference_type, reference_id); distinguish accrual vs bucket offsets.
+	refAccrual := tripID + ":" + models.LedgerEntryCommissionAccrued
+	refPromoOff := tripID + ":" + models.LedgerEntryPromoAppliedToCommission
+	refCashOff := tripID + ":" + models.LedgerEntryCashAppliedToCommission
 	ledger := repositories.NewDriverLedgerRepository(db)
 	accrualNote := "Internal platform fee accrued on trip (not a bank payout; offset via promo/cash buckets below)."
 	if err := ledger.InsertTx(ctx, tx, &models.DriverLedgerEntry{
@@ -144,7 +163,7 @@ func ApplyTripCommission(ctx context.Context, db *sql.DB, pay paymentTxInserter,
 		EntryType:     models.LedgerEntryCommissionAccrued,
 		Amount:        0,
 		ReferenceType: &refTrip,
-		ReferenceID:   &tripID,
+		ReferenceID:   &refAccrual,
 		Note:          &accrualNote,
 		MetadataJSON:  &metaStr,
 	}); err != nil {
@@ -158,7 +177,7 @@ func ApplyTripCommission(ctx context.Context, db *sql.DB, pay paymentTxInserter,
 			EntryType:     models.LedgerEntryPromoAppliedToCommission,
 			Amount:        -fromPromo,
 			ReferenceType: &refTrip,
-			ReferenceID:   &tripID,
+			ReferenceID:   &refPromoOff,
 			Note:          &pn,
 		}); err != nil {
 			return err
@@ -172,7 +191,7 @@ func ApplyTripCommission(ctx context.Context, db *sql.DB, pay paymentTxInserter,
 			EntryType:     models.LedgerEntryCashAppliedToCommission,
 			Amount:        -fromCash,
 			ReferenceType: &refTrip,
-			ReferenceID:   &tripID,
+			ReferenceID:   &refCashOff,
 			Note:          &cn,
 		}); err != nil {
 			return err
@@ -190,7 +209,6 @@ func ApplyTripCommission(ctx context.Context, db *sql.DB, pay paymentTxInserter,
 		deltaPromo, deltaCash, driverID); err != nil {
 		return err
 	}
-	// Legacy admin payments list: commission magnitude (existing dashboards); not a payout record.
 	legacyNote := "Internal commission accrual offset against driver wallets (promo/cash); not a bank settlement."
 	tripCopy := tripID
 	if pay != nil {
@@ -204,7 +222,7 @@ func ApplyTripCommission(ctx context.Context, db *sql.DB, pay paymentTxInserter,
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 func strPtr(s string) *string {

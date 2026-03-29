@@ -165,6 +165,9 @@ func grantFirstThreeTripPromoInTx(ctx context.Context, tx *sql.Tx, db *sql.DB, d
 	if tripID == "" {
 		return false, 0, ErrEmptyTripID
 	}
+	if testSimulatePromoGrantError != nil {
+		return false, 0, testSimulatePromoGrantError
+	}
 	finishedTripCount, err := FinishedTripCountAfterCompletingTrip(ctx, tx, driverUserID, tripID)
 	if err != nil {
 		log.Printf("PROMO_CHECK driver_user_id=%d trip_id=%s computed_count=- err=%v", driverUserID, tripID, err)

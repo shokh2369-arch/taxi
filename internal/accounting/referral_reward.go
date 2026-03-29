@@ -123,6 +123,9 @@ func grantReferralRewardInTx(ctx context.Context, tx *sql.Tx, db *sql.DB, referr
 	if tripID == "" {
 		return out, ErrEmptyTripID
 	}
+	if testSimulateReferralGrantError != nil {
+		return ReferralRewardResult{Reason: ReferralRewardReasonDBError}, testSimulateReferralGrantError
+	}
 
 	var tripRowDriver int64
 	err := tx.QueryRowContext(ctx, `

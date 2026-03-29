@@ -10,6 +10,37 @@ import (
 	"taxi-mvp/internal/domain"
 )
 
+// grantTripFinishPromosAndReferralInTx runs first-3 promo + referral inside tx. Caller must have set trip FINISHED.
+func grantTripFinishPromosAndReferralInTx(ctx context.Context, tx *sql.Tx, db *sql.DB, tripDriverUserID int64, tripID string) (firstThreeGranted bool, firstThreeTripNum int, ref ReferralRewardResult, err error) {
+	tripID = strings.TrimSpace(tripID)
+	if tripID == "" {
+		return false, 0, ReferralRewardResult{Reason: ReferralRewardReasonEmptyTripID}, ErrEmptyTripID
+	}
+	referredDriverUserID := tripDriverUserID
+	firstThreeGranted, firstThreeTripNum, err = grantFirstThreeTripPromoInTx(ctx, tx, db, tripDriverUserID, tripID)
+	if err != nil {
+		return false, 0, ReferralRewardResult{Reason: ReferralRewardReasonDBError}, err
+	}
+	ref, err = grantReferralRewardInTx(ctx, tx, db, referredDriverUserID, tripID)
+	if err != nil {
+		return firstThreeGranted, firstThreeTripNum, ref, err
+	}
+	return firstThreeGranted, firstThreeTripNum, ref, nil
+}
+
+// ExecuteTripFinishEffectsInTx runs promo, referral, and commission inside an existing transaction.
+// Caller must have updated the trip to FINISHED in the same transaction first.
+func ExecuteTripFinishEffectsInTx(ctx context.Context, tx *sql.Tx, db *sql.DB, pay PaymentTXInserter, tripDriverUserID int64, tripID string, fareAmount, commission int64, commissionPercent int, infiniteBalance bool) (firstThreeGranted bool, firstThreeTripNum int, ref ReferralRewardResult, err error) {
+	g, n, ref, err := grantTripFinishPromosAndReferralInTx(ctx, tx, db, tripDriverUserID, tripID)
+	if err != nil {
+		return false, 0, ReferralRewardResult{Reason: ReferralRewardReasonDBError}, err
+	}
+	if err := ApplyTripCommissionInTx(ctx, tx, db, pay, tripDriverUserID, tripID, fareAmount, commission, commissionPercent, infiniteBalance); err != nil {
+		return g, n, ref, err
+	}
+	return g, n, ref, nil
+}
+
 // GrantTripFinishPromosAndReferral runs first-3-trip promo and referral reward in a single DB transaction
 // after the trip row is already FINISHED (separate commit from TripRepo.UpdateToFinished).
 func GrantTripFinishPromosAndReferral(ctx context.Context, db *sql.DB, tripDriverUserID int64, tripID string) (firstThreeGranted bool, firstThreeTripNum int, ref ReferralRewardResult, err error) {
@@ -43,16 +74,11 @@ func GrantTripFinishPromosAndReferral(ctx context.Context, db *sql.DB, tripDrive
 		return false, 0, ReferralRewardResult{Reason: ReferralRewardReasonDBError}, fmt.Errorf("trip not FINISHED")
 	}
 
-	referredDriverUserID := tripDriverUserID
-	log.Printf("TRIP_FINISH_GRANTS_BEGIN trip_id=%s trip_driver_user_id=%d referral_user_id=%d", tripID, tripDriverUserID, referredDriverUserID)
+	log.Printf("TRIP_FINISH_GRANTS_BEGIN trip_id=%s trip_driver_user_id=%d referral_user_id=%d", tripID, tripDriverUserID, tripDriverUserID)
 
-	firstThreeGranted, firstThreeTripNum, err = grantFirstThreeTripPromoInTx(ctx, tx, db, tripDriverUserID, tripID)
+	firstThreeGranted, firstThreeTripNum, ref, err = grantTripFinishPromosAndReferralInTx(ctx, tx, db, tripDriverUserID, tripID)
 	if err != nil {
 		return false, 0, ReferralRewardResult{Reason: ReferralRewardReasonDBError}, err
-	}
-	ref, err = grantReferralRewardInTx(ctx, tx, db, referredDriverUserID, tripID)
-	if err != nil {
-		return firstThreeGranted, firstThreeTripNum, ref, err
 	}
 	if err := tx.Commit(); err != nil {
 		return false, 0, ReferralRewardResult{Reason: ReferralRewardReasonDBError}, err
