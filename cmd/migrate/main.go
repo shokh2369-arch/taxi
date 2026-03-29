@@ -14,6 +14,7 @@ import (
 	"github.com/pressly/goose/v3"
 
 	"taxi-mvp/internal/db/legalrepair"
+	"taxi-mvp/internal/db/legalfingerrepair"
 	"taxi-mvp/internal/db/ledgerrepair"
 )
 
@@ -68,6 +69,9 @@ func main() {
 		}
 		if err := ledgerrepair.Ensure(ctx, db); err != nil {
 			log.Fatalf("driver_ledger schema repair: %v", err)
+		}
+		if err := legalfingerrepair.Ensure(ctx, db); err != nil {
+			log.Fatalf("drivers legal fingerprint column repair: %v", err)
 		}
 		log.Println("migrations up: ok")
 	} else {

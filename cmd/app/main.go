@@ -18,6 +18,7 @@ import (
 	"taxi-mvp/internal/config"
 	"taxi-mvp/internal/db"
 	"taxi-mvp/internal/db/legalrepair"
+	"taxi-mvp/internal/db/legalfingerrepair"
 	"taxi-mvp/internal/db/ledgerrepair"
 	"taxi-mvp/internal/server"
 	"taxi-mvp/internal/repositories"
@@ -41,6 +42,9 @@ func main() {
 	}
 	if err := ledgerrepair.Ensure(context.Background(), database); err != nil {
 		log.Fatalf("driver_ledger schema repair: %v", err)
+	}
+	if err := legalfingerrepair.Ensure(context.Background(), database); err != nil {
+		log.Fatalf("drivers legal fingerprint column repair: %v", err)
 	}
 	if err := accounting.BackfillMissingSignupPromos(context.Background(), database); err != nil {
 		log.Printf("accounting: signup promo backfill: %v", err)
