@@ -330,7 +330,9 @@ func sendOfflineButLiveReminderIfNeeded(bot *tgbotapi.BotAPI, db *sql.DB, chatID
 // liveLocationButtonInstructionCooldownMin: do not resend the same instruction if sent this recently (button press spam).
 const liveLocationButtonInstructionCooldownMin = 3
 
-// handleLiveLocationInstruction runs when the driver presses the live-share reply button. If already sharing live, ignore. Else send instruction once per cooldown to avoid spam.
+// handleLiveLocationInstruction runs when the driver presses the live-share reply button.
+// If already sharing live, sends a short ack. During instruction cooldown, sends a brief reminder instead of silence.
+// Otherwise sends the illustrated / text guide (throttled full resend via live_location_hint_last_sent_at).
 func handleLiveLocationInstruction(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) {
 	ctx := context.Background()
 	var userID int64
@@ -350,12 +352,24 @@ func handleLiveLocationInstruction(bot *tgbotapi.BotAPI, db *sql.DB, chatID, tel
 		return
 	}
 	if isDriverSharingLiveLocation(ctx, db, userID) {
+		kb := getDriverKeyboard(db, userID)
+		m := tgbotapi.NewMessage(chatID, "✅ Jonli lokatsiya ulangan. Pozitsiyangiz avtomatik yangilanmoqda.")
+		m.ReplyMarkup = kb
+		if _, err := bot.Send(m); err != nil {
+			log.Printf("driver: send live-already-sharing ack: %v", err)
+		}
 		return
 	}
 	var lastHint sql.NullString
 	_ = db.QueryRowContext(ctx, `SELECT live_location_hint_last_sent_at FROM drivers WHERE user_id = ?1`, userID).Scan(&lastHint)
 	if lastHint.Valid && lastHint.String != "" {
 		if t, err := parseUTC(lastHint.String); err == nil && time.Since(t) < liveLocationButtonInstructionCooldownMin*time.Minute {
+			kb := getDriverKeyboard(db, userID)
+			m := tgbotapi.NewMessage(chatID, "📍 Qo‘llanma yuqorida. Jonli lokatsiyani 📎 → Geopozitsiya → «Share Live Location» orqali ulang.")
+			m.ReplyMarkup = kb
+			if _, err := bot.Send(m); err != nil {
+				log.Printf("driver: send live-location cooldown ack: %v", err)
+			}
 			return
 		}
 	}
@@ -666,7 +680,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 	}
 
 	// Handle keyboard button presses first so they always work (e.g. Live Location instruction even during registration).
-	switch msg.Text {
+	switch strings.TrimSpace(msg.Text) {
 	case btnLiveLocation:
 		handleLiveLocationInstruction(bot, db, chatID, telegramID)
 		return
