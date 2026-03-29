@@ -13,6 +13,7 @@ import (
 	"taxi-mvp/internal/config"
 	"taxi-mvp/internal/domain"
 	"taxi-mvp/internal/driverloc"
+	"taxi-mvp/internal/legal"
 	"taxi-mvp/internal/logger"
 	"taxi-mvp/internal/repositories"
 	"taxi-mvp/internal/utils"
@@ -424,7 +425,8 @@ func (s *TripService) FinishTrip(ctx context.Context, tripID string, driverUserI
 			} else {
 				liveRecent = false
 			}
-			if !liveRecent {
+			legalOK := legal.NewService(s.db).DriverHasActiveLegal(ctx, driverUserID)
+			if !liveRecent || !legalOK {
 				_, _ = s.db.ExecContext(ctx, `UPDATE drivers SET is_active = 0 WHERE user_id = ?1`, driverUserID)
 			}
 		} else {

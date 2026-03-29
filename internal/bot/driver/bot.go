@@ -127,15 +127,21 @@ func sendDriverAgreement(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64) {
 	}
 }
 
-// driverLegalAllowsLiveSharing: approved drivers need full active legal; unapproved need active driver_terms only.
+// driverLegalAllowsLiveSharing is true only when the driver has accepted all currently active legal documents
+// (driver_terms, user_terms, privacy_policy at active versions). Live location must never count as "online" without this.
 func driverLegalAllowsLiveSharing(ctx context.Context, db *sql.DB, userID int64) bool {
-	var verificationStatus sql.NullString
-	_ = db.QueryRowContext(ctx, `SELECT verification_status FROM drivers WHERE user_id = ?1`, userID).Scan(&verificationStatus)
-	svc := legal.NewService(db)
-	if verificationStatus.Valid && strings.TrimSpace(verificationStatus.String) == "approved" {
-		return svc.DriverHasActiveLegal(ctx, userID)
-	}
-	return svc.DriverHasDriverTermsOnly(ctx, userID)
+	return legal.NewService(db).DriverHasActiveLegal(ctx, userID)
+}
+
+// blockDriverLiveForMissingLegal clears live/online flags, queues legal relive, sends the latest oferta, refreshes the pin.
+func blockDriverLiveForMissingLegal(ctx context.Context, bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, chatID, userID int64) {
+	_, _ = db.ExecContext(ctx, `
+		UPDATE drivers SET is_active = 0, live_location_active = 0, last_live_location_at = NULL, manual_offline = 0
+		WHERE user_id = ?1`, userID)
+	_ = legal.NewService(db).SetPendingResume(ctx, userID, resumeDriverRelive, "")
+	sendDriverAgreementForDriver(bot, db, chatID, userID, true, false)
+	send(bot, chatID, "⚠️ Joriy shartnomani qabul qilmasdan jonli lokatsiya orqali onlayn bo‘lish mumkin emas. Quyidagi matnni o‘qing, «✅ Qabul qilaman» ni bosing, so‘ng lokatsiyani qayta ulang.")
+	sendOrUpdatePinnedStatus(bot, db, cfg, chatID, userID)
 }
 
 func driverHasAcceptedAgreement(ctx context.Context, db *sql.DB, userID int64) bool {
@@ -1377,8 +1383,7 @@ func handleLiveLocationUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Conf
 			return
 		}
 		if !driverLegalAllowsLiveSharing(ctx, db, userID) {
-			send(bot, chatID, "⚠️ Avval shartnomani qabul qilishingiz kerak.")
-			sendDriverAgreementForDriver(bot, db, chatID, userID, true, false)
+			blockDriverLiveForMissingLegal(ctx, bot, db, cfg, chatID, userID)
 			return
 		}
 		_, _ = db.ExecContext(ctx, `
@@ -1404,9 +1409,7 @@ func handleLiveLocationUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Conf
 		return
 	}
 	if !driverLegalAllowsLiveSharing(ctx, db, userID) {
-		_ = legal.NewService(db).SetPendingResume(ctx, userID, resumeDriverRelive, "")
-		sendDriverAgreementForDriver(bot, db, chatID, userID, true, false)
-		send(bot, chatID, "⚠️ Avval shartnomani qabul qilishingiz kerak.")
+		blockDriverLiveForMissingLegal(ctx, bot, db, cfg, chatID, userID)
 		return
 	}
 	var verificationStatus sql.NullString

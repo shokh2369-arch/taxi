@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"taxi-mvp/internal/legal"
 	"taxi-mvp/internal/models"
 	"taxi-mvp/internal/repositories"
 )
@@ -47,7 +48,8 @@ func runOnlineBonusAccrual(ctx context.Context, db *sql.DB, driverBot *tgbotapi.
 		JOIN users u ON u.id = d.user_id
 		WHERE COALESCE(d.live_location_active, 0) = 1
 		  AND d.last_live_location_at IS NOT NULL
-		  AND d.last_live_location_at >= ?1`, cutoff)
+		  AND d.last_live_location_at >= ?1
+		  AND `+legal.SQLDriverDispatchLegalOK, cutoff)
 	if err != nil {
 		log.Printf("online_bonus: query: %v", err)
 		return

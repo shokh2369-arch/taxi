@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"taxi-mvp/internal/config"
 	"taxi-mvp/internal/domain"
+	"taxi-mvp/internal/legal"
 )
 
 // AssignmentService assigns requests to drivers and runs the expiry worker.
@@ -29,6 +31,9 @@ func NewAssignmentService(db *sql.DB, riderBot, driverBot *tgbotapi.BotAPI, cfg 
 // TryAssign atomically assigns the request to the driver. Only one driver can accept (race-safe).
 // Returns (true, tripID, nil) if assigned; (false, "", nil) if another driver already accepted.
 func (s *AssignmentService) TryAssign(ctx context.Context, requestID string, driverUserID int64) (assigned bool, tripID string, err error) {
+	if !legal.NewService(s.db).DriverHasActiveLegal(ctx, driverUserID) {
+		return false, "", fmt.Errorf("assignment: driver %d missing active legal acceptances", driverUserID)
+	}
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE ride_requests
 		SET status = ?1, assigned_driver_user_id = ?2, assigned_at = datetime('now')
