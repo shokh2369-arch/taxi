@@ -1453,15 +1453,18 @@ func handleLiveLocationUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Conf
 	}
 
 	var prevLat, prevLng sql.NullFloat64
-	var lastSeenAt, lastLiveAt sql.NullString
+	var lastLiveAt sql.NullString
 	var prevLiveActive int
 	_ = db.QueryRowContext(ctx, `
-		SELECT last_lat, last_lng, last_seen_at, last_live_location_at, COALESCE(live_location_active, 0)
+		SELECT last_lat, last_lng, last_live_location_at, COALESCE(live_location_active, 0)
 		FROM drivers WHERE user_id = ?1`,
-		userID).Scan(&prevLat, &prevLng, &lastSeenAt, &lastLiveAt, &prevLiveActive)
+		userID).Scan(&prevLat, &prevLng, &lastLiveAt, &prevLiveActive)
+	// Staleness must use last_live_location_at, not last_seen_at: POST /driver/location (Mini App)
+	// updates last_seen_at without touching last_live_location_at, which would make every Telegram
+	// edit look "older" than DB and skip coordinate updates / trip_point incorrectly.
 	stale := false
-	if lastSeenAt.Valid && lastSeenAt.String != "" {
-		if parsed, err := parseUTC(lastSeenAt.String); err == nil && !updateTime.After(parsed) {
+	if lastLiveAt.Valid && lastLiveAt.String != "" {
+		if parsed, err := parseUTC(lastLiveAt.String); err == nil && !updateTime.After(parsed) {
 			log.Printf("driver: live_location ignored stale user_id=%d", userID)
 			stale = true
 		}
