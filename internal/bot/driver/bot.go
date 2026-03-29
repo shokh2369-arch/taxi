@@ -708,7 +708,14 @@ func handleStart(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, chatID, t
 		send(bot, chatID, "Xatolik. Qayta urinib ko'ring.")
 		return
 	}
-	// Driver referral: no reward on registration; full reward only after referred driver completes 5 trips and is active with live location (see trip_service FinishTrip).
+	// Driver referral row for accounting (reward on trip FINISH after 3 finished trips; see accounting.TryGrantReferralReward).
+	var rb sql.NullString
+	_ = db.QueryRowContext(ctx, `SELECT referred_by FROM users WHERE id = ?1`, userID).Scan(&rb)
+	if rb.Valid && strings.TrimSpace(rb.String) != "" {
+		if err := accounting.RecordDriverReferral(ctx, db, userID, rb.String); err != nil {
+			log.Printf("driver: record driver_referrals user_id=%d: %v", userID, err)
+		}
+	}
 	_, err = db.ExecContext(ctx, `
 		INSERT INTO drivers (user_id, is_active) VALUES (?1, 0)
 		ON CONFLICT (user_id) DO NOTHING`,
@@ -1206,12 +1213,18 @@ func handleApplicationText(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID 
 }
 
 // rewardReferrerOnApplicationComplete notifies the referrer when a referred driver completes registration (docs submitted).
-// It does NOT add any balance; actual referral reward is paid in TripService.FinishTrip after 5 successful trips with live location.
+// It does NOT add any balance; referral reward is granted in TripService.FinishTrip after 3 FINISHED trips (promo + ledger).
 func rewardReferrerOnApplicationComplete(bot *tgbotapi.BotAPI, db *sql.DB, newDriverUserID int64) {
 	ctx := context.Background()
 	var referredBy sql.NullString
+	_ = db.QueryRowContext(ctx, `SELECT referred_by FROM users WHERE id = ?1`, newDriverUserID).Scan(&referredBy)
+	if referredBy.Valid && strings.TrimSpace(referredBy.String) != "" {
+		if err := accounting.RecordDriverReferral(ctx, db, newDriverUserID, referredBy.String); err != nil {
+			log.Printf("driver: record driver_referrals user_id=%d: %v", newDriverUserID, err)
+		}
+	}
 	var stage1Paid int
-	if err := db.QueryRowContext(ctx, `SELECT referred_by, COALESCE(referral_stage1_reward_paid, 0) FROM users WHERE id = ?1`, newDriverUserID).Scan(&referredBy, &stage1Paid); err != nil || !referredBy.Valid || referredBy.String == "" || stage1Paid != 0 {
+	if err := db.QueryRowContext(ctx, `SELECT COALESCE(referral_stage1_reward_paid, 0) FROM users WHERE id = ?1`, newDriverUserID).Scan(&stage1Paid); err != nil || !referredBy.Valid || referredBy.String == "" || stage1Paid != 0 {
 		return
 	}
 	var referrerUserID, referrerTelegramID int64
@@ -1223,7 +1236,7 @@ func rewardReferrerOnApplicationComplete(bot *tgbotapi.BotAPI, db *sql.DB, newDr
 	var newDriverName string
 	_ = db.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(TRIM(name), ''), 'Yangi haydovchi') FROM users WHERE id = ?1`, newDriverUserID).Scan(&newDriverName)
 	if referrerTelegramID != 0 && bot != nil {
-		msg := fmt.Sprintf("🎉 Do'stingiz %s taklif havolangiz orqali haydovchi bo'lib ro'yxatdan o'tdi.\n\nU 5 ta safar bajargandan keyin siz\n100 000 so'm referral bonus olasiz.", newDriverName)
+		msg := fmt.Sprintf("🎉 Do'stingiz %s taklif havolangiz orqali haydovchi bo'lib ro'yxatdan o'tdi.\n\nU 3 ta safarni yakunlagach sizga\n20 000 promo kredit beriladi (real pul emas).", newDriverName)
 		if _, err := bot.Send(tgbotapi.NewMessage(referrerTelegramID, msg)); err != nil {
 			log.Printf("driver: notify referrer: %v", err)
 		}
@@ -1260,7 +1273,7 @@ func handleReferral(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) 
 		botUsername = bot.Self.UserName
 	}
 	shareLink := utils.ReferralLink(botUsername, code)
-	text := "🎁 Haydovchi taklif qiling\n\nTaklif qilgan har bir haydovchi uchun\n100 000 so'm bonus olasiz\n(5 ta safar bajargandan keyin)\n\nSizning referral havolangiz:\n" + shareLink
+	text := "🎁 Haydovchi taklif qiling\n\nHar bir taklif qilingan haydovchi\n3 ta safarni yakunlagach\nsizga +20 000 promo kredit\n(real pul emas, naqdlashtirilmaydi)\n\nSizning referral havolangiz:\n" + shareLink
 	kb := getDriverKeyboard(db, userID)
 	m := tgbotapi.NewMessage(chatID, text)
 	m.ReplyMarkup = kb
@@ -1299,9 +1312,9 @@ func handleBonuslar(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) 
 	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE referred_by = ?1 AND COALESCE(referral_stage1_reward_paid, 0) = 1`, code).Scan(&stage1Count)
 	var stage2Count int64
 	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE referred_by = ?1 AND COALESCE(referral_stage2_reward_paid, 0) = 1`, code).Scan(&stage2Count)
-	// Stage1 no longer pays money; only stage2 (100k after 5 trips) contributes to earnings.
-	totalEarnings := stage2Count * 100000
-	text := fmt.Sprintf("📊 Referral statistikasi\n\nTaklif qilgan haydovchilar: %d\nReferral bonus: %d so'm", referredCount, totalEarnings)
+	// stage2_count = referred drivers for whom inviter referral reward was granted (3 finished trips).
+	totalEarnings := stage2Count * accounting.ReferralRewardPromoSoM
+	text := fmt.Sprintf("📊 Referral statistikasi\n\nTaklif qilgan haydovchilar: %d\nPromo referral jami: %d so'm", referredCount, totalEarnings)
 	text += "\n\n🔗 Taklif havolasi: /referral"
 	kb := getDriverKeyboard(db, userID)
 	m := tgbotapi.NewMessage(chatID, text)

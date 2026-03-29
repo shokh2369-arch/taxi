@@ -47,6 +47,7 @@ func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc
 	r.POST("/trip/cancel/driver", tryDriverID, driverAuth, handlers.TripCancelDriver(db, tripSvc))
 	r.GET("/driver/referral-link", tryDriverID, driverAuth, handlers.DriverReferralLink(db, driverBot))
 	r.GET("/driver/promo-program", tryDriverID, driverAuth, handlers.DriverPromoProgram(db))
+	r.GET("/driver/referral-status", tryDriverID, driverAuth, handlers.DriverReferralStatus(db))
 	r.POST("/trip/cancel/rider", riderAuth, handlers.TripCancelRider(db, tripSvc))
 	r.GET("/rider/referral-link", riderAuth, handlers.RiderReferralLink(db, riderBot))
 

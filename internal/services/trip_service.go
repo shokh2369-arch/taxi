@@ -309,34 +309,18 @@ func (s *TripService) FinishTrip(ctx context.Context, tripID string, driverUserI
 	}
 	firstThreeGranted := false
 	firstThreeTripNum := 0
-	// Driver referral: reward (100000 so'm total) only after referred driver completes 5 trips AND is active with live location (anti-fake).
-	var referredBy sql.NullString
-	var stage2Paid int
-	_ = s.db.QueryRowContext(ctx, `SELECT referred_by, COALESCE(referral_stage2_reward_paid, 0) FROM users WHERE id = ?1`, driverUserID).Scan(&referredBy, &stage2Paid)
-	if referredBy.Valid && referredBy.String != "" && stage2Paid == 0 {
-		var finishedCount int64
-		_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM trips WHERE driver_user_id = ?1 AND status = ?2`, driverUserID, domain.TripStatusFinished).Scan(&finishedCount)
-		if finishedCount >= 5 {
-			// Require referred driver to be active and sharing live location (within 90s).
-			var isActive, liveActive int
-			var lastLiveAt sql.NullString
-			_ = s.db.QueryRowContext(ctx, `SELECT COALESCE(d.is_active, 0), COALESCE(d.live_location_active, 0), d.last_live_location_at FROM drivers d WHERE d.user_id = ?1`, driverUserID).Scan(&isActive, &liveActive, &lastLiveAt)
-			liveRecent := false
-			if liveActive == 1 && lastLiveAt.Valid && lastLiveAt.String != "" {
-				if t, err := time.ParseInLocation("2006-01-02 15:04:05", lastLiveAt.String, time.UTC); err == nil && time.Since(t) <= 90*time.Second {
-					liveRecent = true
-				}
-			}
-			if isActive == 1 && liveRecent {
-				if err := accounting.TryGrantReferrerStage2Promo(ctx, s.db, driverUserID, referredBy.String); err != nil {
-					log.Printf("trip_service: referrer stage2 promo (driver=%d): %v", driverUserID, err)
-				}
-			}
-		}
-	}
-	// First 3 finished trips: +10k promo each (idempotent per trip via driver_ledger).
+	refRewardRes := accounting.ReferralRewardResult{}
+
 	var finishedCount int64
 	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM trips WHERE driver_user_id = ?1 AND status = ?2`, driverUserID, domain.TripStatusFinished).Scan(&finishedCount)
+
+	var refErr error
+	refRewardRes, refErr = accounting.TryGrantReferralReward(ctx, s.db, driverUserID, finishedCount)
+	if refErr != nil {
+		log.Printf("trip_service: referral reward (referred=%d): %v", driverUserID, refErr)
+		refRewardRes = accounting.ReferralRewardResult{Reason: accounting.ReferralRewardReasonDBError}
+	}
+	// First 3 finished trips: +10k promo each (idempotent per trip via driver_ledger).
 	if g, tn, err := accounting.TryGrantFirstThreeTripPromo(ctx, s.db, driverUserID, tripID, finishedCount); err != nil {
 		log.Printf("trip_service: first_3_trip promo (driver=%d trip=%s): %v", driverUserID, tripID, err)
 	} else {
@@ -427,6 +411,12 @@ func (s *TripService) FinishTrip(ctx context.Context, tripID string, driverUserI
 		// Run after a short delay so mini app location update can land first; then we skip reminder if last_seen_at was recently updated.
 		if s.OnDriverStatusUpdate != nil {
 			s.OnDriverStatusUpdate(driverTelegramID)
+		}
+	}
+	if refRewardRes.Granted && s.driverBot != nil && refRewardRes.InviterTelegramID != 0 {
+		body := accounting.ReferralRewardInviterTelegramMessage(refRewardRes.UpdatedPromoBalance)
+		if _, err := s.driverBot.Send(tgbotapi.NewMessage(refRewardRes.InviterTelegramID, body)); err != nil {
+			log.Printf("trip_service: notify inviter referral reward: %v", err)
 		}
 	}
 	if s.hub != nil {

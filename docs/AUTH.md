@@ -12,7 +12,7 @@
 | **internal/handlers/trip.go** | Trip handlers take `db`; get `User` from context; use `auth.AuthorizeTripAccess`; call services with `u.UserID` (no driver_id/rider_id from body). Request bodies: only `trip_id`. |
 | **internal/handlers/driver_location.go** | Get driver from context; body only `lat`, `lng`, `accuracy` (no `driver_id`). |
 | **internal/ws/handler.go** | `ServeWsWithAuth(hub, db, driverToken, riderToken, w, r)` — before upgrade: read initData, verify with either token, resolve user, `AuthorizeTripAccess` for trip_id; 401/403 on failure; then upgrade and register. |
-| **internal/server/server.go** | Apply `tryDriverID` then `driverAuth` to POST /driver/location, /trip/start, /trip/finish, /trip/cancel/driver, GET /driver/referral-link, GET /driver/promo-program so Mini App requests with `X-Driver-Id` are recognized; `riderAuth` to POST /trip/cancel/rider; GET /ws → `ServeWsWithAuth`. CORS allows `X-Telegram-Init-Data` and `X-Driver-Id`. |
+| **internal/server/server.go** | Apply `tryDriverID` then `driverAuth` to POST /driver/location, /trip/start, /trip/finish, /trip/cancel/driver, GET /driver/referral-link, GET /driver/promo-program, GET /driver/referral-status so Mini App requests with `X-Driver-Id` are recognized; `riderAuth` to POST /trip/cancel/rider; GET /ws → `ServeWsWithAuth`. CORS allows `X-Telegram-Init-Data` and `X-Driver-Id`. |
 
 ## 2. Helper functions
 
@@ -28,6 +28,7 @@
 - `POST /trip/cancel/rider` — rider auth; body `{ "trip_id" }`.
 - `POST /driver/location` — driver auth; body `{ "lat", "lng", "accuracy?" }`.
 - `GET /driver/promo-program` — driver auth; JSON promo program status (`promo_balance`, signup flag, first-three trip bonus progress).
+- `GET /driver/referral-status` — driver auth; JSON for referred drivers: inviter id, finished trip count, threshold 3, whether inviter reward was already granted.
 - `GET /ws?trip_id=...` — initData required (header or query); only rider or assigned driver of the trip may connect.
 
 ## 4. Example request flow
