@@ -311,20 +311,24 @@ func (s *TripService) FinishTrip(ctx context.Context, tripID string, driverUserI
 	firstThreeTripNum := 0
 	refRewardRes := accounting.ReferralRewardResult{}
 
-	var finishedCount int64
-	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM trips WHERE driver_user_id = ?1 AND status = ?2`, driverUserID, domain.TripStatusFinished).Scan(&finishedCount)
-
+	finishedCount, err := accounting.FinishedTripCountAfterCompletingTrip(ctx, s.db, driverUserID, tripID)
+	if err != nil {
+		log.Printf("trip_service: finished trip count primary (driver=%d trip=%s): %v", driverUserID, tripID, err)
+		_ = s.db.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM trips WHERE driver_user_id = ?1 AND status = ?2`,
+			driverUserID, domain.TripStatusFinished).Scan(&finishedCount)
+	}
+	// Order: first-3-trip promo → referral → commission (counts are for THIS finish; idempotent per trip / per referred user).
+	if g, tn, err := accounting.TryGrantFirstThreeTripPromo(ctx, s.db, driverUserID, tripID, finishedCount); err != nil {
+		log.Printf("trip_service: first_3_trip promo (driver=%d trip=%s): %v", driverUserID, tripID, err)
+	} else {
+		firstThreeGranted, firstThreeTripNum = g, tn
+	}
 	var refErr error
 	refRewardRes, refErr = accounting.TryGrantReferralReward(ctx, s.db, driverUserID, finishedCount)
 	if refErr != nil {
 		log.Printf("trip_service: referral reward (referred=%d): %v", driverUserID, refErr)
 		refRewardRes = accounting.ReferralRewardResult{Reason: accounting.ReferralRewardReasonDBError}
-	}
-	// First 3 finished trips: +10k promo each (idempotent per trip via driver_ledger).
-	if g, tn, err := accounting.TryGrantFirstThreeTripPromo(ctx, s.db, driverUserID, tripID, finishedCount); err != nil {
-		log.Printf("trip_service: first_3_trip promo (driver=%d trip=%s): %v", driverUserID, tripID, err)
-	} else {
-		firstThreeGranted, firstThreeTripNum = g, tn
 	}
 	// Internal commission accrual; offset against promo then cash wallet (see driver_ledger); not bank settlement.
 	if s.cfg != nil && fareAmount > 0 {

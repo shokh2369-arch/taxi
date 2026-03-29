@@ -115,6 +115,7 @@ func RecordDriverReferral(ctx context.Context, db *sql.DB, referredUserID int64,
 // Uses users.referral_stage2_reward_paid on the referred user as the idempotency gate (repurposed: inviter payout completed).
 func TryGrantReferralReward(ctx context.Context, db *sql.DB, referredUserID int64, finishedTripCount int64) (ReferralRewardResult, error) {
 	var out ReferralRewardResult
+	// Strict: inviter reward only at 3+ FINISHED trips for this driver (never 1 or 2).
 	if finishedTripCount < ReferralRewardTripN {
 		out.Reason = ReferralRewardReasonNotEnoughTrips
 		return out, nil

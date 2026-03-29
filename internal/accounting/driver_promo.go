@@ -85,6 +85,21 @@ func GetDriverPromoProgress(ctx context.Context, db *sql.DB, driverUserID int64)
 	return GetDriverPromoProgramStatus(ctx, db, driverUserID)
 }
 
+// FinishedTripCountAfterCompletingTrip returns the driver's total number of FINISHED trips right after
+// trip `justFinishedTripID` was committed as FINISHED. Uses (count of other FINISHED trips) + 1 so the
+// value is correct even when a plain COUNT(*) would lag the UPDATE (e.g. libSQL read routing).
+func FinishedTripCountAfterCompletingTrip(ctx context.Context, db *sql.DB, driverUserID int64, justFinishedTripID string) (int64, error) {
+	var others int64
+	err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM trips
+		WHERE driver_user_id = ?1 AND status = ?2 AND id != ?3`,
+		driverUserID, domain.TripStatusFinished, justFinishedTripID).Scan(&others)
+	if err != nil {
+		return 0, err
+	}
+	return others + 1, nil
+}
+
 // TryGrantSignupPromoOnce grants 20_000 promo once on approval (signup_bonus_paid gate). Ledger + metadata source signup_promo.
 func TryGrantSignupPromoOnce(ctx context.Context, db *sql.DB, driverUserID int64) error {
 	tx, err := db.BeginTx(ctx, nil)
