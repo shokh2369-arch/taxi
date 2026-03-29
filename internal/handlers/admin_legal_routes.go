@@ -47,6 +47,8 @@ func registerAdminLegalRoutes(g *gin.RouterGroup, db *sql.DB) {
 		lg.HEAD("/documents", h.documentsHead)
 		lg.GET("/acceptances", h.allAcceptances)
 		lg.HEAD("/acceptances", h.allAcceptancesHead)
+		lg.GET("/missing", h.missingLegal)
+		lg.HEAD("/missing", h.missingLegalHead)
 		lg.GET("/users/:user_id/acceptances", h.userAcceptances)
 		lg.HEAD("/users/:user_id/acceptances", h.userAcceptancesHead)
 	}
@@ -69,6 +71,10 @@ func (h *adminLegalHTTP) userAcceptancesHead(c *gin.Context) {
 }
 
 func (h *adminLegalHTTP) allAcceptancesHead(c *gin.Context) {
+	c.Status(http.StatusOK)
+}
+
+func (h *adminLegalHTTP) missingLegalHead(c *gin.Context) {
 	c.Status(http.StatusOK)
 }
 
@@ -172,6 +178,94 @@ func (h *adminLegalHTTP) issues(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true, "issues": list, "count": len(list)})
+}
+
+// missingLegal lists users missing required acceptances for active document versions.
+// Query actor_type: driver | rider | all (default all). Matches dashboard probes, e.g. ?actor_type=driver
+func (h *adminLegalHTTP) missingLegal(c *gin.Context) {
+	ctx := c.Request.Context()
+	at := strings.TrimSpace(strings.ToLower(c.Query("actor_type")))
+	switch at {
+	case "", "all":
+		at = "all"
+	case "driver", "drivers":
+		at = "driver"
+	case "rider", "riders":
+		at = "rider"
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{
+			"ok":    false,
+			"error": "invalid actor_type; use driver, rider, or all",
+		})
+		return
+	}
+
+	type missRow struct {
+		UserID int64  `json:"user_id"`
+		Role   string `json:"role"`
+	}
+	var list []missRow
+
+	if at == "all" || at == "driver" {
+		rows, qerr := h.db.QueryContext(ctx, `
+			SELECT d.user_id AS id, 'driver' AS role FROM drivers d WHERE 3 > (
+				SELECT COUNT(*) FROM legal_acceptances la `+adminLegalJoin+`
+				WHERE la.user_id = d.user_id
+				AND la.document_type IN ('driver_terms','user_terms','privacy_policy')
+			)
+			ORDER BY id DESC`)
+		if qerr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": qerr.Error()})
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var r missRow
+			if err := rows.Scan(&r.UserID, &r.Role); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
+				return
+			}
+			list = append(list, r)
+		}
+		if err := rows.Err(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
+			return
+		}
+	}
+
+	if at == "all" || at == "rider" {
+		rows, qerr := h.db.QueryContext(ctx, `
+			SELECT u.id, 'rider' AS role FROM users u WHERE u.role = 'rider' AND 2 > (
+				SELECT COUNT(*) FROM legal_acceptances la `+adminLegalJoin+`
+				WHERE la.user_id = u.id
+				AND la.document_type IN ('user_terms','privacy_policy')
+			)
+			ORDER BY id DESC`)
+		if qerr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": qerr.Error()})
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var r missRow
+			if err := rows.Scan(&r.UserID, &r.Role); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
+				return
+			}
+			list = append(list, r)
+		}
+		if err := rows.Err(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": err.Error()})
+			return
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"ok":         true,
+		"actor_type": at,
+		"missing":    list,
+		"count":      len(list),
+	})
 }
 
 func (h *adminLegalHTTP) documents(c *gin.Context) {
