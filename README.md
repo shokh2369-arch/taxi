@@ -7,16 +7,25 @@ Telegram-first taxi aggregator: **rider bot**, **driver bot**, optional **admin 
 ## Contents
 
 1. [Overview](#overview)
-2. [Configuration](#configuration)
-3. [Run locally](#run-locally)
-4. [Database and migrations](#database-and-migrations)
-5. [HTTP API (reference)](#http-api-reference)
-6. [Deployment](#deployment)
-7. [Architecture](#architecture)
-8. [Fare and commission](#fare-and-commission)
-9. [Driver program: promo and referral](#driver-program-promo-and-referral-yettiqanot)
-10. [Manual test checklist](#manual-test-checklist)
-11. [Developer notes](#developer-notes)
+2. [Prerequisites](#prerequisites)
+3. [Configuration](#configuration)
+4. [Run locally](#run-locally)
+5. [Database and migrations](#database-and-migrations)
+6. [HTTP API (reference)](#http-api-reference)
+7. [Deployment](#deployment)
+8. [Architecture](#architecture)
+9. [Fare and commission](#fare-and-commission)
+10. [Driver program: promo and referral](#driver-program-promo-and-referral-yettiqanot)
+11. [Manual test checklist](#manual-test-checklist)
+12. [Developer notes](#developer-notes)
+
+---
+
+## Prerequisites
+
+- **Go:** **1.21+** (see **`go.mod`**; toolchain may pin a newer patch release).
+- **Database:** Turso / libSQL URL + auth token (or compatible SQLite), **not** the default in **`Makefile`** (see [Database and migrations](#database-and-migrations)).
+- **Docker:** optional, for `docker compose` (Docker Compose V2).
 
 ---
 
@@ -76,7 +85,7 @@ Secrets must not be committed. This repo’s `.gitignore` ignores `.env*`.
 docker compose up --build
 ```
 
-Exposes the API (typically **8080**). Set Turso (or local libSQL) variables in `.env`.
+On **Windows** (PowerShell), use **`docker compose`** (with a space). Exposes the API (typically **8080**). Set Turso (or local libSQL) variables in **`.env`**.
 
 ### Migrations first
 
@@ -92,7 +101,7 @@ go run ./cmd/migrate -up
 
 - **Engine:** Turso / libSQL (SQLite-compatible).
 - **Tool:** [goose](https://github.com/pressly/goose); files in **`db/migrations/`**.
-- **Runner:** `go run ./cmd/migrate -up` (or `make migrate-up` if your Makefile defines it).
+- **Runner:** `go run ./cmd/migrate -up` (with **`DATABASE_URL`** / **`TURSO_*`** in **`.env`**). The repo **`Makefile`** exposes **`make migrate-up`** (it loads **`.env`** when present), but its **default `DATABASE_URL`** is a legacy **Postgres** example — **override it** for this project so migrations hit your Turso DB.
 
 **Startup repair** (non-destructive helpers) runs in `cmd/app` for legal schema, **`driver_ledger`** column names, and missing indexes (see **`internal/db/ledgerrepair`**).
 
@@ -274,6 +283,10 @@ Admin routes (drivers, riders, payments, verification) are registered from **`ha
 - **Online** for matching = **Telegram live location** freshness (+ balance + legal + approval).
 - Pinned **status** message is edited when possible; **`/status`** refreshes it.
 - **`driver_ledger`** and **`GET /admin/drivers/:id/ledger`** expose promo vs cash audit.
+
+### Telegram Bot API (message length)
+
+Telegram caps **`sendMessage`** / **`editMessageText`** text at about **4096 characters**. Very long user-visible strings (e.g. stacked notifications, legal text, or AI-generated replies) can fail with errors such as **“output too large.”** Prefer concise copy in trip/promo/referral flows; split or truncate at the application layer if you add verbose content. **Photo captions** use a **shorter** limit (~**1024** characters) — keep captions short or send overflow as separate messages.
 
 ### Schema drift helpers
 
