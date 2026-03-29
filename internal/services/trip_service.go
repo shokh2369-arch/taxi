@@ -70,7 +70,8 @@ func (s *TripService) pickupCoordsForTrip(ctx context.Context, tripID string) (p
 }
 
 // ensureDriverNearPickup checks drivers.last_lat/lng against pickup using fresh Telegram live location (same rules as dispatch).
-func (s *TripService) ensureDriverNearPickup(ctx context.Context, driverUserID int64, pickupLat, pickupLng float64) error {
+// op is a short label for logs (e.g. "mark_arrived", "start_trip").
+func (s *TripService) ensureDriverNearPickup(ctx context.Context, tripID string, driverUserID int64, pickupLat, pickupLng float64, op string) error {
 	maxM := int64(100)
 	if s.cfg != nil && s.cfg.PickupStartMaxMeters > 0 {
 		maxM = int64(s.cfg.PickupStartMaxMeters)
@@ -83,27 +84,39 @@ func (s *TripService) ensureDriverNearPickup(ctx context.Context, driverUserID i
 		FROM drivers WHERE user_id = ?1`, driverUserID).Scan(&lastLat, &lastLng, &lastLive, &liveActive)
 	if err != nil {
 		if err == sql.ErrNoRows {
+			log.Printf("trip_service: pickup_guard_reject op=%s trip_id=%s driver_user_id=%d reason=driver_row_missing", op, tripID, driverUserID)
 			return domain.ErrDriverLocationStale
 		}
+		log.Printf("trip_service: pickup_guard_reject op=%s trip_id=%s driver_user_id=%d reason=driver_load_error detail=%v", op, tripID, driverUserID, err)
 		return err
 	}
 	if liveActive != 1 {
+		log.Printf("trip_service: pickup_guard_reject op=%s trip_id=%s driver_user_id=%d reason=live_location_inactive (live_location_active!=1)", op, tripID, driverUserID)
 		return domain.ErrLiveLocationInactive
 	}
 	if !lastLive.Valid || lastLive.String == "" {
+		log.Printf("trip_service: pickup_guard_reject op=%s trip_id=%s driver_user_id=%d reason=last_live_location_at_missing", op, tripID, driverUserID)
 		return domain.ErrDriverLocationStale
 	}
 	t, perr := parseDriverLiveAtUTC(lastLive.String)
 	if perr != nil {
+		log.Printf("trip_service: pickup_guard_reject op=%s trip_id=%s driver_user_id=%d reason=last_live_location_at_parse_error detail=%v raw=%q", op, tripID, driverUserID, perr, lastLive.String)
 		return domain.ErrDriverLocationStale
 	}
-	if time.Since(t) > time.Duration(tripPickupLiveFreshSeconds)*time.Second {
+	age := time.Since(t)
+	if age > time.Duration(tripPickupLiveFreshSeconds)*time.Second {
+		log.Printf("trip_service: pickup_guard_reject op=%s trip_id=%s driver_user_id=%d reason=live_location_stale age_sec=%.1f max_sec=%d last_live_location_at=%s",
+			op, tripID, driverUserID, age.Seconds(), tripPickupLiveFreshSeconds, lastLive.String)
 		return domain.ErrDriverLocationStale
 	}
 	if !lastLat.Valid || !lastLng.Valid {
+		log.Printf("trip_service: pickup_guard_reject op=%s trip_id=%s driver_user_id=%d reason=driver_coords_missing", op, tripID, driverUserID)
 		return domain.ErrDriverLocationStale
 	}
-	if utils.HaversineMeters(lastLat.Float64, lastLng.Float64, pickupLat, pickupLng) > float64(maxM) {
+	distM := utils.HaversineMeters(lastLat.Float64, lastLng.Float64, pickupLat, pickupLng)
+	if distM > float64(maxM) {
+		log.Printf("trip_service: pickup_guard_reject op=%s trip_id=%s driver_user_id=%d reason=too_far_from_pickup distance_m=%.1f max_m=%d pickup=(%.6f,%.6f) driver=(%.6f,%.6f)",
+			op, tripID, driverUserID, distM, maxM, pickupLat, pickupLng, lastLat.Float64, lastLng.Float64)
 		return domain.ErrTooFarFromPickup
 	}
 	return nil
@@ -164,7 +177,7 @@ func (s *TripService) StartTrip(ctx context.Context, tripID string, driverUserID
 		if perr != nil {
 			return nil, perr
 		}
-		if err := s.ensureDriverNearPickup(ctx, driverUserID, pickupLat, pickupLng); err != nil {
+		if err := s.ensureDriverNearPickup(ctx, tripID, driverUserID, pickupLat, pickupLng, "start_trip"); err != nil {
 			return nil, err
 		}
 	}
@@ -229,21 +242,25 @@ func (s *TripService) MarkArrived(ctx context.Context, tripID string, driverUser
 	current, err := s.tripRepo.GetStatus(ctx, tripID)
 	if err != nil {
 		if err == sql.ErrNoRows {
+			log.Printf("trip_service: mark_arrived_reject trip_id=%s driver_user_id=%d reason=trip_not_found", tripID, driverUserID)
 			return nil, domain.ErrTripNotFound
 		}
+		log.Printf("trip_service: mark_arrived_reject trip_id=%s driver_user_id=%d reason=status_load_error detail=%v", tripID, driverUserID, err)
 		return nil, err
 	}
 	if current == domain.TripStatusArrived {
 		return &TripActionResult{Result: "noop", Status: domain.TripStatusArrived}, nil
 	}
 	if err := domain.ValidateTransition(current, domain.TripStatusArrived); err != nil {
+		log.Printf("trip_service: mark_arrived_reject trip_id=%s driver_user_id=%d reason=invalid_transition current_status=%s", tripID, driverUserID, current)
 		return nil, err
 	}
 	pickupLat, pickupLng, perr := s.pickupCoordsForTrip(ctx, tripID)
 	if perr != nil {
+		log.Printf("trip_service: mark_arrived_reject trip_id=%s driver_user_id=%d reason=pickup_coords_error detail=%v", tripID, driverUserID, perr)
 		return nil, perr
 	}
-	if err := s.ensureDriverNearPickup(ctx, driverUserID, pickupLat, pickupLng); err != nil {
+	if err := s.ensureDriverNearPickup(ctx, tripID, driverUserID, pickupLat, pickupLng, "mark_arrived"); err != nil {
 		return nil, err
 	}
 	n, err := s.tripRepo.UpdateToArrived(ctx, tripID, driverUserID)
@@ -255,10 +272,75 @@ func (s *TripService) MarkArrived(ctx context.Context, tripID string, driverUser
 		if current == domain.TripStatusArrived {
 			return &TripActionResult{Result: "noop", Status: domain.TripStatusArrived}, nil
 		}
+		log.Printf("trip_service: mark_arrived_reject trip_id=%s driver_user_id=%d reason=update_affected_zero_rows status_after=%s", tripID, driverUserID, current)
 		return nil, domain.ErrInvalidTransition
 	}
-	logger.TripEvent("trip_arrived", tripID, "updated", logger.TripEventAttrs(driverUserID, 0)...)
+	var riderUserID int64
+	_ = s.db.QueryRowContext(ctx, `SELECT rider_user_id FROM trips WHERE id = ?1`, tripID).Scan(&riderUserID)
+	s.notifyArrivedAtPickup(ctx, tripID, driverUserID, riderUserID)
+	if s.hub != nil {
+		s.hub.BroadcastToTrip(tripID, ws.Event{
+			Type:       "trip_arrived",
+			TripStatus: domain.TripStatusArrived,
+			Payload: map[string]interface{}{
+				"trip_status": domain.TripStatusArrived,
+			},
+		})
+	}
+	logger.TripEvent("trip_arrived", tripID, "updated", logger.TripEventAttrs(driverUserID, riderUserID)...)
 	return &TripActionResult{Result: "updated", Status: domain.TripStatusArrived}, nil
+}
+
+func (s *TripService) notifyArrivedAtPickup(ctx context.Context, tripID string, driverUserID, riderUserID int64) {
+	const riderText = "Haydovchi sizning manzilingizga yetib keldi."
+	const driverText = "✅ Mijozga yetib keldingiz. Yo‘lovchiga xabar yuborildi. Safarni boshlashingiz mumkin."
+
+	riderOK := false
+	driverOK := false
+
+	if riderUserID == 0 {
+		log.Printf("trip_service: arrived notify rider skipped trip_id=%s reason=no_rider_user_id_on_trip", tripID)
+	} else if s.riderBot == nil {
+		log.Printf("trip_service: arrived notify rider skipped trip_id=%s rider_user_id=%d reason=rider_bot_nil", tripID, riderUserID)
+	} else {
+		var riderTelegramID int64
+		err := s.db.QueryRowContext(ctx, `SELECT telegram_id FROM users WHERE id = ?1`, riderUserID).Scan(&riderTelegramID)
+		if err != nil {
+			log.Printf("trip_service: arrived notify rider skipped trip_id=%s rider_user_id=%d reason=user_lookup_error detail=%v", tripID, riderUserID, err)
+		} else if riderTelegramID == 0 {
+			log.Printf("trip_service: arrived notify rider skipped trip_id=%s rider_user_id=%d reason=rider_telegram_id_zero", tripID, riderUserID)
+		} else {
+			if _, err := s.riderBot.Send(tgbotapi.NewMessage(riderTelegramID, riderText)); err != nil {
+				log.Printf("trip_service: arrived notify rider send_failed trip_id=%s rider_user_id=%d telegram_id=%d detail=%v", tripID, riderUserID, riderTelegramID, err)
+			} else {
+				riderOK = true
+			}
+		}
+	}
+
+	if s.driverBot == nil {
+		log.Printf("trip_service: arrived notify driver skipped trip_id=%s driver_user_id=%d reason=driver_bot_nil", tripID, driverUserID)
+		log.Printf("trip_service: arrived_notify_summary trip_id=%s rider_telegram_ok=%v driver_telegram_ok=%v", tripID, riderOK, driverOK)
+		return
+	}
+	var driverTelegramID int64
+	err := s.db.QueryRowContext(ctx, `SELECT telegram_id FROM users WHERE id = ?1`, driverUserID).Scan(&driverTelegramID)
+	if err != nil {
+		log.Printf("trip_service: arrived notify driver skipped trip_id=%s driver_user_id=%d reason=user_lookup_error detail=%v", tripID, driverUserID, err)
+		log.Printf("trip_service: arrived_notify_summary trip_id=%s rider_telegram_ok=%v driver_telegram_ok=%v", tripID, riderOK, driverOK)
+		return
+	}
+	if driverTelegramID == 0 {
+		log.Printf("trip_service: arrived notify driver skipped trip_id=%s driver_user_id=%d reason=driver_telegram_id_zero", tripID, driverUserID)
+		log.Printf("trip_service: arrived_notify_summary trip_id=%s rider_telegram_ok=%v driver_telegram_ok=%v", tripID, riderOK, driverOK)
+		return
+	}
+	if _, err := s.driverBot.Send(tgbotapi.NewMessage(driverTelegramID, driverText)); err != nil {
+		log.Printf("trip_service: arrived notify driver send_failed trip_id=%s driver_user_id=%d telegram_id=%d detail=%v", tripID, driverUserID, driverTelegramID, err)
+	} else {
+		driverOK = true
+	}
+	log.Printf("trip_service: arrived_notify_summary trip_id=%s rider_telegram_ok=%v driver_telegram_ok=%v", tripID, riderOK, driverOK)
 }
 
 // MinSpeedKmh is the minimum speed (km/h) for a segment to count toward fare distance (avoids GPS noise).
