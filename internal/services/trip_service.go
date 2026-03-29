@@ -311,21 +311,20 @@ func (s *TripService) FinishTrip(ctx context.Context, tripID string, driverUserI
 	firstThreeTripNum := 0
 	refRewardRes := accounting.ReferralRewardResult{}
 
-	finishedCount, err := accounting.FinishedTripCountAfterCompletingTrip(ctx, s.db, driverUserID, tripID)
-	if err != nil {
-		log.Printf("trip_service: finished trip count primary (driver=%d trip=%s): %v", driverUserID, tripID, err)
-		_ = s.db.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM trips WHERE driver_user_id = ?1 AND status = ?2`,
-			driverUserID, domain.TripStatusFinished).Scan(&finishedCount)
+	// 1) Trip already FINISHED via UpdateToFinished. 2–4) Bonuses use deterministic count inside accounting (FinishedTripCountAfterCompletingTrip).
+	if fc, err := accounting.FinishedTripCountAfterCompletingTrip(ctx, s.db, driverUserID, tripID); err != nil {
+		log.Printf("trip_finish: trip=%s driver=%d finishedCount_error=%v", tripID, driverUserID, err)
+	} else {
+		log.Printf("trip_finish: trip=%s driver=%d finishedCount=%d", tripID, driverUserID, fc)
 	}
-	// Order: first-3-trip promo → referral → commission (counts are for THIS finish; idempotent per trip / per referred user).
-	if g, tn, err := accounting.TryGrantFirstThreeTripPromo(ctx, s.db, driverUserID, tripID, finishedCount); err != nil {
+	// Order: first-3-trip promo → referral → commission.
+	if g, tn, err := accounting.TryGrantFirstThreeTripPromo(ctx, s.db, driverUserID, tripID); err != nil {
 		log.Printf("trip_service: first_3_trip promo (driver=%d trip=%s): %v", driverUserID, tripID, err)
 	} else {
 		firstThreeGranted, firstThreeTripNum = g, tn
 	}
 	var refErr error
-	refRewardRes, refErr = accounting.TryGrantReferralReward(ctx, s.db, driverUserID, finishedCount)
+	refRewardRes, refErr = accounting.TryGrantReferralReward(ctx, s.db, driverUserID, tripID)
 	if refErr != nil {
 		log.Printf("trip_service: referral reward (referred=%d): %v", driverUserID, refErr)
 		refRewardRes = accounting.ReferralRewardResult{Reason: accounting.ReferralRewardReasonDBError}
