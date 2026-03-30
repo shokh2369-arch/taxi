@@ -136,6 +136,35 @@ func blockDriverLiveForMissingLegal(ctx context.Context, bot *tgbotapi.BotAPI, d
 		UPDATE drivers SET is_active = 0, live_location_active = 0, last_live_location_at = NULL, manual_offline = 0
 		WHERE user_id = ?1`, userID)
 	_ = legal.NewService(db).SetPendingResume(ctx, userID, resumeDriverRelive, "")
+
+	// Live location updates can be very frequent; never spam the chat with repeated oferta prompts.
+	// We gate by the active legal fingerprint stored in drivers.legal_terms_prompt_fingerprint:
+	// - If we already prompted the current active bundle → stay silent on further updates.
+	// - If versions change (fingerprint changes) → prompt once again.
+	fp, err := legal.ActiveLegalFingerprint(ctx, db)
+	if err != nil {
+		log.Printf("driver: ActiveLegalFingerprint (live block) user_id=%d: %v", userID, err)
+		// Safe fallback: send once via existing gating (it will store fingerprint if possible).
+		sendDriverAgreementForDriver(bot, db, chatID, userID, false, false)
+		send(bot, chatID, "⚠️ Joriy shartnomani qabul qilmasdan jonli lokatsiya orqali onlayn bo‘lish mumkin emas. Shartnomani qabul qiling, so‘ng lokatsiyani qayta ulang.")
+		sendOrUpdatePinnedStatus(bot, db, cfg, chatID, userID)
+		return
+	}
+	var stored sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT legal_terms_prompt_fingerprint FROM drivers WHERE user_id = ?1`, userID).Scan(&stored); err != nil && err != sql.ErrNoRows {
+		log.Printf("driver: read legal_terms_prompt_fingerprint (live block) user_id=%d: %v", userID, err)
+		stored = sql.NullString{}
+	}
+	st := ""
+	if stored.Valid {
+		st = strings.TrimSpace(stored.String)
+	}
+	if fp != "" && st == fp {
+		// Already prompted current legal bundle; do not resend on every live location update.
+		return
+	}
+
+	// First time we block for this legal bundle (or versions were bumped) → send oferta once.
 	sendDriverAgreementForDriver(bot, db, chatID, userID, true, false)
 	send(bot, chatID, "⚠️ Joriy shartnomani qabul qilmasdan jonli lokatsiya orqali onlayn bo‘lish mumkin emas. Quyidagi matnni o‘qing, «✅ Qabul qilaman» ni bosing, so‘ng lokatsiyani qayta ulang.")
 	sendOrUpdatePinnedStatus(bot, db, cfg, chatID, userID)
