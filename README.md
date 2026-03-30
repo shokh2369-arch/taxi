@@ -37,6 +37,8 @@ Telegram-first taxi aggregator: **rider bot**, **driver bot**, optional **admin 
 | **`internal/services`** | Dispatch, assignment, trip lifecycle, fare, admin, approval notifier |
 | **`internal/accounting`** | Promo/cash wallets, **`driver_ledger`** (append-only), commission offsets |
 | **`internal/bot/`** | Rider, driver, and optional admin Telegram handlers |
+| **`internal/legal`** | Active documents, acceptances, driver/rider compliance checks |
+| **`internal/driverloc`** | Shared driver-bot strings and reply-keyboard helpers (e.g. live-location button) |
 | **`webapp/`** | Static Mini App (driver map, rider map); can be hosted on Vercel |
 | **`db/migrations/`** | Goose migrations (SQLite dialect) |
 
@@ -153,6 +155,8 @@ Driver routes use **`tryDriverID`** then **`RequireDriverAuth`** (Telegram initD
 | `GET` | `/legal/active` | `appUserAuth` (+ optional `X-Driver-Id`) |
 | `POST` | `/legal/accept` | Same |
 
+**Document sets:** **Drivers** see and accept **`driver_terms`** (haydovchi oferta) and **`privacy_policy`** only. **Riders** accept **`user_terms`** and **`privacy_policy`**. Dispatch and live-location gating for drivers require the **driver** pair at active versions (see **`internal/legal`**, **`SQLDriverDispatchLegalOK`**).
+
 CORS (see **`server.go`**): allows `X-Telegram-Init-Data`, `X-Driver-Id`. Full auth behavior: **`docs/AUTH.md`**.
 
 ---
@@ -261,7 +265,7 @@ All amounts below are **promo platform credit** unless stated otherwise: **not r
 
 1. **Start:** `docker compose up --build` (or local binary) with valid **Turso** env and **migrations applied**.
 2. **Rider:** Create request; confirm pricing and dispatch behavior.
-3. **Driver:** Share **live** location; accept request; open Mini App; near pickup, **`/trip/start`** (or **`/trip/arrived`** then **`/trip/start`**); **finish** trip.
+3. **Driver:** Tap **«Jonli lokatsiyani ulashish»** (reply keyboard uses Telegram **`request_location`** — map opens; a one-shot pin triggers the bot’s step-by-step guide). Share **live** location via 📎 for real online/dispatch; accept request; open Mini App; near pickup, **`/trip/start`** (or **`/trip/arrived`** then **`/trip/start`**); **finish** trip.
 4. **Finish:** Rider and driver notifications; **promo** and **referral** grants visible in DB (`drivers.promo_balance`, `driver_ledger`).
 5. **Admin / legal:** If used, verify verification and legal acceptance flows.
 6. **Shutdown:** SIGINT/SIGTERM; process exits cleanly.
@@ -281,8 +285,15 @@ Admin routes (drivers, riders, payments, verification) are registered from **`ha
 ### Driver bot UX (live location)
 
 - **Online** for matching = **Telegram live location** freshness (+ balance + legal + approval).
+- Reply keyboard **«Jonli lokatsiyani ulashish»** is built with **`request_location`** (`internal/driverloc.ReplyKeyboardButtonShareLiveLocation`) so Telegram opens the map; sending a **non-live** pin still earns the illustrated instructions (not dispatch). True **live** share uses 📎 → Location → *Share Live Location* (see caption from **`internal/driverloc/texts.go`**).
+- Instruction **image** is embedded at build time: **`internal/bot/driver/live_location_steps.png`** (`//go:embed` in **`internal/bot/driver/bot.go`**). Replace that file to update the screenshot guide; keep captions within Telegram’s **~1024** character caption limit.
 - Pinned **status** message is edited when possible; **`/status`** refreshes it.
 - **`driver_ledger`** and **`GET /admin/drivers/:id/ledger`** expose promo vs cash audit.
+
+### Driver vs rider legal acceptance
+
+- **Drivers:** **`driver_terms`** + **`privacy_policy`** at active versions (Telegram oferta prompt, Mini App **`/legal/*`**, dispatch SQL). **`user_terms`** are **not** required for drivers.
+- **Riders:** **`user_terms`** + **`privacy_policy`**.
 
 ### Telegram Bot API (message length)
 
