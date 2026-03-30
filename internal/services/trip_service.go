@@ -25,6 +25,25 @@ import (
 // Same window as dispatch: only Telegram live location updates count as fresh.
 const tripPickupLiveFreshSeconds = 90
 
+const tripLogErrMaxChars = 200
+
+func tripTrunc(s string, max int) string {
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	if max < 4 {
+		return s[:max]
+	}
+	return s[:max-3] + "..."
+}
+
+func tripErrStr(err error) string {
+	if err == nil {
+		return ""
+	}
+	return tripTrunc(err.Error(), tripLogErrMaxChars)
+}
+
 func parseDriverLiveAtUTC(s string) (time.Time, error) {
 	if t, err := time.ParseInLocation("2006-01-02 15:04:05", s, time.UTC); err == nil {
 		return t, nil
@@ -95,7 +114,7 @@ func (s *TripService) ensureDriverNearPickup(ctx context.Context, tripID string,
 			log.Printf("trip_service: pickup_guard_reject op=%s trip_id=%s driver_user_id=%d reason=driver_row_missing", op, tripID, driverUserID)
 			return domain.ErrDriverLocationStale
 		}
-		log.Printf("trip_service: pickup_guard_reject op=%s trip_id=%s driver_user_id=%d reason=driver_load_error detail=%v", op, tripID, driverUserID, err)
+		log.Printf("trip_service: pickup_guard_reject op=%s trip_id=%s driver_user_id=%d reason=driver_load_error detail=%v", op, tripID, driverUserID, tripErrStr(err))
 		return err
 	}
 	if liveActive != 1 {
@@ -108,13 +127,13 @@ func (s *TripService) ensureDriverNearPickup(ctx context.Context, tripID string,
 	}
 	t, perr := parseDriverLiveAtUTC(lastLive.String)
 	if perr != nil {
-		log.Printf("trip_service: pickup_guard_reject op=%s trip_id=%s driver_user_id=%d reason=last_live_location_at_parse_error detail=%v raw=%q", op, tripID, driverUserID, perr, lastLive.String)
+		log.Printf("trip_service: pickup_guard_reject op=%s trip_id=%s driver_user_id=%d reason=last_live_location_at_parse_error detail=%v raw=%q", op, tripID, driverUserID, tripErrStr(perr), tripTrunc(lastLive.String, tripLogErrMaxChars))
 		return domain.ErrDriverLocationStale
 	}
 	age := time.Since(t)
 	if age > time.Duration(tripPickupLiveFreshSeconds)*time.Second {
 		log.Printf("trip_service: pickup_guard_reject op=%s trip_id=%s driver_user_id=%d reason=live_location_stale age_sec=%.1f max_sec=%d last_live_location_at=%s",
-			op, tripID, driverUserID, age.Seconds(), tripPickupLiveFreshSeconds, lastLive.String)
+			op, tripID, driverUserID, age.Seconds(), tripPickupLiveFreshSeconds, tripTrunc(lastLive.String, tripLogErrMaxChars))
 		return domain.ErrDriverLocationStale
 	}
 	if !lastLat.Valid || !lastLng.Valid {
@@ -151,7 +170,7 @@ func (s *TripService) ScheduleStartReminder(ctx context.Context, tripID string, 
 		err := s.db.QueryRowContext(context.Background(), `SELECT status FROM trips WHERE id = ?1 AND driver_user_id = ?2`, tripID, driverUserID).Scan(&status)
 		if err != nil {
 			if err != sql.ErrNoRows {
-				log.Printf("trip_service: start reminder load trip: %v", err)
+				log.Printf("trip_service: start reminder load trip: %v", tripErrStr(err))
 			}
 			return
 		}
@@ -216,7 +235,7 @@ func (s *TripService) StartTrip(ctx context.Context, tripID string, driverUserID
 			msg := tgbotapi.NewMessage(riderTelegramID, "Safar boshlandi ▶️")
 			msg.ReplyMarkup = kb
 			if _, err := s.riderBot.Send(msg); err != nil {
-				log.Printf("trip_service: notify rider start: %v", err)
+				log.Printf("trip_service: notify rider start: %v", tripErrStr(err))
 			}
 		}
 	}
@@ -254,7 +273,7 @@ func (s *TripService) assertMarkArrivedDriverAndPickup(ctx context.Context, trip
 			log.Printf("trip_service: mark_arrived_reject trip_id=%s driver_user_id=%d reason=trip_not_found", tripID, driverUserID)
 			return domain.ErrTripNotFound
 		}
-		log.Printf("trip_service: mark_arrived_reject trip_id=%s driver_user_id=%d reason=trip_load_error detail=%v", tripID, driverUserID, err)
+		log.Printf("trip_service: mark_arrived_reject trip_id=%s driver_user_id=%d reason=trip_load_error detail=%v", tripID, driverUserID, tripErrStr(err))
 		return err
 	}
 	if dbDriver != driverUserID {
@@ -263,7 +282,7 @@ func (s *TripService) assertMarkArrivedDriverAndPickup(ctx context.Context, trip
 	}
 	pickupLat, pickupLng, perr := s.pickupCoordsForTrip(ctx, tripID)
 	if perr != nil {
-		log.Printf("trip_service: mark_arrived_reject trip_id=%s driver_user_id=%d reason=pickup_coords_error detail=%v", tripID, driverUserID, perr)
+		log.Printf("trip_service: mark_arrived_reject trip_id=%s driver_user_id=%d reason=pickup_coords_error detail=%v", tripID, driverUserID, tripErrStr(perr))
 		return perr
 	}
 	if err := s.ensureDriverNearPickup(ctx, tripID, driverUserID, pickupLat, pickupLng, "mark_arrived"); err != nil {
@@ -282,7 +301,7 @@ func (s *TripService) assertMarkArrivedDriverMatches(ctx context.Context, tripID
 			log.Printf("trip_service: mark_arrived_reject trip_id=%s driver_user_id=%d reason=trip_not_found", tripID, driverUserID)
 			return domain.ErrTripNotFound
 		}
-		log.Printf("trip_service: mark_arrived_reject trip_id=%s driver_user_id=%d reason=trip_load_error detail=%v", tripID, driverUserID, err)
+		log.Printf("trip_service: mark_arrived_reject trip_id=%s driver_user_id=%d reason=trip_load_error detail=%v", tripID, driverUserID, tripErrStr(err))
 		return err
 	}
 	if dbDriver != driverUserID {
@@ -295,7 +314,7 @@ func (s *TripService) assertMarkArrivedDriverMatches(ctx context.Context, tripID
 // markArrivedNotifyEnterAndSend logs ARRIVED_NOTIFY_ENTER then notifyArrivedAtPickup (every driver Arrived press).
 func (s *TripService) markArrivedNotifyEnterAndSend(ctx context.Context, tripID string, driverUserID int64) (riderUserID int64) {
 	if err := s.db.QueryRowContext(ctx, `SELECT rider_user_id FROM trips WHERE id = ?1`, tripID).Scan(&riderUserID); err != nil {
-		log.Printf("ARRIVED_NOTIFY_ENTER trip_id=%s driver_user_id=%d rider_user_id=0 trip_lookup_error=%v", tripID, driverUserID, err)
+		log.Printf("ARRIVED_NOTIFY_ENTER trip_id=%s driver_user_id=%d rider_user_id=0 trip_lookup_error=%v", tripID, driverUserID, tripErrStr(err))
 		riderUserID = 0
 	} else {
 		log.Printf("ARRIVED_NOTIFY_ENTER trip_id=%s driver_user_id=%d rider_user_id=%d", tripID, driverUserID, riderUserID)
@@ -312,7 +331,7 @@ func (s *TripService) MarkArrived(ctx context.Context, tripID string, driverUser
 			log.Printf("trip_service: mark_arrived_reject trip_id=%s driver_user_id=%d reason=trip_not_found", tripID, driverUserID)
 			return nil, domain.ErrTripNotFound
 		}
-		log.Printf("trip_service: mark_arrived_reject trip_id=%s driver_user_id=%d reason=status_load_error detail=%v", tripID, driverUserID, err)
+		log.Printf("trip_service: mark_arrived_reject trip_id=%s driver_user_id=%d reason=status_load_error detail=%v", tripID, driverUserID, tripErrStr(err))
 		return nil, err
 	}
 	if current == domain.TripStatusArrived {
@@ -391,7 +410,7 @@ func telegramSendRiderArrivedMessage(tripID string, chatID int64, bot telegramBo
 			return resp, nil
 		}
 		lastErr = err
-		log.Printf("ARRIVED_NOTIFY_RIDER_TELEGRAM_ERROR trip_id=%s chat_id=%d attempt=%d error=%v", tripID, chatID, attempt, err)
+		log.Printf("ARRIVED_NOTIFY_RIDER_TELEGRAM_ERROR trip_id=%s chat_id=%d attempt=%d error=%v", tripID, chatID, attempt, tripErrStr(err))
 	}
 	return zero, lastErr
 }
@@ -419,13 +438,13 @@ func (s *TripService) notifyArrivedAtPickup(ctx context.Context, tripID string, 
 			if err == sql.ErrNoRows {
 				log.Printf("ARRIVED_NOTIFY_SKIPPED trip_id=%s reason=%s detail=%s", tripID, "rider_user_not_found", "no users row for rider_user_id")
 			} else {
-				log.Printf("ARRIVED_NOTIFY_SKIPPED trip_id=%s reason=%s detail=%v", tripID, "rider_telegram_lookup_failed", err)
+				log.Printf("ARRIVED_NOTIFY_SKIPPED trip_id=%s reason=%s detail=%v", tripID, "rider_telegram_lookup_failed", tripErrStr(err))
 			}
-			log.Printf("ARRIVED_NOTIFY_FAILED trip_id=%s error=%v", tripID, err)
+			log.Printf("ARRIVED_NOTIFY_FAILED trip_id=%s error=%v", tripID, tripErrStr(err))
 			riderFailureForDriverUX = true
 		} else if riderTelegramID <= 0 {
 			log.Printf("ARRIVED_NOTIFY_SKIPPED trip_id=%s reason=%s detail=user_id=%d telegram_id=%d", tripID, "invalid_rider_telegram_id", riderUserID, riderTelegramID)
-			log.Printf("ARRIVED_NOTIFY_FAILED trip_id=%s error=%v", tripID, fmt.Errorf("rider telegram_id is zero or invalid (user_id=%d)", riderUserID))
+			log.Printf("ARRIVED_NOTIFY_FAILED trip_id=%s error=%v", tripID, tripErrStr(fmt.Errorf("rider telegram_id is zero or invalid (user_id=%d)", riderUserID)))
 			riderFailureForDriverUX = true
 		} else {
 			chatID := riderTelegramID
@@ -440,7 +459,7 @@ func (s *TripService) notifyArrivedAtPickup(ctx context.Context, tripID string, 
 					m2 := tgbotapi.NewMessage(chatID, "Haydovchini xaritada kuzating yoki safarni bekor qilishingiz mumkin.")
 					m2.ReplyMarkup = riderTripActiveReplyKeyboard()
 					if _, err2 := telegramSendRiderArrivedMessage(tripID, chatID, s.riderBot, m2); err2 != nil {
-						log.Printf("ARRIVED_NOTIFY_FAILED trip_id=%s error=%v", tripID, fmt.Errorf("rider follow-up keyboard after primary message_id=%d: %w", primaryResp.MessageID, err2))
+						log.Printf("ARRIVED_NOTIFY_FAILED trip_id=%s error=%v", tripID, tripErrStr(fmt.Errorf("rider follow-up keyboard after primary message_id=%d: %w", primaryResp.MessageID, err2)))
 					}
 				}
 			} else {
@@ -449,7 +468,7 @@ func (s *TripService) notifyArrivedAtPickup(ctx context.Context, tripID string, 
 				primaryResp, sendErr = telegramSendRiderArrivedMessage(tripID, chatID, s.riderBot, riderMsg)
 			}
 			if sendErr != nil {
-				log.Printf("ARRIVED_NOTIFY_FAILED trip_id=%s error=%v", tripID, sendErr)
+					log.Printf("ARRIVED_NOTIFY_FAILED trip_id=%s error=%v", tripID, tripErrStr(sendErr))
 				riderFailureForDriverUX = true
 			} else {
 				riderSent = true
@@ -566,7 +585,7 @@ func (s *TripService) AddPoint(ctx context.Context, tripID string, driverUserID 
 			addM := int64(math.Round(segmentM))
 			n, upErr := s.tripRepo.AddTripDistance(ctx, tripID, addM)
 			if upErr != nil {
-				log.Printf("trip_service: AddPoint distance_m update failed: %v", upErr)
+				log.Printf("trip_service: AddPoint distance_m update failed: %v", tripErrStr(upErr))
 			} else if n == 0 {
 				log.Printf("trip_service: AddPoint distance_m update affected 0 rows (trip=%s)", tripID)
 			}
@@ -721,7 +740,7 @@ func (s *TripService) FinishTrip(ctx context.Context, tripID string, driverUserI
 		riderMainMenu.ResizeKeyboard = true
 		m.ReplyMarkup = riderMainMenu
 		if _, err := s.riderBot.Send(m); err != nil {
-			log.Printf("trip_service: notify rider finish: %v", err)
+			log.Printf("trip_service: notify rider finish: %v", tripErrStr(err))
 		}
 	}
 	if driverTelegramID != 0 {
@@ -736,14 +755,14 @@ func (s *TripService) FinishTrip(ctx context.Context, tripID string, driverUserI
 		m := tgbotapi.NewMessage(driverTelegramID, driverSummary)
 		m.ReplyMarkup = kb
 		if _, err := s.driverBot.Send(m); err != nil {
-			log.Printf("trip_service: notify driver finish: %v", err)
+			log.Printf("trip_service: notify driver finish: %v", tripErrStr(err))
 		}
 		if firstThreeGranted && s.driverBot != nil {
 			var promoBal int64
 			_ = s.db.QueryRowContext(ctx, `SELECT COALESCE(promo_balance, 0) FROM drivers WHERE user_id = ?1`, driverUserID).Scan(&promoBal)
 			if body := accounting.FirstThreeTripBonusTelegramMessage(firstThreeTripNum, promoBal); body != "" {
 				if _, err := s.driverBot.Send(tgbotapi.NewMessage(driverTelegramID, body)); err != nil {
-					log.Printf("trip_service: notify driver first_3_trip promo: %v", err)
+					log.Printf("trip_service: notify driver first_3_trip promo: %v", tripErrStr(err))
 				}
 			}
 		}
@@ -773,7 +792,7 @@ func (s *TripService) FinishTrip(ctx context.Context, tripID string, driverUserI
 	if refRewardRes.Granted && s.driverBot != nil && refRewardRes.InviterTelegramID != 0 {
 		body := accounting.ReferralRewardInviterTelegramMessage(refRewardRes.UpdatedPromoBalance)
 		if _, err := s.driverBot.Send(tgbotapi.NewMessage(refRewardRes.InviterTelegramID, body)); err != nil {
-			log.Printf("trip_service: notify inviter referral reward: %v", err)
+			log.Printf("trip_service: notify inviter referral reward: %v", tripErrStr(err))
 		}
 	}
 	if s.hub != nil {

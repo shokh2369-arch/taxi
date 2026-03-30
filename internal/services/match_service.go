@@ -207,7 +207,7 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 			args...)
 	}
 	if err != nil {
-		log.Printf("match_service: dispatch query: %v", err)
+		log.Printf("match_service: dispatch query: %v", truncateLog(err.Error(), logMaxChars))
 		return
 	}
 	defer rows.Close()
@@ -301,7 +301,7 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 			)
 			sentMsg, err := s.bot.Send(msg)
 			if err != nil {
-				log.Printf("match_service: send to driver %d: %v", c.TelegramID, err)
+				log.Printf("match_service: send to driver %d: %v", c.TelegramID, truncateLog(err.Error(), logMaxChars))
 				continue
 			}
 			_, _ = s.db.ExecContext(ctx, `
@@ -423,7 +423,7 @@ func (s *MatchService) NotifyDriverOfPendingRequests(ctx context.Context, driver
 		  AND NOT EXISTS (SELECT 1 FROM request_notifications n WHERE n.request_id = r.id AND n.driver_user_id = ?)`,
 		args...)
 	if err != nil {
-		log.Printf("match_service: NotifyDriverOfPendingRequests query: %v", err)
+		log.Printf("match_service: NotifyDriverOfPendingRequests query: %v", truncateLog(err.Error(), logMaxChars))
 		return
 	}
 	defer rows.Close()
@@ -504,7 +504,7 @@ func (s *MatchService) NotifyDriverOfPendingRequests(ctx context.Context, driver
 		)
 		sentMsg, err := s.bot.Send(msg)
 		if err != nil {
-			log.Printf("match_service: send pending request to driver %d: %v", driverUserID, err)
+			log.Printf("match_service: send pending request to driver %d: %v", driverUserID, truncateLog(err.Error(), logMaxChars))
 			continue
 		}
 		_, _ = s.db.ExecContext(ctx, `

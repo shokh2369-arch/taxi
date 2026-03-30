@@ -15,6 +15,25 @@ import (
 	"taxi-mvp/internal/legal"
 )
 
+const assignmentLogErrMaxChars = 200
+
+func assignmentTrunc(s string, max int) string {
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	if max < 4 {
+		return s[:max]
+	}
+	return s[:max-3] + "..."
+}
+
+func assignmentErrStr(err error) string {
+	if err == nil {
+		return ""
+	}
+	return assignmentTrunc(err.Error(), assignmentLogErrMaxChars)
+}
+
 // AssignmentService assigns requests to drivers and runs the expiry worker.
 type AssignmentService struct {
 	db         *sql.DB
@@ -102,7 +121,7 @@ func (s *AssignmentService) TryAssign(ctx context.Context, requestID string, dri
 			msg.ReplyMarkup = riderMapWebAppKeyboard("📍 Haydovchini kuzatish", riderMapURL)
 		}
 		if _, err := s.riderBot.Send(msg); err != nil {
-			log.Printf("assignment_service: notify rider: %v", err)
+			log.Printf("assignment_service: notify rider: %v", assignmentErrStr(err))
 		}
 		// Reply keyboard for trip-active state: Haydovchini kuzatish, Bekor qilish
 		riderTripActiveKeyboard := tgbotapi.NewReplyKeyboard(
@@ -115,7 +134,7 @@ func (s *AssignmentService) TryAssign(ctx context.Context, requestID string, dri
 		kbMsg := tgbotapi.NewMessage(chatID, "Haydovchini xaritada kuzating yoki safarni bekor qilishingiz mumkin.")
 		kbMsg.ReplyMarkup = riderTripActiveKeyboard
 		if _, err := s.riderBot.Send(kbMsg); err != nil {
-			log.Printf("assignment_service: notify rider keyboard: %v", err)
+			log.Printf("assignment_service: notify rider keyboard: %v", assignmentErrStr(err))
 		}
 	}
 
@@ -137,7 +156,7 @@ func (s *AssignmentService) TryAssign(ctx context.Context, requestID string, dri
 		if s.driverBot != nil && messageID != 0 {
 			del := tgbotapi.NewDeleteMessage(chatID, messageID)
 			if _, err := s.driverBot.Request(del); err != nil {
-				log.Printf("assignment_service: delete order message chat=%d msg=%d: %v", chatID, messageID, err)
+				log.Printf("assignment_service: delete order message chat=%d msg=%d: %v", chatID, messageID, assignmentErrStr(err))
 			}
 		}
 	}
@@ -161,7 +180,7 @@ func (s *AssignmentService) RunExpiryWorker(ctx context.Context) {
 func (s *AssignmentService) expireRequests(ctx context.Context) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		log.Printf("assignment_service: begin tx: %v", err)
+		log.Printf("assignment_service: begin tx: %v", assignmentErrStr(err))
 		return
 	}
 	defer tx.Rollback()
@@ -172,7 +191,7 @@ func (s *AssignmentService) expireRequests(ctx context.Context) {
 		RETURNING id, rider_user_id`,
 		domain.RequestStatusExpired, domain.RequestStatusPending)
 	if err != nil {
-		log.Printf("assignment_service: expire update: %v", err)
+		log.Printf("assignment_service: expire update: %v", assignmentErrStr(err))
 		return
 	}
 	defer rows.Close()
@@ -191,7 +210,7 @@ func (s *AssignmentService) expireRequests(ctx context.Context) {
 		return
 	}
 	if err := tx.Commit(); err != nil {
-		log.Printf("assignment_service: commit: %v", err)
+		log.Printf("assignment_service: commit: %v", assignmentErrStr(err))
 		return
 	}
 
@@ -208,7 +227,7 @@ func (s *AssignmentService) expireRequests(ctx context.Context) {
 			),
 		)
 		if _, err := s.riderBot.Send(msg); err != nil {
-			log.Printf("assignment_service: notify rider expired: %v", err)
+			log.Printf("assignment_service: notify rider expired: %v", assignmentErrStr(err))
 		}
 		// Restore main menu so rider has clear entry point
 		mainMenu := tgbotapi.NewReplyKeyboard(
@@ -221,7 +240,7 @@ func (s *AssignmentService) expireRequests(ctx context.Context) {
 		kbMsg := tgbotapi.NewMessage(telegramID, "Yangi so'rov uchun «Taxi chaqirish» ni bosing.")
 		kbMsg.ReplyMarkup = mainMenu
 		if _, err := s.riderBot.Send(kbMsg); err != nil {
-			log.Printf("assignment_service: rider main menu after expiry: %v", err)
+			log.Printf("assignment_service: rider main menu after expiry: %v", assignmentErrStr(err))
 		}
 	}
 }
@@ -257,7 +276,7 @@ func (s *AssignmentService) expandRadiusAndRebroadcast(ctx context.Context, matc
 		  AND created_at <= ?3`,
 		domain.RequestStatusPending, s.cfg.ExpandedRadiusKm, cutoff)
 	if err != nil {
-		log.Printf("assignment_service: radius expansion query: %v", err)
+		log.Printf("assignment_service: radius expansion query: %v", assignmentErrStr(err))
 		return
 	}
 	defer rows.Close()
@@ -275,7 +294,7 @@ func (s *AssignmentService) expandRadiusAndRebroadcast(ctx context.Context, matc
 		}
 		log.Printf("assignment_service: expanded radius for request %s to %.1f km, re-broadcasting", requestID, s.cfg.ExpandedRadiusKm)
 		if err := matchSvc.BroadcastRequest(ctx, requestID); err != nil {
-			log.Printf("assignment_service: re-broadcast: %v", err)
+			log.Printf("assignment_service: re-broadcast: %v", assignmentErrStr(err))
 		}
 	}
 }
