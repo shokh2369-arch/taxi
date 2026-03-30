@@ -5,7 +5,7 @@ DROP TABLE IF EXISTS legal_documents;
 
 CREATE TABLE legal_documents (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  document_type TEXT NOT NULL CHECK (document_type IN ('driver_terms','user_terms','privacy_policy')),
+  document_type TEXT NOT NULL CHECK (document_type IN ('driver_terms','user_terms','privacy_policy','privacy_policy_user','privacy_policy_driver')),
   version INTEGER NOT NULL,
   content TEXT NOT NULL,
   is_active INTEGER NOT NULL DEFAULT 0 CHECK (is_active IN (0, 1)),
@@ -17,7 +17,7 @@ CREATE UNIQUE INDEX idx_legal_documents_one_active_per_type ON legal_documents(d
 
 CREATE TABLE legal_acceptances (
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  document_type TEXT NOT NULL CHECK (document_type IN ('driver_terms','user_terms','privacy_policy')),
+  document_type TEXT NOT NULL CHECK (document_type IN ('driver_terms','user_terms','privacy_policy','privacy_policy_user','privacy_policy_driver')),
   version INTEGER NOT NULL,
   accepted_at TEXT NOT NULL DEFAULT (datetime('now')),
   client_ip TEXT,
@@ -203,6 +203,51 @@ YettiQanot foydalanuvchi ma’lumotlarini xizmatni ta’minlash uchun qayta ishl
 - buyurtmalarni uzatish
 - xavfsizlik
 - haydovchini va transport vositasini identifikatsiya qilish hamda tekshirish
+
+3. Ma’lumotlar sotilmaydi.
+
+4. Platformadan foydalanish orqali siz rozilik bildirasiz.',
+0);
+
+INSERT INTO legal_documents (document_type, version, content, is_active) VALUES
+('privacy_policy_user', 1,
+'📄 Maxfiylik siyosati
+
+YettiQanot foydalanuvchi ma’lumotlarini xizmatni ta’minlash uchun qayta ishlaydi.
+
+1. Yig‘iladigan ma’lumotlar:
+- telefon raqam
+- Telegram ID
+- joylashuv (location)
+- buyurtma ma’lumotlari
+
+2. Maqsad:
+- haydovchi va mijozni bog‘lash
+- buyurtmalarni uzatish
+- xavfsizlik
+
+3. Ma’lumotlar sotilmaydi.
+
+4. Platformadan foydalanish orqali siz rozilik bildirasiz.',
+1),
+('privacy_policy_driver', 1,
+'📄 Maxfiylik siyosati (haydovchilar uchun)
+
+YettiQanot haydovchi ma’lumotlarini xizmatni ta’minlash va haydovchini/transport vositasini identifikatsiya qilish uchun qayta ishlaydi.
+
+1. Yig‘iladigan ma’lumotlar:
+- telefon raqam
+- Telegram ID
+- joylashuv (location)
+- buyurtma ma’lumotlari
+- haydovchilik guvohnomasi ma’lumotlari
+- avtotransport vositasi ro‘yxatdan o‘tganligi to‘g‘risidagi guvohnoma (tex pasport) ma’lumotlari
+
+2. Maqsad:
+- haydovchi va mijozni bog‘lash
+- buyurtmalarni uzatish
+- xavfsizlik
+- haydovchini va transport vositasini identifikatsiya qilish / tekshirish
 
 3. Ma’lumotlar sotilmaydi.
 

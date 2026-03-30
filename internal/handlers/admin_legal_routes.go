@@ -116,7 +116,7 @@ func legalAcceptanceJSON(userID int64, documentType string, version int, accepte
 // buildLegalMonitoringData loads active docs and compliance counts using legal_acceptances vs active legal_documents only.
 func (h *adminLegalHTTP) buildLegalMonitoringData(ctx context.Context) (docList []gin.H, counts gin.H, err error) {
 	svc := legal.NewService(h.db)
-	types := []string{legal.DocDriverTerms, legal.DocUserTerms, legal.DocPrivacyPolicy}
+	types := []string{legal.DocDriverTerms, legal.DocUserTerms, legal.DocPrivacyPolicyUser, legal.DocPrivacyPolicyDriver}
 	docs, err := svc.ActiveDocuments(ctx, types)
 	if err != nil {
 		return nil, nil, err

@@ -40,9 +40,9 @@ func LegalActiveDocuments(db *sql.DB) gin.HandlerFunc {
 		var types []string
 		switch u.Role {
 		case domain.RoleDriver:
-			types = []string{legal.DocDriverTerms, legal.DocPrivacyPolicy}
+			types = []string{legal.DocDriverTerms, legal.DocPrivacyPolicyDriver}
 		case domain.RoleRider:
-			types = []string{legal.DocUserTerms, legal.DocPrivacyPolicy}
+			types = []string{legal.DocUserTerms, legal.DocPrivacyPolicyUser}
 		default:
 			c.JSON(http.StatusForbidden, gin.H{"error": "unknown role"})
 			return
@@ -79,9 +79,9 @@ func LegalAccept(db *sql.DB) gin.HandlerFunc {
 		var types []string
 		switch u.Role {
 		case domain.RoleDriver:
-			types = []string{legal.DocDriverTerms, legal.DocPrivacyPolicy}
+			types = []string{legal.DocDriverTerms, legal.DocPrivacyPolicyDriver}
 		case domain.RoleRider:
-			types = []string{legal.DocUserTerms, legal.DocPrivacyPolicy}
+			types = []string{legal.DocUserTerms, legal.DocPrivacyPolicyUser}
 		default:
 			c.JSON(http.StatusForbidden, gin.H{"error": "unknown role"})
 			return

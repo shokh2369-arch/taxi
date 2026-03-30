@@ -75,15 +75,15 @@ func (s *Service) countActiveMatched(ctx context.Context, userID int64, types []
 	return n, err
 }
 
-// RiderHasActiveLegal returns true when user_terms and privacy_policy are accepted at currently active versions.
+// RiderHasActiveLegal returns true when user_terms and user privacy policy are accepted at currently active versions.
 func (s *Service) RiderHasActiveLegal(ctx context.Context, userID int64) bool {
-	n, err := s.countActiveMatched(ctx, userID, []string{DocUserTerms, DocPrivacyPolicy})
+	n, err := s.countActiveMatched(ctx, userID, []string{DocUserTerms, DocPrivacyPolicyUser})
 	return err == nil && n == RiderDocTypes
 }
 
-// DriverHasActiveLegal returns true when driver_terms and privacy_policy are accepted at active versions.
+// DriverHasActiveLegal returns true when driver_terms and driver privacy policy are accepted at active versions.
 func (s *Service) DriverHasActiveLegal(ctx context.Context, userID int64) bool {
-	n, err := s.countActiveMatched(ctx, userID, []string{DocDriverTerms, DocPrivacyPolicy})
+	n, err := s.countActiveMatched(ctx, userID, []string{DocDriverTerms, DocPrivacyPolicyDriver})
 	return err == nil && n == DriverDocTypes
 }
 

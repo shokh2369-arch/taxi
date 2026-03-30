@@ -8,12 +8,12 @@ import (
 
 // RiderAgreementPromptMessage builds the text shown before the rider accepts (active user_terms + privacy).
 func (s *Service) RiderAgreementPromptMessage(ctx context.Context) (string, error) {
-	docs, err := s.ActiveDocuments(ctx, []string{DocUserTerms, DocPrivacyPolicy})
+	docs, err := s.ActiveDocuments(ctx, []string{DocUserTerms, DocPrivacyPolicyUser})
 	if err != nil {
 		return "", err
 	}
 	var parts []string
-	for _, key := range []string{DocUserTerms, DocPrivacyPolicy} {
+	for _, key := range []string{DocUserTerms, DocPrivacyPolicyUser} {
 		if d, ok := docs[key]; ok && strings.TrimSpace(d.Content) != "" {
 			parts = append(parts, strings.TrimSpace(d.Content))
 		}
@@ -26,12 +26,12 @@ func (s *Service) RiderAgreementPromptMessage(ctx context.Context) (string, erro
 
 // DriverAgreementPromptMessage builds driver-facing legal text (active driver oferta + privacy only).
 func (s *Service) DriverAgreementPromptMessage(ctx context.Context) (string, error) {
-	docs, err := s.ActiveDocuments(ctx, []string{DocDriverTerms, DocPrivacyPolicy})
+	docs, err := s.ActiveDocuments(ctx, []string{DocDriverTerms, DocPrivacyPolicyDriver})
 	if err != nil {
 		return "", err
 	}
 	var parts []string
-	for _, key := range []string{DocDriverTerms, DocPrivacyPolicy} {
+	for _, key := range []string{DocDriverTerms, DocPrivacyPolicyDriver} {
 		if d, ok := docs[key]; ok && strings.TrimSpace(d.Content) != "" {
 			parts = append(parts, strings.TrimSpace(d.Content))
 		}

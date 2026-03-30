@@ -47,10 +47,10 @@ func (r *adminDriverRepo) ListDriversWithBalance(ctx context.Context) ([]models.
 		       CASE WHEN EXISTS(SELECT 1 FROM legal_acceptances la `+legalJoinActive+`
 		              WHERE la.user_id = d.user_id AND la.document_type = 'user_terms') THEN 1 ELSE 0 END AS has_user_terms,
 		       CASE WHEN EXISTS(SELECT 1 FROM legal_acceptances la `+legalJoinActive+`
-		              WHERE la.user_id = d.user_id AND la.document_type = 'privacy_policy') THEN 1 ELSE 0 END AS has_privacy,
+		              WHERE la.user_id = d.user_id AND la.document_type = 'privacy_policy_driver') THEN 1 ELSE 0 END AS has_privacy,
 		       COALESCE((SELECT la.version FROM legal_acceptances la WHERE la.user_id = d.user_id AND la.document_type = 'driver_terms'), 0) AS acc_driver_terms_ver,
 		       COALESCE((SELECT la.version FROM legal_acceptances la WHERE la.user_id = d.user_id AND la.document_type = 'user_terms'), 0) AS acc_user_terms_ver,
-		       COALESCE((SELECT la.version FROM legal_acceptances la WHERE la.user_id = d.user_id AND la.document_type = 'privacy_policy'), 0) AS acc_privacy_ver,
+		       COALESCE((SELECT la.version FROM legal_acceptances la WHERE la.user_id = d.user_id AND la.document_type = 'privacy_policy_driver'), 0) AS acc_privacy_ver,
 		       COALESCE(u.terms_accepted, 0) AS user_terms_accepted,
 		       COALESCE(d.terms_accepted, 0) AS driver_terms_legacy
 		FROM drivers d
@@ -88,9 +88,9 @@ func (r *adminDriverRepo) ListRidersForAdmin(ctx context.Context) ([]models.Admi
 		       CASE WHEN EXISTS(SELECT 1 FROM legal_acceptances la `+legalJoinActive+`
 		              WHERE la.user_id = u.id AND la.document_type = 'user_terms') THEN 1 ELSE 0 END AS has_user_terms,
 		       CASE WHEN EXISTS(SELECT 1 FROM legal_acceptances la `+legalJoinActive+`
-		              WHERE la.user_id = u.id AND la.document_type = 'privacy_policy') THEN 1 ELSE 0 END AS has_privacy,
+		              WHERE la.user_id = u.id AND la.document_type = 'privacy_policy_user') THEN 1 ELSE 0 END AS has_privacy,
 		       COALESCE((SELECT la.version FROM legal_acceptances la WHERE la.user_id = u.id AND la.document_type = 'user_terms'), 0) AS acc_user_terms_ver,
-		       COALESCE((SELECT la.version FROM legal_acceptances la WHERE la.user_id = u.id AND la.document_type = 'privacy_policy'), 0) AS acc_privacy_ver,
+		       COALESCE((SELECT la.version FROM legal_acceptances la WHERE la.user_id = u.id AND la.document_type = 'privacy_policy_user'), 0) AS acc_privacy_ver,
 		       COALESCE(u.terms_accepted, 0) AS terms_accepted
 		FROM users u
 		WHERE u.role = 'rider'

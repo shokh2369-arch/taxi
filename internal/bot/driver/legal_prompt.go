@@ -21,7 +21,7 @@ func sendDriverAgreementForDriver(bot *tgbotapi.BotAPI, db *sql.DB, chatID, user
 	ctx := context.Background()
 	lSvc := legal.NewService(db)
 	if lSvc.DriverHasActiveLegal(ctx, userID) {
-		fp, err := legal.ActiveLegalFingerprint(ctx, db)
+		fp, err := legal.ActiveLegalFingerprintForTypes(ctx, db, []string{legal.DocDriverTerms, legal.DocPrivacyPolicyDriver})
 		if err != nil {
 			log.Printf("driver: ActiveLegalFingerprint (sync) user_id=%d: %v", userID, err)
 			return
@@ -42,7 +42,7 @@ func sendDriverAgreementForDriver(bot *tgbotapi.BotAPI, db *sql.DB, chatID, user
 		}
 		return
 	}
-	fp, err := legal.ActiveLegalFingerprint(ctx, db)
+	fp, err := legal.ActiveLegalFingerprintForTypes(ctx, db, []string{legal.DocDriverTerms, legal.DocPrivacyPolicyDriver})
 	if err != nil {
 		log.Printf("driver: ActiveLegalFingerprint user_id=%d: %v", userID, err)
 		sendDriverAgreement(bot, db, chatID)

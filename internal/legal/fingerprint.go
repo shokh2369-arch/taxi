@@ -7,10 +7,43 @@ import (
 	"strings"
 )
 
-// ActiveLegalFingerprint encodes all active document_type:version pairs (stable order from DB), e.g. driver_terms, privacy_policy, user_terms for riders.
+// ActiveLegalFingerprint encodes all active document_type:version pairs (stable order from DB).
 func ActiveLegalFingerprint(ctx context.Context, db *sql.DB) (string, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT document_type, version FROM legal_documents WHERE is_active = 1 ORDER BY document_type`)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	var parts []string
+	for rows.Next() {
+		var dt string
+		var ver int
+		if err := rows.Scan(&dt, &ver); err != nil {
+			return "", err
+		}
+		parts = append(parts, fmt.Sprintf("%s:%d", dt, ver))
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	return strings.Join(parts, "|"), nil
+}
+
+// ActiveLegalFingerprintForTypes encodes active type:version pairs for the given types (stable order by document_type).
+// Useful when different actors have different legal bundles (e.g. driver vs rider).
+func ActiveLegalFingerprintForTypes(ctx context.Context, db *sql.DB, types []string) (string, error) {
+	if len(types) == 0 {
+		return "", nil
+	}
+	ph := strings.Repeat("?,", len(types))
+	ph = ph[:len(ph)-1]
+	q := fmt.Sprintf(`SELECT document_type, version FROM legal_documents WHERE is_active = 1 AND document_type IN (%s) ORDER BY document_type`, ph)
+	args := make([]interface{}, len(types))
+	for i, t := range types {
+		args[i] = t
+	}
+	rows, err := db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return "", err
 	}
@@ -49,7 +82,7 @@ func ActiveLegalFingerprintLabels(fp string) string {
 
 // SyncDriverLegalPromptFingerprint stores the current active fingerprint (call when driver is fully compliant).
 func SyncDriverLegalPromptFingerprint(ctx context.Context, db *sql.DB, userID int64) error {
-	fp, err := ActiveLegalFingerprint(ctx, db)
+	fp, err := ActiveLegalFingerprintForTypes(ctx, db, []string{DocDriverTerms, DocPrivacyPolicyDriver})
 	if err != nil {
 		return err
 	}

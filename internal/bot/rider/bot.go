@@ -242,7 +242,7 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 			return
 		}
 		lSvc := legal.NewService(db)
-		if err := lSvc.AcceptActiveForTypes(ctx, userID, []string{legal.DocUserTerms, legal.DocPrivacyPolicy}, "", "telegram-bot"); err != nil {
+		if err := lSvc.AcceptActiveForTypes(ctx, userID, []string{legal.DocUserTerms, legal.DocPrivacyPolicyUser}, "", "telegram-bot"); err != nil {
 			log.Printf("rider: legal accept: %v", err)
 			send(bot, q.Message.Chat.ID, "Xatolik. Keyinroq urinib ko'ring.")
 			return
@@ -381,7 +381,7 @@ func sendActiveUserTerms(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64) {
 
 func sendActivePrivacy(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64) {
 	ctx := context.Background()
-	_, content, err := legal.NewService(db).ActiveDocument(ctx, legal.DocPrivacyPolicy)
+	_, content, err := legal.NewService(db).ActiveDocument(ctx, legal.DocPrivacyPolicyUser)
 	if err != nil {
 		send(bot, chatID, "Maxfiylik siyosati hozircha yuklanmadi. /start orqali qayta urinib ko'ring.")
 		return

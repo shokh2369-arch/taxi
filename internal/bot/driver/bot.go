@@ -124,7 +124,7 @@ func sendDriverAgreement(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64) {
 	}
 }
 
-// driverLegalAllowsLiveSharing is true only when the driver has accepted active driver_terms and privacy_policy.
+// driverLegalAllowsLiveSharing is true only when the driver has accepted active driver_terms and driver privacy policy.
 // Live location must never count as "online" without this.
 func driverLegalAllowsLiveSharing(ctx context.Context, db *sql.DB, userID int64) bool {
 	return legal.NewService(db).DriverHasActiveLegal(ctx, userID)
@@ -141,7 +141,7 @@ func blockDriverLiveForMissingLegal(ctx context.Context, bot *tgbotapi.BotAPI, d
 	// We gate by the active legal fingerprint stored in drivers.legal_terms_prompt_fingerprint:
 	// - If we already prompted the current active bundle → stay silent on further updates.
 	// - If versions change (fingerprint changes) → prompt once again.
-	fp, err := legal.ActiveLegalFingerprint(ctx, db)
+	fp, err := legal.ActiveLegalFingerprintForTypes(ctx, db, []string{legal.DocDriverTerms, legal.DocPrivacyPolicyDriver})
 	if err != nil {
 		log.Printf("driver: ActiveLegalFingerprint (live block) user_id=%d: %v", userID, err)
 		// Safe fallback: send once via existing gating (it will store fingerprint if possible).
@@ -640,7 +640,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 		return
 	case "privacy":
 		ctx := context.Background()
-		_, content, err := legal.NewService(db).ActiveDocument(ctx, legal.DocPrivacyPolicy)
+		_, content, err := legal.NewService(db).ActiveDocument(ctx, legal.DocPrivacyPolicyDriver)
 		if err != nil {
 			send(bot, chatID, "Maxfiylik siyosati yuklanmadi.")
 		} else {
@@ -1576,7 +1576,7 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 		}
 		lSvc := legal.NewService(db)
 		before := lSvc.DriverHasActiveLegal(ctx, userID)
-		if err := lSvc.AcceptActiveForTypes(ctx, userID, []string{legal.DocDriverTerms, legal.DocPrivacyPolicy}, "", "telegram-bot"); err != nil {
+		if err := lSvc.AcceptActiveForTypes(ctx, userID, []string{legal.DocDriverTerms, legal.DocPrivacyPolicyDriver}, "", "telegram-bot"); err != nil {
 			log.Printf("driver: legal accept user_id=%d: %v", userID, err)
 			_, _ = bot.Request(tgbotapi.NewCallback(q.ID, ""))
 			send(bot, chatID, "Xatolik. Keyinroq urinib ko'ring.")
