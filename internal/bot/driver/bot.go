@@ -125,8 +125,8 @@ func sendDriverAgreement(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64) {
 	}
 }
 
-// driverLegalAllowsLiveSharing is true only when the driver has accepted all currently active legal documents
-// (driver_terms, user_terms, privacy_policy at active versions). Live location must never count as "online" without this.
+// driverLegalAllowsLiveSharing is true only when the driver has accepted active driver_terms and privacy_policy.
+// Live location must never count as "online" without this.
 func driverLegalAllowsLiveSharing(ctx context.Context, db *sql.DB, userID int64) bool {
 	return legal.NewService(db).DriverHasActiveLegal(ctx, userID)
 }
@@ -646,9 +646,9 @@ func handleUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 		return
 	case "terms":
 		ctx := context.Background()
-		_, content, err := legal.NewService(db).ActiveDocument(ctx, legal.DocUserTerms)
+		_, content, err := legal.NewService(db).ActiveDocument(ctx, legal.DocDriverTerms)
 		if err != nil {
-			send(bot, chatID, legal.TermsFullMessage)
+			send(bot, chatID, legal.DriverAgreementMessage)
 		} else {
 			send(bot, chatID, content)
 		}
@@ -1591,7 +1591,7 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 		}
 		lSvc := legal.NewService(db)
 		before := lSvc.DriverHasActiveLegal(ctx, userID)
-		if err := lSvc.AcceptActiveForTypes(ctx, userID, []string{legal.DocDriverTerms, legal.DocUserTerms, legal.DocPrivacyPolicy}, "", "telegram-bot"); err != nil {
+		if err := lSvc.AcceptActiveForTypes(ctx, userID, []string{legal.DocDriverTerms, legal.DocPrivacyPolicy}, "", "telegram-bot"); err != nil {
 			log.Printf("driver: legal accept user_id=%d: %v", userID, err)
 			_, _ = bot.Request(tgbotapi.NewCallback(q.ID, ""))
 			send(bot, chatID, "Xatolik. Keyinroq urinib ko'ring.")

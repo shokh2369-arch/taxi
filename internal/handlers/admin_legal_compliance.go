@@ -31,7 +31,7 @@ func loadActiveDocumentVersions(ctx context.Context, db *sql.DB) (map[string]int
 func requiredDocTypesForRole(role string) []string {
 	switch role {
 	case "driver", "drivers":
-		return []string{legal.DocDriverTerms, legal.DocUserTerms, legal.DocPrivacyPolicy}
+		return []string{legal.DocDriverTerms, legal.DocPrivacyPolicy}
 	default:
 		return []string{legal.DocUserTerms, legal.DocPrivacyPolicy}
 	}

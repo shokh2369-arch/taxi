@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// ActiveLegalFingerprint encodes active document_type:version pairs in stable order (driver_terms:2|privacy_policy:1|user_terms:2).
+// ActiveLegalFingerprint encodes all active document_type:version pairs (stable order from DB), e.g. driver_terms, privacy_policy, user_terms for riders.
 func ActiveLegalFingerprint(ctx context.Context, db *sql.DB) (string, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT document_type, version FROM legal_documents WHERE is_active = 1 ORDER BY document_type`)
@@ -30,7 +30,7 @@ func ActiveLegalFingerprint(ctx context.Context, db *sql.DB) (string, error) {
 	return strings.Join(parts, "|"), nil
 }
 
-// ActiveLegalFingerprintLabels turns a fingerprint into readable "driver_terms v2, user_terms v2, ...".
+// ActiveLegalFingerprintLabels turns a fingerprint into readable labels like "driver_terms v2, ...".
 func ActiveLegalFingerprintLabels(fp string) string {
 	if fp == "" {
 		return ""

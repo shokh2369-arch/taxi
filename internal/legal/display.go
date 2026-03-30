@@ -24,14 +24,14 @@ func (s *Service) RiderAgreementPromptMessage(ctx context.Context) (string, erro
 	return strings.Join(parts, "\n\n───────────\n\n") + "\n\n👇 Davom etish uchun tasdiqlang:", nil
 }
 
-// DriverAgreementPromptMessage builds driver-facing legal text (active driver + user + privacy).
+// DriverAgreementPromptMessage builds driver-facing legal text (active driver oferta + privacy only).
 func (s *Service) DriverAgreementPromptMessage(ctx context.Context) (string, error) {
-	docs, err := s.ActiveDocuments(ctx, []string{DocDriverTerms, DocUserTerms, DocPrivacyPolicy})
+	docs, err := s.ActiveDocuments(ctx, []string{DocDriverTerms, DocPrivacyPolicy})
 	if err != nil {
 		return "", err
 	}
 	var parts []string
-	for _, key := range []string{DocDriverTerms, DocUserTerms, DocPrivacyPolicy} {
+	for _, key := range []string{DocDriverTerms, DocPrivacyPolicy} {
 		if d, ok := docs[key]; ok && strings.TrimSpace(d.Content) != "" {
 			parts = append(parts, strings.TrimSpace(d.Content))
 		}

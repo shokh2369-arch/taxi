@@ -81,9 +81,9 @@ func (s *Service) RiderHasActiveLegal(ctx context.Context, userID int64) bool {
 	return err == nil && n == RiderDocTypes
 }
 
-// DriverHasActiveLegal returns true when all three documents are accepted at active versions.
+// DriverHasActiveLegal returns true when driver_terms and privacy_policy are accepted at active versions.
 func (s *Service) DriverHasActiveLegal(ctx context.Context, userID int64) bool {
-	n, err := s.countActiveMatched(ctx, userID, []string{DocDriverTerms, DocUserTerms, DocPrivacyPolicy})
+	n, err := s.countActiveMatched(ctx, userID, []string{DocDriverTerms, DocPrivacyPolicy})
 	return err == nil && n == DriverDocTypes
 }
 
