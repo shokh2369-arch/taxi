@@ -190,6 +190,24 @@ You deploy **(A)** static Mini App and **(B)** one **backend** process talking t
 | Backend **`WEBAPP_URL`** | Mini App base URL (HTTPS) |
 | **`webapp/map.js`** **`API_BASE`** | Backend API origin |
 
+### Keepalive / ping (Render sleep + “Output too large”)
+
+**Wake the backend, not the static site.** Free/low-usage hosts often **spin down** the API. Uptime/ping must hit the **same origin as your API** (Mini App / Vercel pages return **large HTML** and are the wrong target).
+
+- **Ping URL:** `https://<your-backend-host>/health` — response is plain text **`OK`** (2 bytes).
+- **External monitors (UptimeRobot, etc.):** HTTP GET to that URL only; do not use checks that store or match huge response bodies.
+- **Shell / scheduled jobs:** discard the body so job output stays tiny (avoids platform limits like **“Output too large”**):
+
+```bash
+curl -fsS -o /dev/null "https://your-backend-host.onrender.com/health"
+```
+
+`-f` treats non-2xx as failure; `-sS` keeps stderr quiet except errors; `-o /dev/null` prints **no** body to stdout.
+
+If the service was asleep, the **first** request may take longer (cold start); that is normal.
+
+**Optional:** this repo’s **`render.yaml`** includes a small **cron** job that pings `/health` the same way (adjust the hostname if you rename the web service).
+
 ### Deployment troubleshooting
 
 | Symptom | Likely cause | Fix |
@@ -198,6 +216,8 @@ You deploy **(A)** static Mini App and **(B)** one **backend** process talking t
 | `UNIQUE constraint failed` on **`042_driver_ledger_unique_driver_ref`** | Old DBs had several **commission** ledger rows per trip with the same **`reference_type` / `reference_id`** | Use the **current** `042` from this repo: it **normalizes** those rows **before** `CREATE UNIQUE INDEX`. Redeploy after pull; do not drop the backfill `UPDATE` steps from `042`. |
 | `getUpdates` conflict | Two replicas or local + cloud | Single instance; stop duplicate processes |
 | Render build cache errors | Stale cache | Clear build cache, redeploy |
+| Service “sleeps” / cold start | Idle spin-down (e.g. Render free) | Ping **`/health`** on the **backend** URL every few minutes (see **Keepalive / ping** above); not the Vercel Mini App |
+| Cron / job **“Output too large”** | Command prints full HTTP body (HTML) or `curl -v` | Use `curl -fsS -o /dev/null ...` (or equivalent); point at **`/health`** |
 
 ---
 
