@@ -119,7 +119,7 @@ Komissiya platforma qoidalariga muvofiq ichki hisob-kitoblar orqali aks ettirila
 8. Platforma qoidalari kelgusida yangilanishi mumkin.
 
 9. Ushbu shartnomani qabul qilish orqali siz barcha qoidalarga rozilik bildirasiz.',
-1),
+0),
 ('user_terms', 2,
 '📄 Foydalanuvchi shartlari
 
@@ -171,8 +171,8 @@ YettiQanot foydalanuvchi ma’lumotlarini xizmatni ta’minlash uchun qayta ishl
 - Telegram ID
 - joylashuv (location)
 - buyurtma ma’lumotlari
-- haydovchilik guvohnomasi bo‘yicha ma’lumotlar (jumladan, surat yoki skan-nusxa orqali taqdim etilishi mumkin)
-- transport vositasi texnik pasporti bo‘yicha ma’lumotlar (jumladan, surat yoki skan-nusxa orqali taqdim etilishi mumkin)
+- haydovchilik guvohnomasi ma’lumotlari
+- avtotransport vositasi ro‘yxatdan o‘tganligi to‘g‘risidagi guvohnoma (tex passport) ma’lumotlari
 
 2. Maqsad:
 - haydovchi va mijozni bog‘lash
@@ -183,6 +183,39 @@ YettiQanot foydalanuvchi ma’lumotlarini xizmatni ta’minlash uchun qayta ishl
 3. Ma’lumotlar sotilmaydi.
 
 4. Platformadan foydalanish orqali siz rozilik bildirasiz.',
+1);
+
+INSERT INTO legal_documents (document_type, version, content, is_active) VALUES
+('driver_terms', 3,
+'📄 Haydovchi shartnomasi (oferta)
+
+YettiQanot — haydovchi va mijozni bog‘lovchi platforma bo‘lib, transport xizmatini bevosita ko‘rsatmaydi.
+
+1. Haydovchi mustaqil faoliyat yuritadi va YettiQanot xodimi hisoblanmaydi.
+
+2. Haydovchi quyidagilar uchun to‘liq javobgar:
+- transport vositasi holati
+- haydovchilik guvohnomasi
+- yo‘l harakati qoidalariga rioya qilish
+
+3. YettiQanot faqat buyurtmalarni uzatadi va safar jarayoni uchun javobgar emas.
+
+4. To‘lovlar mijoz va haydovchi o‘rtasida amalga oshiriladi. YettiQanot hozirda to‘lovlarni qabul qilmaydi.
+
+5. Platforma 5% komissiya qo‘llashi mumkin.
+Komissiya platforma qoidalariga muvofiq ichki hisob-kitoblar orqali aks ettiriladi.
+
+6. Platforma haydovchilarga promo kredit (bonus balans) berishi mumkin:
+- bu real pul emas
+- naqdlashtirilmaydi
+- bank hisobiga chiqarilmaydi
+- faqat platforma ichida ishlatiladi
+
+7. Platforma qoidalariga zid harakatlar aniqlansa, hisob bloklanishi mumkin.
+
+8. Platforma qoidalari kelgusida yangilanishi mumkin.
+
+9. Ushbu shartnomani qabul qilish orqali siz barcha qoidalarga rozilik bildirasiz.',
 1);
 
 UPDATE users SET terms_accepted = 0;
