@@ -36,6 +36,7 @@ func (h *AdminHandlers) Register(r *gin.Engine) {
 		g.GET("/riders", h.ListRiders)
 		g.POST("/drivers/:id/add-balance", h.AddBalance)
 		g.POST("/drivers/:id/adjust-balance", h.AdjustBalance)
+		g.POST("/drivers/:id/deduct-balance", h.DeductBalance)
 		g.POST("/drivers/:id/verify", h.VerifyDriver)
 		g.GET("/payments", h.ListPayments)
 		g.GET("/dashboard", h.Dashboard)
@@ -73,6 +74,11 @@ type adjustBalanceRequest struct {
 	Amount  int64  `json:"amount"`   // signed delta; positive = credit, negative = debit
 	Reason  string `json:"reason"`   // human-readable reason; stored in audit log
 	AdminID int64  `json:"admin_id"` // admin user id for audit metadata
+}
+
+type deductBalanceRequest struct {
+	Amount int64  `json:"amount"` // positive amount to deduct from cash_balance
+	Reason string `json:"reason"`
 }
 
 // VerifyDriverRequest is the body for POST /admin/drivers/:id/verify.
@@ -183,16 +189,56 @@ func (h *AdminHandlers) AdjustBalance(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"success":            true,
-		"driver_id":          driverID,
-		"delta":              req.Amount,
-		"promo_balance":      promo,
-		"cash_balance":       cash,
-		"balance":            total,
-		"is_active":          isActive,
-		"ledger_entry_type":  "MANUAL_ADJUSTMENT",
-		"reason":             req.Reason,
-		"admin_id":           req.AdminID,
+		"success":           true,
+		"driver_id":         driverID,
+		"delta":             req.Amount,
+		"promo_balance":     promo,
+		"cash_balance":      cash,
+		"balance":           total,
+		"is_active":         isActive,
+		"ledger_entry_type": "MANUAL_ADJUSTMENT",
+		"reason":            req.Reason,
+		"admin_id":          req.AdminID,
+	})
+}
+
+// DeductBalance deducts a positive amount from the driver's cash balance only (promo remains unchanged).
+// Body: { "amount": <int>, "reason": "..." }.
+func (h *AdminHandlers) DeductBalance(c *gin.Context) {
+	idStr := c.Param("id")
+	driverID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil || driverID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid driver id"})
+		return
+	}
+	var req deductBalanceRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	if req.Amount <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "amount must be greater than zero"})
+		return
+	}
+	promo, cash, total, isActive, err := h.svc.DeductDriverCashBalance(c.Request.Context(), driverID, req.Amount, req.Reason)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "driver not found"})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success":           true,
+		"driver_id":         driverID,
+		"deducted_amount":   req.Amount,
+		"promo_balance":     promo,
+		"cash_balance":      cash,
+		"balance":           total,
+		"is_active":         isActive,
+		"ledger_entry_type": "MANUAL_DEDUCTION",
+		"reason":            req.Reason,
 	})
 }
 

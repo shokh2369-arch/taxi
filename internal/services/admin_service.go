@@ -200,6 +200,74 @@ func (s *AdminService) AdjustDriverBalance(ctx context.Context, driverID int64, 
 	return promoFinal, cashFinal, totalFinal, isActiveFinal, nil
 }
 
+// DeductDriverCashBalance deducts a positive amount from the driver's cash balance only (promo is never reduced).
+// Returns final balances and is_active flag; records a MANUAL_DEDUCTION ledger entry, without creating any payments row.
+func (s *AdminService) DeductDriverCashBalance(ctx context.Context, driverID int64, amount int64, reason string) (promoBalance, cashBalance, totalBalance int64, isActive int, err error) {
+	if amount <= 0 || s.db == nil {
+		return 0, 0, 0, 0, fmt.Errorf("amount must be greater than zero")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var promo, cash, total int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COALESCE(promo_balance, 0), COALESCE(cash_balance, 0), COALESCE(balance, 0)
+		FROM drivers WHERE user_id = ?1`, driverID).Scan(&promo, &cash, &total); err != nil {
+		return 0, 0, 0, 0, err
+	}
+
+	// Deduct only from cash; promo must remain unchanged.
+	newCash := cash - amount
+	if newCash < 0 {
+		return 0, 0, 0, 0, fmt.Errorf("insufficient cash balance for deduction")
+	}
+	newTotal := promo + newCash
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE drivers SET cash_balance = ?1, balance = ?2,
+		  is_active = CASE WHEN ?2 <= 0 THEN 0 ELSE is_active END
+		WHERE user_id = ?3`,
+		newCash, newTotal, driverID); err != nil {
+		return 0, 0, 0, 0, err
+	}
+
+	ledger := repositories.NewDriverLedgerRepository(s.db)
+	refType := "admin_deduct"
+	refID := "admin:dashboard"
+	note := reason
+	if note == "" {
+		note = "Admin manual cash deduction"
+	}
+	e := &models.DriverLedgerEntry{
+		DriverID:      driverID,
+		Bucket:        models.LedgerBucketCash,
+		EntryType:     models.LedgerEntryManualDeduction,
+		Amount:        -amount,
+		ReferenceType: &refType,
+		ReferenceID:   &refID,
+		Note:          &note,
+	}
+	if err := ledger.InsertTx(ctx, tx, e); err != nil {
+		return 0, 0, 0, 0, err
+	}
+
+	var promoFinal, cashFinal, totalFinal int64
+	var isActiveFinal int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COALESCE(promo_balance,0), COALESCE(cash_balance,0), COALESCE(balance,0), COALESCE(is_active,0)
+		FROM drivers WHERE user_id = ?1`, driverID).Scan(&promoFinal, &cashFinal, &totalFinal, &isActiveFinal); err != nil {
+		return 0, 0, 0, 0, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, 0, 0, 0, err
+	}
+	return promoFinal, cashFinal, totalFinal, isActiveFinal, nil
+}
+
 // ListPayments returns payment history, optionally filtered by driver.
 func (s *AdminService) ListPayments(ctx context.Context, driverID *int64) ([]models.Payment, error) {
 	return s.payments.ListPayments(ctx, driverID, nil, nil)

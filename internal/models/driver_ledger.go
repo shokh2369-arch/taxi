@@ -12,6 +12,7 @@ const (
 	LedgerEntryManualAdjustment          = "MANUAL_ADJUSTMENT"
 	LedgerEntryCashTopUp                 = "CASH_TOPUP"
 	LedgerEntryCashDeduction             = "CASH_DEDUCTION"
+	LedgerEntryManualDeduction          = "MANUAL_DEDUCTION"
 )
 
 const LedgerBucketPromo = "promo"
