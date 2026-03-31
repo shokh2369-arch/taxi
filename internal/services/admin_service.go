@@ -201,14 +201,16 @@ func (s *AdminService) AdjustDriverBalance(ctx context.Context, driverID int64, 
 }
 
 // DeductDriverCashBalance deducts a positive amount from the driver's cash balance only (promo is never reduced).
-// Returns final balances and is_active flag; records a MANUAL_DEDUCTION ledger entry, without creating any payments row.
-func (s *AdminService) DeductDriverCashBalance(ctx context.Context, driverID int64, amount int64, reason string) (promoBalance, cashBalance, totalBalance int64, isActive int, err error) {
+// Caps deduction to available cash (effectiveDeduction = min(amount, cash_balance)).
+// Returns final balances, is_active, actual deducted amount, and whether the request was capped.
+// Records a MANUAL_DEDUCTION ledger entry when effectiveDeduction > 0; does not create any payments row.
+func (s *AdminService) DeductDriverCashBalance(ctx context.Context, driverID int64, amount int64, reason string) (promoBalance, cashBalance, totalBalance int64, isActive int, deducted int64, wasCapped bool, err error) {
 	if amount <= 0 || s.db == nil {
-		return 0, 0, 0, 0, fmt.Errorf("amount must be greater than zero")
+		return 0, 0, 0, 0, 0, false, fmt.Errorf("amount must be greater than zero")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, 0, 0, 0, err
+		return 0, 0, 0, 0, 0, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -216,14 +218,22 @@ func (s *AdminService) DeductDriverCashBalance(ctx context.Context, driverID int
 	if err := tx.QueryRowContext(ctx, `
 		SELECT COALESCE(promo_balance, 0), COALESCE(cash_balance, 0), COALESCE(balance, 0)
 		FROM drivers WHERE user_id = ?1`, driverID).Scan(&promo, &cash, &total); err != nil {
-		return 0, 0, 0, 0, err
+		return 0, 0, 0, 0, 0, false, err
 	}
 
-	// Deduct only from cash; promo must remain unchanged.
-	newCash := cash - amount
-	if newCash < 0 {
-		return 0, 0, 0, 0, fmt.Errorf("insufficient cash balance for deduction")
+	// effectiveDeduction = min(requested amount, cash_balance)
+	effective := amount
+	if effective > cash {
+		effective = cash
 	}
+	wasCapped = effective < amount
+
+	// Nothing to deduct (cash already zero) – treat as no-op success.
+	if effective == 0 {
+		return promo, cash, total, 0, 0, wasCapped, nil
+	}
+
+	newCash := cash - effective
 	newTotal := promo + newCash
 
 	if _, err := tx.ExecContext(ctx, `
@@ -231,7 +241,7 @@ func (s *AdminService) DeductDriverCashBalance(ctx context.Context, driverID int
 		  is_active = CASE WHEN ?2 <= 0 THEN 0 ELSE is_active END
 		WHERE user_id = ?3`,
 		newCash, newTotal, driverID); err != nil {
-		return 0, 0, 0, 0, err
+		return 0, 0, 0, 0, 0, wasCapped, err
 	}
 
 	ledger := repositories.NewDriverLedgerRepository(s.db)
@@ -245,13 +255,13 @@ func (s *AdminService) DeductDriverCashBalance(ctx context.Context, driverID int
 		DriverID:      driverID,
 		Bucket:        models.LedgerBucketCash,
 		EntryType:     models.LedgerEntryManualDeduction,
-		Amount:        -amount,
+		Amount:        -effective,
 		ReferenceType: &refType,
 		ReferenceID:   &refID,
 		Note:          &note,
 	}
 	if err := ledger.InsertTx(ctx, tx, e); err != nil {
-		return 0, 0, 0, 0, err
+		return 0, 0, 0, 0, 0, wasCapped, err
 	}
 
 	var promoFinal, cashFinal, totalFinal int64
@@ -259,13 +269,13 @@ func (s *AdminService) DeductDriverCashBalance(ctx context.Context, driverID int
 	if err := tx.QueryRowContext(ctx, `
 		SELECT COALESCE(promo_balance,0), COALESCE(cash_balance,0), COALESCE(balance,0), COALESCE(is_active,0)
 		FROM drivers WHERE user_id = ?1`, driverID).Scan(&promoFinal, &cashFinal, &totalFinal, &isActiveFinal); err != nil {
-		return 0, 0, 0, 0, err
+		return 0, 0, 0, 0, 0, wasCapped, err
 	}
 
 	if err := tx.Commit(); err != nil {
-		return 0, 0, 0, 0, err
+		return 0, 0, 0, 0, 0, wasCapped, err
 	}
-	return promoFinal, cashFinal, totalFinal, isActiveFinal, nil
+	return promoFinal, cashFinal, totalFinal, isActiveFinal, effective, wasCapped, nil
 }
 
 // ListPayments returns payment history, optionally filtered by driver.

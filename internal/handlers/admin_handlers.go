@@ -220,7 +220,7 @@ func (h *AdminHandlers) DeductBalance(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "amount must be greater than zero"})
 		return
 	}
-	promo, cash, total, isActive, err := h.svc.DeductDriverCashBalance(c.Request.Context(), driverID, req.Amount, req.Reason)
+	promo, cash, total, isActive, deducted, wasCapped, err := h.svc.DeductDriverCashBalance(c.Request.Context(), driverID, req.Amount, req.Reason)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "driver not found"})
@@ -232,13 +232,15 @@ func (h *AdminHandlers) DeductBalance(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success":           true,
 		"driver_id":         driverID,
-		"deducted_amount":   req.Amount,
+		"requested_amount":  req.Amount,
+		"deducted_amount":   deducted,
 		"promo_balance":     promo,
 		"cash_balance":      cash,
 		"balance":           total,
 		"is_active":         isActive,
 		"ledger_entry_type": "MANUAL_DEDUCTION",
 		"reason":            req.Reason,
+		"was_capped":        wasCapped,
 	})
 }
 
