@@ -34,6 +34,7 @@ func (h *AdminHandlers) Register(r *gin.Engine) {
 		g.GET("/drivers/:id/ledger", h.ListDriverLedger)
 		g.GET("/riders", h.ListRiders)
 		g.POST("/drivers/:id/add-balance", h.AddBalance)
+		g.POST("/drivers/:id/adjust-balance", h.AdjustBalance)
 		g.POST("/drivers/:id/verify", h.VerifyDriver)
 		g.GET("/payments", h.ListPayments)
 		g.GET("/dashboard", h.Dashboard)
@@ -65,6 +66,12 @@ func (h *AdminHandlers) ListDrivers(c *gin.Context) {
 type addBalanceRequest struct {
 	Amount int64  `json:"amount"` // in smallest currency units (e.g. so'm)
 	Note   string `json:"note"`
+}
+
+type adjustBalanceRequest struct {
+	Amount  int64  `json:"amount"`   // signed delta; positive = credit, negative = debit
+	Reason  string `json:"reason"`   // human-readable reason; stored in audit log
+	AdminID int64  `json:"admin_id"` // admin user id for audit metadata
 }
 
 // VerifyDriverRequest is the body for POST /admin/drivers/:id/verify.
@@ -137,6 +144,35 @@ func (h *AdminHandlers) AddBalance(c *gin.Context) {
 	}
 	if err := h.svc.AddDriverBalance(c.Request.Context(), driverID, req.Amount, req.Note); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to add balance"})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// AdjustBalance applies a signed manual balance delta (credit or debit) and records an audit ledger entry.
+// Body: { "amount": <int>, "reason": "...", "admin_id": <int> }.
+func (h *AdminHandlers) AdjustBalance(c *gin.Context) {
+	idStr := c.Param("id")
+	driverID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil || driverID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid driver id"})
+		return
+	}
+	var req adjustBalanceRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	if req.Amount == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "amount must be non-zero"})
+		return
+	}
+	if req.AdminID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "admin_id must be > 0"})
+		return
+	}
+	if err := h.svc.AdjustDriverBalance(c.Request.Context(), driverID, req.Amount, req.Reason, req.AdminID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to adjust balance"})
 		return
 	}
 	c.Status(http.StatusNoContent)

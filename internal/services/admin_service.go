@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"log"
+	"strconv"
 	"time"
 
 	"taxi-mvp/internal/accounting"
@@ -123,6 +124,59 @@ func (s *AdminService) AddDriverBalance(ctx context.Context, driverID int64, amo
 		return nil
 	}
 	return accounting.GrantCashTopUp(ctx, s.db, s.payments, driverID, amountCents, note)
+}
+
+// AdjustDriverBalance applies a signed manual delta to the driver's cash wallet and total balance, and records an audit ledger entry.
+// Does not create a payments row (admin-side correction only).
+func (s *AdminService) AdjustDriverBalance(ctx context.Context, driverID int64, delta int64, reason string, adminID int64) error {
+	if delta == 0 || s.db == nil {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var promo, cash, total int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COALESCE(promo_balance, 0), COALESCE(cash_balance, 0), COALESCE(balance, 0)
+		FROM drivers WHERE user_id = ?1`, driverID).Scan(&promo, &cash, &total); err != nil {
+		return err
+	}
+	newTotal := total + delta
+	if newTotal < promo {
+		return sql.ErrNoRows
+	}
+	newCash := newTotal - promo
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE drivers SET cash_balance = ?1, balance = ?2,
+		  is_active = CASE WHEN ?2 <= 0 THEN 0 ELSE is_active END
+		WHERE user_id = ?3`,
+		newCash, newTotal, driverID); err != nil {
+		return err
+	}
+
+	ledger := repositories.NewDriverLedgerRepository(s.db)
+	refType := "admin_adjust"
+	refID := "admin:" + strconv.FormatInt(adminID, 10)
+	note := reason
+	if note == "" {
+		note = "Admin manual balance adjustment"
+	}
+	e := &models.DriverLedgerEntry{
+		DriverID:      driverID,
+		Bucket:        models.LedgerBucketCash,
+		EntryType:     models.LedgerEntryManualAdjustment,
+		Amount:        delta,
+		ReferenceType: &refType,
+		ReferenceID:   &refID,
+		Note:          &note,
+	}
+	if err := ledger.InsertTx(ctx, tx, e); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ListPayments returns payment history, optionally filtered by driver.
