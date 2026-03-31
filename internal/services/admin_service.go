@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"taxi-mvp/internal/accounting"
+	"taxi-mvp/internal/domain"
 	"taxi-mvp/internal/models"
 	"taxi-mvp/internal/repositories"
 )
@@ -310,4 +311,71 @@ func (s *AdminService) GetDashboard(ctx context.Context) (*DashboardSummary, err
 	}
 	summary.TodaysTrips = tripsToday
 	return &summary, nil
+}
+
+// AdminMapDriver is a minimal view for the admin map (location + activity only).
+type AdminMapDriver struct {
+	ID                 int64   `json:"id"`
+	LastLat            float64 `json:"last_lat"`
+	LastLng            float64 `json:"last_lng"`
+	IsActive           int     `json:"is_active"`
+	LiveLocationActive int     `json:"live_location_active"`
+}
+
+// AdminMapRideRequest is a minimal view for active ride requests on the admin map.
+type AdminMapRideRequest struct {
+	ID         string  `json:"id"`
+	PickupLat  float64 `json:"pickup_lat"`
+	PickupLng  float64 `json:"pickup_lng"`
+	Status     string  `json:"status"`
+}
+
+// ListActiveDriversForMap returns only drivers with valid coordinates and active live location.
+func (s *AdminService) ListActiveDriversForMap(ctx context.Context) ([]AdminMapDriver, error) {
+	if s.db == nil {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT user_id, last_lat, last_lng, is_active, COALESCE(live_location_active, 0)
+		FROM drivers
+		WHERE last_lat IS NOT NULL AND last_lng IS NOT NULL AND is_active = 1 AND COALESCE(live_location_active, 0) = 1`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AdminMapDriver
+	for rows.Next() {
+		var d AdminMapDriver
+		if err := rows.Scan(&d.ID, &d.LastLat, &d.LastLng, &d.IsActive, &d.LiveLocationActive); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// ListActiveRideRequestsForMap returns active ride requests with valid pickup coordinates.
+func (s *AdminService) ListActiveRideRequestsForMap(ctx context.Context) ([]AdminMapRideRequest, error) {
+	if s.db == nil {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, pickup_lat, pickup_lng, status
+		FROM ride_requests
+		WHERE pickup_lat IS NOT NULL AND pickup_lng IS NOT NULL
+		  AND status IN (?1, ?2)`,
+		domain.RequestStatusPending, domain.RequestStatusAssigned)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AdminMapRideRequest
+	for rows.Next() {
+		var r AdminMapRideRequest
+		if err := rows.Scan(&r.ID, &r.PickupLat, &r.PickupLng, &r.Status); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }

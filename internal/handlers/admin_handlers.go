@@ -35,6 +35,8 @@ func (h *AdminHandlers) Register(r *gin.Engine) {
 	g := r.Group("/admin")
 	{
 		g.GET("/drivers", h.ListDrivers)
+		g.GET("/map/drivers", h.ListDriversForMap)
+		g.GET("/map/ride-requests", h.ListRideRequestsForMap)
 		g.GET("/drivers/:id/ledger", h.ListDriverLedger)
 		g.GET("/riders", h.ListRiders)
 		g.POST("/drivers/:id/add-balance", h.AddBalance)
@@ -66,6 +68,28 @@ func (h *AdminHandlers) ListDrivers(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, drivers)
+}
+
+// ListDriversForMap returns only location fields required by the admin map.
+func (h *AdminHandlers) ListDriversForMap(c *gin.Context) {
+	ctx := c.Request.Context()
+	drivers, err := h.svc.ListActiveDriversForMap(ctx)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list drivers for map"})
+		return
+	}
+	c.JSON(http.StatusOK, drivers)
+}
+
+// ListRideRequestsForMap returns active ride requests for the admin map.
+func (h *AdminHandlers) ListRideRequestsForMap(c *gin.Context) {
+	ctx := c.Request.Context()
+	requests, err := h.svc.ListActiveRideRequestsForMap(ctx)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list ride requests for map"})
+		return
+	}
+	c.JSON(http.StatusOK, requests)
 }
 
 type addBalanceRequest struct {
