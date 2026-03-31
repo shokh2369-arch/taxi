@@ -2,9 +2,12 @@ package handlers
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -77,8 +80,14 @@ type adjustBalanceRequest struct {
 }
 
 type deductBalanceRequest struct {
-	Amount int64  `json:"amount" form:"amount"`   // positive amount to deduct from cash_balance
-	Reason string `json:"reason" form:"reason"`   // optional, for audit/log
+	Amount int64  `form:"amount"`              // parsed from form data when not JSON
+	Reason string `json:"reason" form:"reason"` // optional, for audit/log
+}
+
+// deductBalanceJSON is used to accept amount as either number or string in JSON.
+type deductBalanceJSON struct {
+	Amount json.Number `json:"amount"`
+	Reason string      `json:"reason"`
 }
 
 // VerifyDriverRequest is the body for POST /admin/drivers/:id/verify.
@@ -208,24 +217,57 @@ func (h *AdminHandlers) DeductBalance(c *gin.Context) {
 	idStr := c.Param("id")
 	driverID, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil || driverID <= 0 {
+		log.Printf("admin_deduct_balance: invalid driver id %q err=%v", idStr, err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid driver id"})
 		return
 	}
-	var req deductBalanceRequest
-	if err := c.ShouldBind(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
-		return
+	var (
+		req deductBalanceRequest
+	)
+
+	ct := c.GetHeader("Content-Type")
+	if strings.HasPrefix(ct, "application/json") {
+		var j deductBalanceJSON
+		if err := c.ShouldBindJSON(&j); err != nil {
+			log.Printf("admin_deduct_balance: invalid JSON body driver_id=%d err=%v", driverID, err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+			return
+		}
+		if j.Amount == "" {
+			log.Printf("admin_deduct_balance: missing amount in JSON driver_id=%d", driverID)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "amount must be greater than zero"})
+			return
+		}
+		amt, perr := j.Amount.Int64()
+		if perr != nil {
+			log.Printf("admin_deduct_balance: parse amount failed driver_id=%d raw=%q err=%v", driverID, string(j.Amount), perr)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "amount must be a valid integer"})
+			return
+		}
+		req.Amount = amt
+		req.Reason = j.Reason
+	} else {
+		if err := c.ShouldBind(&req); err != nil {
+			log.Printf("admin_deduct_balance: invalid non-JSON body driver_id=%d err=%v", driverID, err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+			return
+		}
 	}
+
 	if req.Amount <= 0 {
+		log.Printf("admin_deduct_balance: non-positive amount driver_id=%d amount=%d reason=%q", driverID, req.Amount, req.Reason)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "amount must be greater than zero"})
 		return
 	}
+
 	promo, cash, total, isActive, deducted, wasCapped, err := h.svc.DeductDriverCashBalance(c.Request.Context(), driverID, req.Amount, req.Reason)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
+			log.Printf("admin_deduct_balance: driver not found driver_id=%d amount=%d reason=%q", driverID, req.Amount, req.Reason)
 			c.JSON(http.StatusNotFound, gin.H{"error": "driver not found"})
 			return
 		}
+		log.Printf("admin_deduct_balance: service error driver_id=%d amount=%d reason=%q err=%v", driverID, req.Amount, req.Reason, err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
