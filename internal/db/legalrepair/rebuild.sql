@@ -255,7 +255,7 @@ YettiQanot haydovchi ma’lumotlarini xizmatni ta’minlash va haydovchini/trans
 1);
 
 INSERT INTO legal_documents (document_type, version, content, is_active) VALUES
-('driver_terms', 3,
+('driver_terms', 4,
 '📄 Haydovchi shartnomasi (oferta)
 
 YettiQanot — haydovchi va mijozni bog‘lovchi platforma bo‘lib, transport xizmatini bevosita ko‘rsatmaydi.
@@ -284,7 +284,7 @@ Komissiya platforma qoidalariga muvofiq ichki hisob-kitoblar orqali aks ettirila
 
 8. Platforma qoidalari kelgusida yangilanishi mumkin.
 
-9. Ushbu shartnomani qabul qilish orqali siz barcha qoidalarga rozilik bildirasiz.',
+9. Balans va qaytarish: Haydovchi tomonidan platformaga kiritilgan real mablag‘ (cash balance) haydovchi arizasiga asosan, platforma belgilagan tartib va muddatlarda qaytarilishi mumkin. Promo kredit (bonuslar) real pul hisoblanmaydi, naqdlashtirilmaydi va hech qanday holatda qaytarilmaydi. Platforma ichida hisoblangan komissiyalar va bajarilgan xizmatlar uchun ushlab qolingan mablag‘lar qaytarilmaydi. YettiQanot MChJ faqat platforma ichidagi balanslar bo‘yicha javobgar bo‘lib, haydovchi va mijoz o‘rtasidagi to‘lovlar bo‘yicha javobgar emas.',
 1);
 
 UPDATE users SET terms_accepted = 0;
