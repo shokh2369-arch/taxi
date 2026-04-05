@@ -3,8 +3,6 @@ package auth
 import (
 	"database/sql"
 	"net/http"
-	"strconv"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 	"taxi-mvp/internal/domain"
@@ -50,12 +48,10 @@ func RequireMiniAppAuth(db *sql.DB, botToken string) gin.HandlerFunc {
 }
 
 // RequireDriverAuth sets the driver in the request context using either:
-// 1) Already-set user (e.g. by TryDriverIDHeader from X-Driver-Id): if context has a user, continue.
+// 1) Already-set user (e.g. by TryDriverIDHeader from X-Driver-Id when ENABLE_DRIVER_ID_HEADER): continue.
 // 2) Telegram initData: reads X-Telegram-Init-Data (or init_data query), validates with driver bot token,
 //    maps Telegram user id to internal user_id and role, then sets that user in context.
-// 3) X-Driver-Id (optional): if enableDriverIDHeader is true and init data is missing, reads X-Driver-Id
-//    (internal users.id of the driver), verifies the user is a driver, and sets them in context.
-// Use TryDriverIDHeader before this middleware so Mini App requests with X-Driver-Id work without initData.
+// X-Driver-Id is handled only in TryDriverIDHeader (run before this middleware on driver routes).
 func RequireDriverAuth(db *sql.DB, driverBotToken string, enableDriverIDHeader bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if u := UserFromContext(c.Request.Context()); u != nil && u.Role == domain.RoleDriver {
@@ -82,24 +78,10 @@ func RequireDriverAuth(db *sql.DB, driverBotToken string, enableDriverIDHeader b
 			}
 		}
 		if enableDriverIDHeader {
-			driverIDRaw := strings.TrimSpace(c.GetHeader(HeaderDriverID))
-			if driverIDRaw != "" {
-				userID, err := strconv.ParseInt(driverIDRaw, 10, 64)
-				if err == nil && userID > 0 {
-					_, err := ResolveDriverByUserID(c.Request.Context(), db, userID)
-					if err == nil {
-						c.Request = c.Request.WithContext(WithUser(c.Request.Context(), &User{
-							UserID:         userID,
-							TelegramUserID: 0,
-							Role:           domain.RoleDriver,
-						}))
-						c.Next()
-						return
-					}
-				}
-			}
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing authentication (X-Telegram-Init-Data or X-Driver-Id with approved driver)"})
+			return
 		}
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing or invalid init data; or driver id not allowed or invalid"})
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing or invalid Telegram init data"})
 	}
 }
 

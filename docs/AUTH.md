@@ -7,8 +7,8 @@
 | **internal/auth/verify.go** | `VerifyMiniAppInitData(botToken, initData)` — HMAC-SHA256 verification of Telegram initData; returns `telegram_user_id`. |
 | **internal/auth/context.go** | `User` struct (user_id, telegram_user_id, role); `WithUser` / `UserFromContext` for request context. |
 | **internal/auth/resolve.go** | `ResolveUserFromTelegramID(ctx, db, telegramID)` → (user_id, role); `AuthorizeTripAccess(ctx, db, userID, tripID, role)` → true if user is driver or rider of trip. |
-| **internal/auth/middleware.go** | `RequireMiniAppAuth(db, botToken)`; `RequireDriverAuth(...)` — if user already in context (e.g. from TryDriverIDHeader), continues; else tries initData then X-Driver-Id. `RequireRiderAuth` uses rider bot token only. |
-| **internal/auth/miniapp_driver.go** | `TryDriverIDHeader(db, enable)` — when `enable` matches **`ENABLE_DRIVER_ID_HEADER`**, if `X-Driver-Id` is present and valid (user exists in `drivers`), sets driver in context. If `enable` is false, the header is ignored (Telegram-only production). |
+| **internal/auth/middleware.go** | `RequireMiniAppAuth(db, botToken)`; `RequireDriverAuth(...)` — if user already driver in context (from `TryDriverIDHeader`), continues; else **Telegram initData only** (X-Driver-Id is handled only in `TryDriverIDHeader`). `RequireRiderAuth` uses rider bot token only. |
+| **internal/auth/driver_x_header.go** | `ResolveDriverUserForXDriverID` — single resolver for HTTP + WS: tries internal **`users.id`** then **`users.telegram_id`**, requires **`drivers.verification_status = approved`**. `TryDriverIDHeader(db, opts)` runs first on driver routes; optional `DRIVER_AUTH_DEBUG` logs only booleans (never the header value). |
 | **internal/handlers/trip.go** | Trip handlers take `db`; get `User` from context; use `auth.AuthorizeTripAccess`; call services with `u.UserID` (no driver_id/rider_id from body). Request bodies: only `trip_id`. |
 | **internal/handlers/driver_location.go** | Get driver from context; body only `lat`, `lng`, `accuracy` (no `driver_id`). |
 | **internal/ws/handler.go** | `ServeWsWithAuth(hub, db, driverToken, riderToken, enableDriverIDHeader, w, r)` — before upgrade: initData (driver or rider token) **or**, when `enableDriverIDHeader` and initData absent, `X-Driver-Id` for assigned driver; then `AuthorizeTripAccess`; 401/403 on failure; upgrade. |
@@ -35,8 +35,11 @@
 
 ### Standalone / Flutter driver app (additive)
 
+- **Header (exact name):** `X-Driver-Id` — digits only: either internal **`users.id`** (same as `drivers.user_id`, admin dashboard user id) **or** the driver’s **Telegram numeric user id** (`users.telegram_id`). Lookup tries internal id first, then Telegram id. **`drivers.verification_status` must be `approved`** or the API returns **403** `{"error":"driver not approved"}` (not the initData error).
+- **Env:** **`ENABLE_DRIVER_ID_HEADER=true`** (or `1`) on the server process (Render/Railway env, systemd, etc. — no typo). Optional **`DRIVER_AUTH_DEBUG=true`** logs `driver_header_path_enabled` and `x_driver_id_header_present` per request path only.
+- **curl (flag on, approved driver):** `curl -sS -H "X-Driver-Id: YOUR_ID" "$BASE/driver/promo-program"` → **200** JSON. **Flag off** with only header → **401** `missing or invalid Telegram init data`. **Unknown id** → **401** `unknown driver id...`. **Wrong format** → **401** `invalid X-Driver-Id...`.
 - **Default production (Telegram only):** leave **`ENABLE_DRIVER_ID_HEADER=false`**. `X-Driver-Id` is ignored on HTTP and WebSocket; drivers authenticate with **`X-Telegram-Init-Data`** from the Mini App / WebView as today.
-- **Optional header mode:** set **`ENABLE_DRIVER_ID_HEADER=true`** only behind HTTPS and a trusted client. The value is the internal driver **`users.id`** (same as Mini App `driver_id` query param). Anyone who can guess or leak IDs could impersonate a driver — mitigate with TLS, app attestation, network rules, and monitoring; consider rate limits at your edge.
+- **Optional header mode:** set **`ENABLE_DRIVER_ID_HEADER=true`** only behind HTTPS and a trusted client. Anyone who can guess or leak IDs could impersonate a driver — mitigate with TLS, app attestation, network rules, and monitoring; consider rate limits at your edge.
 - **`Authorization: Bearer ...`:** not validated by this backend today; allowed in CORS for forward compatibility if you add a gateway or future server support.
 - **Dispatch eligibility:** by default, grid dispatch still expects Telegram live-location freshness. For HTTP-only location from a native app, set **`ENABLE_DRIVER_HTTP_LIVE_LOCATION=true`** so **`POST /driver/location`** also updates **`last_live_location_at`** / **`live_location_active`** and may mark the driver online (same DB gates as dispatch). Default **off** preserves current Telegram-first behavior.
 
@@ -54,12 +57,12 @@ The backend sets the driver in the auth context so trip start/location/finish/ca
 4. Handler gets `User` from context; `AuthorizeTripAccess`; then `tripSvc.StartTrip(ctx, trip_id, user_id)`.
 5. Response 200 with trip result. If the Mini App does not send `X-Telegram-Init-Data`, requests return 401 until initData is sent.
 
-**Option 2: X-Driver-Id (optional, only if you trust the Mini App URL)**
+**Option 2: X-Driver-Id (optional, only if you trust the client)**
 
 1. Set **`ENABLE_DRIVER_ID_HEADER=true`** in the environment.
-2. For requests that look like they come from the Mini App (e.g. no init data), the backend can accept header **`X-Driver-Id`** with the internal driver **user_id** (same as `users.id` for the driver).
-3. Middleware checks that the user exists and has a row in `drivers`; then sets context with that user and role `driver`.
-4. Use this only if the Mini App is served from a trusted origin (e.g. same domain or a known HTTPS Mini App URL). Do not enable in untrusted environments.
+2. Client sends header **`X-Driver-Id`** (digits only): internal **`users.id`** or Telegram **`users.telegram_id`**, resolved in that order; driver must be **`verification_status = approved`**.
+3. **`TryDriverIDHeader`** runs before **`RequireDriverAuth`** on driver routes; if the header is present and invalid/unknown, the request fails with a specific **401/403** JSON error (not the generic initData string).
+4. Use this only from a trusted origin (HTTPS native app or Mini App). Do not enable in untrusted environments.
 
 **Rider cancels trip**
 

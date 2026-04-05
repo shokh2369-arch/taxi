@@ -69,6 +69,7 @@ Create a **`.env`** in the project root (optional: use [godotenv](https://github
 | `MATCH_RADIUS_KM`, `EXPANDED_RADIUS_KM`, `RADIUS_EXPANSION_MINUTES` | Dispatch radii |
 | `REQUEST_EXPIRES_SECONDS`, `DRIVER_SEEN_SECONDS` | Request TTL and driver visibility window |
 | `ENABLE_DRIVER_ID_HEADER` | `true` / `1` to allow **`X-Driver-Id`** for driver HTTP + WebSocket (trust boundary; default off = header ignored) |
+| `DRIVER_AUTH_DEBUG` | `true` / `1` to log boolean flags `driver_header_path_enabled` and `x_driver_id_header_present` per path (never logs header value or ids) |
 | `ENABLE_DRIVER_HTTP_LIVE_LOCATION` | `true` / `1` so **`POST /driver/location`** also refreshes **`last_live_location_at`** / **`live_location_active`** and can mark eligible drivers online (standalone apps); default off |
 | `ADMIN_BOT_TOKEN`, `ADMIN_ID` | Optional admin bot + Telegram user id for fare admin flows |
 | `INFINITE_DRIVER_BALANCE` | If `true`, dispatch ignores balance and trip commission is skipped |

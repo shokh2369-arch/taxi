@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -82,19 +81,28 @@ func ServeWsWithAuth(hub *Hub, db *sql.DB, driverBotToken, riderBotToken string,
 			w.Write([]byte(`{"error":"missing init data"}`))
 			return
 		}
-		parsed, err := strconv.ParseInt(driverIDStr, 10, 64)
-		if err != nil || parsed <= 0 {
+		uid, st := auth.ResolveDriverUserForXDriverID(ctx, db, driverIDStr)
+		switch st {
+		case auth.XDriverIDOK:
+			userID = uid
+			role = domain.RoleDriver
+		case auth.XDriverIDBadFormat:
 			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte(`{"error":"invalid driver id"}`))
+			w.Write([]byte(`{"error":"invalid X-Driver-Id (digits only: internal user id or Telegram user id)"}`))
+			return
+		case auth.XDriverIDNotFound:
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error":"unknown driver id (use internal user id from admin/users, or Telegram user id)"}`))
+			return
+		case auth.XDriverIDNotApproved:
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte(`{"error":"driver not approved"}`))
+			return
+		default:
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error":"driver authentication failed"}`))
 			return
 		}
-		if _, err := auth.ResolveDriverByUserID(ctx, db, parsed); err != nil {
-			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte(`{"error":"user not found"}`))
-			return
-		}
-		userID = parsed
-		role = domain.RoleDriver
 	} else {
 		logger.AuthFailure("missing init data")
 		w.WriteHeader(http.StatusUnauthorized)

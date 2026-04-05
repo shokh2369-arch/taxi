@@ -50,7 +50,8 @@ func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc
 	r.GET("/", healthHandler)
 	r.HEAD("/", healthHandler)
 
-	tryDriverID := auth.TryDriverIDHeader(db, cfg.EnableDriverIDHeader)
+	driverHdr := auth.DriverIDHeaderMiddlewareOpts{Enable: cfg.EnableDriverIDHeader, Debug: cfg.DriverAuthDebug}
+	tryDriverID := auth.TryDriverIDHeader(db, driverHdr)
 	driverAuth := auth.RequireDriverAuth(db, cfg.DriverBotToken, cfg.EnableDriverIDHeader)
 	riderAuth := auth.RequireRiderAuth(db, cfg.RiderBotToken)
 	appUserAuth := auth.RequireMiniAppAuthDriverOrRider(db, cfg.DriverBotToken, cfg.RiderBotToken)

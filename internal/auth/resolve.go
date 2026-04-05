@@ -20,7 +20,7 @@ func ResolveUserFromTelegramID(ctx context.Context, db *sql.DB, telegramUserID i
 }
 
 // ResolveDriverByUserID verifies that the given user_id exists and is a driver (has a row in drivers).
-// Returns userID and nil, or 0 and error. Use for X-Driver-Id header auth when you trust the Mini App origin.
+// Returns userID and nil, or 0 and error. For HTTP/WebSocket X-Driver-Id use ResolveDriverUserForXDriverID (approved + telegram id fallback).
 func ResolveDriverByUserID(ctx context.Context, db *sql.DB, userID int64) (int64, error) {
 	var id int64
 	err := db.QueryRowContext(ctx,
