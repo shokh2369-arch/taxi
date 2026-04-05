@@ -25,7 +25,7 @@ type Config struct {
 	WebAppURL               string   // Base URL for Telegram Mini App / driver map (e.g. https://example.com/webapp)
 	RiderMapURL             string   // Full URL to rider map HTML (e.g. https://example.com/webapp/rider-map.html); if empty, derived as WebAppURL + "/rider-map.html"
 	APIAddr                 string   // HTTP API address for driver location and trip (e.g. :8080)
-	EnableDriverIDHeader    bool     // If true, allow X-Driver-Id header as fallback when init data is missing (only if you trust the Mini App URL)
+	EnableDriverIDHeader    bool     // Default true in code; set ENABLE_DRIVER_ID_HEADER=false (or 0/no/off) to ignore X-Driver-Id (Telegram-only hardening)
 	DriverAuthDebug         bool     // If true, log driver header path flags (never log header value or ids); env DRIVER_AUTH_DEBUG
 	EnableDriverHTTPLiveLocation bool // If true, POST /driver/location also refreshes last_live_location_at / live_location_active (and may mark driver online) for standalone apps; default off preserves Telegram-only live semantics
 	AdminID                 int64    // Telegram user ID of the admin (only this user can use admin bot fare menu)
@@ -69,7 +69,7 @@ func Load() (*Config, error) {
 		WebAppURL:              getEnv("WEBAPP_URL", "https://example.com/webapp"),
 		RiderMapURL:            getRiderMapURL(getEnv("WEBAPP_URL", "https://example.com/webapp"), getEnv("RIDER_MAP_URL", "")),
 		APIAddr:                getAPIAddr(),
-		EnableDriverIDHeader:        getEnv("ENABLE_DRIVER_ID_HEADER", "") == "true" || getEnv("ENABLE_DRIVER_ID_HEADER", "") == "1",
+		EnableDriverIDHeader:        envEnableDriverIDHeader(),
 		EnableDriverHTTPLiveLocation: getEnv("ENABLE_DRIVER_HTTP_LIVE_LOCATION", "") == "true" || getEnv("ENABLE_DRIVER_HTTP_LIVE_LOCATION", "") == "1",
 		DriverAuthDebug:            getEnv("DRIVER_AUTH_DEBUG", "") == "true" || getEnv("DRIVER_AUTH_DEBUG", "") == "1",
 		AdminID:                getEnvInt64("ADMIN_ID", 0),
@@ -93,6 +93,18 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// envEnableDriverIDHeader is true by default (native driver app + Mini App with X-Driver-Id).
+// Set ENABLE_DRIVER_ID_HEADER to false, 0, no, or off (case-insensitive) to disable and require Telegram initData only.
+func envEnableDriverIDHeader() bool {
+	s := strings.TrimSpace(strings.ToLower(os.Getenv("ENABLE_DRIVER_ID_HEADER")))
+	switch s {
+	case "false", "0", "no", "off":
+		return false
+	default:
+		return true
+	}
 }
 
 func getEnv(key, defaultVal string) string {

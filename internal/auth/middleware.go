@@ -12,7 +12,7 @@ import (
 const HeaderInitData = "X-Telegram-Init-Data"
 
 // HeaderDriverID is an optional header for Mini App requests: internal driver user_id (users.id).
-// Only used when ENABLE_DRIVER_ID_HEADER is true and init data is missing. Use only if you trust the Mini App URL.
+// Used when ENABLE_DRIVER_ID_HEADER is enabled (default true in config; set env false to disable).
 const HeaderDriverID = "X-Driver-Id"
 
 // RequireMiniAppAuth returns Gin middleware that verifies Telegram initData, resolves the user, and sets context.

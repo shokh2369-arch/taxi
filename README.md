@@ -68,7 +68,7 @@ Create a **`.env`** in the project root (optional: use [godotenv](https://github
 | `STARTING_FEE`, `PRICE_PER_KM` | Legacy/config fare when DB fare settings are absent |
 | `MATCH_RADIUS_KM`, `EXPANDED_RADIUS_KM`, `RADIUS_EXPANSION_MINUTES` | Dispatch radii |
 | `REQUEST_EXPIRES_SECONDS`, `DRIVER_SEEN_SECONDS` | Request TTL and driver visibility window |
-| `ENABLE_DRIVER_ID_HEADER` | `true` / `1` to allow **`X-Driver-Id`** for driver HTTP + WebSocket (trust boundary; default off = header ignored) |
+| `ENABLE_DRIVER_ID_HEADER` | **Default on in code** (unset = `X-Driver-Id` allowed). Set **`false`**, **`0`**, **`no`**, or **`off`** to require Telegram initData only (stricter production) |
 | `DRIVER_AUTH_DEBUG` | `true` / `1` to log boolean flags `driver_header_path_enabled` and `x_driver_id_header_present` per path (never logs header value or ids) |
 | `ENABLE_DRIVER_HTTP_LIVE_LOCATION` | `true` / `1` so **`POST /driver/location`** also refreshes **`last_live_location_at`** / **`live_location_active`** and can mark eligible drivers online (standalone apps); default off |
 | `ADMIN_BOT_TOKEN`, `ADMIN_ID` | Optional admin bot + Telegram user id for fare admin flows |
@@ -131,11 +131,11 @@ Public prefixes include **`/admin/...`** (dashboard), **`/api/...`**, **`/v1/...
 |--------|------|------|
 | `GET` / `HEAD` | `/health`, `/` | No |
 | `GET` | `/webapp/*` | Static files from `./webapp` |
-| `GET` | `/ws?trip_id=...` | Telegram initData (driver or rider on trip); **`X-Driver-Id`** only if **`ENABLE_DRIVER_ID_HEADER`** |
+| `GET` | `/ws?trip_id=...` | Telegram initData (driver or rider on trip); **`X-Driver-Id`** when header mode is on (default unless env disables it) |
 
 ### Trip and driver (Mini App / bots)
 
-Driver routes use **`tryDriverID`** then **`RequireDriverAuth`** (Telegram initData and/or **`X-Driver-Id`** when enabled).
+Driver routes use **`tryDriverID`** then **`RequireDriverAuth`** (Telegram initData and/or **`X-Driver-Id`**; header path on by default, set **`ENABLE_DRIVER_ID_HEADER=false`** to disable).
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -297,7 +297,7 @@ All amounts below are **promo platform credit** unless stated otherwise: **not r
 4. **Finish:** Rider and driver notifications; **promo** and **referral** grants visible in DB (`drivers.promo_balance`, `driver_ledger`).
 5. **Admin / legal:** If used, verify verification and legal acceptance flows.
 6. **Shutdown:** SIGINT/SIGTERM; process exits cleanly.
-7. **Optional native driver client:** With **`ENABLE_DRIVER_ID_HEADER`** and **`ENABLE_DRIVER_HTTP_LIVE_LOCATION`** on a test stack, **`GET /driver/available-requests`** (with initData or `X-Driver-Id`), **`POST /driver/accept-request`**, and **`GET /ws`** for an assigned trip behave without changing Telegram bot flows on production (flags off).
+7. **Optional native driver client:** **`X-Driver-Id`** is enabled by default; use **`ENABLE_DRIVER_HTTP_LIVE_LOCATION`** when the app streams GPS without Telegram live. To harden Telegram-only deploys, set **`ENABLE_DRIVER_ID_HEADER=false`**.
 
 ---
 

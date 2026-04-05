@@ -94,7 +94,7 @@ type DriverIDHeaderMiddlewareOpts struct {
 }
 
 // TryDriverIDHeader sets the driver from X-Driver-Id when Enable is true and the header is present and valid.
-// When Enable is false, the header is ignored (Telegram-only production). When Enable is true and the header
+// When Enable is false, the header is ignored (opt-in via ENABLE_DRIVER_ID_HEADER=false). When Enable is true and the header
 // is absent, the request continues so RequireDriverAuth can use initData.
 // When Enable is true and the header is present but invalid / unknown / not approved, responds and aborts (distinct errors).
 func TryDriverIDHeader(db *sql.DB, opts DriverIDHeaderMiddlewareOpts) gin.HandlerFunc {
