@@ -1,45 +1,44 @@
 package legal
 
 // Short Terms of Use message (shown once per user).
-const TermsShortMessage = "ℹ️ YettiQanot — haydovchi va mijozni bog‘lovchi platforma.\n\n" +
-	"Platforma transport xizmatini ko‘rsatmaydi.\n\n" +
-	"Foydalanish orqali siz qoidalarga rozilik bildirasiz.\n\n" +
-	"📄 To‘liq qoidalar: /terms"
+const TermsShortMessage = "ℹ️ YettiQanot — ҳайдовчи ва мижозни боғловчи платформа.\n\n" +
+	"Платформа транспорт хизматини кўрсатмайди.\n\n" +
+	"Фойдаланиш орқали сиз қоидаларга розилик билдирасиз.\n\n" +
+	"📄 Тўлиқ қоидалар: /terms"
 
 // Full Terms & Conditions text returned by /terms.
 // Keep it short for MVP; can be expanded later without changing logic.
-const TermsFullMessage = "📄 YettiQanot — Foydalanish qoidalari (Terms)\n\n" +
-	"1) YettiQanot — haydovchi va mijozni bog‘lovchi platforma. Platforma transport xizmatini bevosita ko‘rsatmaydi.\n\n" +
-	"2) Safar bo‘yicha barcha mas’uliyat haydovchi va mijoz zimmasida. Platforma faqat buyurtmalarni uzatadi.\n\n" +
-	"3) Haydovchi mustaqil faoliyat yuritadi va YettiQanot xodimi hisoblanmaydi.\n\n" +
-	"4) Platformadan foydalanish orqali siz ushbu qoidalarga rozilik bildirasiz.\n\n" +
-	"5) Platforma qoidalariga zid harakatlar aniqlansa, hisob bloklanishi mumkin."
+const TermsFullMessage = "📄 YettiQanot — Фойдаланиш қоидалари (Terms)\n\n" +
+	"1) YettiQanot — ҳайдовчи ва мижозни боғловчи платформа. Платформа транспорт хизматини бевосита кўрсатмайди.\n\n" +
+	"2) Сафар бўйича барча масъулият ҳайдовчи ва мижоз зиммасида. Платформа фақат буюртмаларни узатади.\n\n" +
+	"3) Ҳайдовчи мустақил фаолият юритади ва YettiQanot ходими ҳисобланмайди.\n\n" +
+	"4) Платформадан фойдаланиш орқали сиз ушбу қоидаларга розилик билдирасиз.\n\n" +
+	"5) Платформа қоидаларига зид ҳаракатлар аниқланса, ҳисоб блокланиши мумкин."
 
 // Driver agreement (oferta) shown to drivers before admin approval.
-const DriverAgreementMessage = "📄 Haydovchi shartnomasi (oferta)\n\n" +
-	"YettiQanot — haydovchi va mijozni bog‘lovchi platforma bo‘lib, transport xizmatini bevosita ko‘rsatmaydi.\n\n" +
-	"1. Haydovchi mustaqil faoliyat yuritadi va YettiQanot xodimi hisoblanmaydi.\n\n" +
-	"2. Haydovchi quyidagilar uchun to‘liq javobgar:\n" +
-	"- transport vositasi holati\n" +
-	"- haydovchilik guvohnomasi\n" +
-	"- yo‘l harakati qoidalariga rioya qilish\n\n" +
-	"3. YettiQanot faqat buyurtmalarni uzatadi va safar uchun javobgar emas.\n\n" +
-	"4. To‘lovlar haydovchi va mijoz o‘rtasida amalga oshiriladi.\n\n" +
-	"5. Platforma qoidalariga zid harakatlar aniqlansa, hisob bloklanishi mumkin.\n\n" +
-	"6. Referral va bonuslar faqat belgilangan shartlar asosida beriladi.\n\n" +
-	"7. Ushbu shartnomani qabul qilish orqali siz barcha qoidalarga rozilik bildirasiz.\n\n" +
-	"👇 Davom etish uchun tasdiqlang:"
+const DriverAgreementMessage = "📄 Ҳайдовчи шартномаси (оферта)\n\n" +
+	"YettiQanot — ҳайдовчи ва мижозни боғловчи платформа бўлиб, транспорт хизматини бевосита кўрсатмайди.\n\n" +
+	"1. Ҳайдовчи мустақил фаолият юритади ва YettiQanot ходими ҳисобланмайди.\n\n" +
+	"2. Ҳайдовчи қуйидагилар учун тўлиқ жавобгар:\n" +
+	"- транспорт воситаси ҳолати\n" +
+	"- ҳайдовчилик гувоҳномаси\n" +
+	"- йўл ҳаракати қоидаларига риоя қилиш\n\n" +
+	"3. YettiQanot фақат буюртмаларни узатади ва сафар учун жавобгар эмас.\n\n" +
+	"4. Тўловлар ҳайдовчи ва мижоз ўртасида амалга оширилади.\n\n" +
+	"5. Платформа қоидаларига зид ҳаракатлар аниқланса, ҳисоб блокланиши мумкин.\n\n" +
+	"6. Реферал ва бонуслар фақат белгиланган шартлар асосида берилади.\n\n" +
+	"7. Ушбу шартномани қабул қилиш орқали сиз барча қоидаларга розилик билдирасиз.\n\n" +
+	"👇 Давом этиш учун тасдиқланг:"
 
 // Rider agreement shown on first /start before allowing ride creation.
-const RiderAgreementMessage = "📄 Foydalanuvchi kelishuvi (Rider Terms)\n\n" +
-	"YettiQanot — haydovchi va mijozni bog‘lovchi platforma bo‘lib, transport xizmatini bevosita ko‘rsatmaydi.\n\n" +
-	"1. Platforma faqat buyurtmani haydovchiga uzatadi.\n\n" +
-	"2. Safar haydovchi tomonidan amalga oshiriladi va barcha javobgarlik haydovchiga tegishli.\n\n" +
-	"3. Foydalanuvchi to‘g‘ri manzil kiritishi va haydovchi bilan kelishilgan to‘lovni amalga oshirishi shart.\n\n" +
-	"4. To‘lovlar haydovchi va mijoz o‘rtasida to‘g‘ridan-to‘g‘ri amalga oshiriladi.\n\n" +
-	"5. Platforma transport hodisalari yoki nizolar uchun to‘liq javobgar emas.\n\n" +
-	"6. Platformadagi bonuslar faqat ichki balans hisoblanadi va naqd pulga yechib bo‘lmaydi.\n\n" +
-	"7. Qoidalarga zid harakatlar aniqlansa, akkaunt bloklanishi mumkin.\n\n" +
-	"8. Ushbu kelishuvni qabul qilish orqali siz barcha shartlarga rozilik bildirasiz.\n\n" +
-	"👇 Davom etish uchun tasdiqlang:"
-
+const RiderAgreementMessage = "📄 Фойдаланувчи келишуви (Rider Terms)\n\n" +
+	"YettiQanot — ҳайдовчи ва мижозни боғловчи платформа бўлиб, транспорт хизматини бевосита кўрсатмайди.\n\n" +
+	"1. Платформа фақат буюртмани ҳайдовчига узатади.\n\n" +
+	"2. Сафар ҳайдовчи томонидан амалга оширилади ва барча жавобгарлик ҳайдовчига тегишли.\n\n" +
+	"3. Фойдаланувчи тўғри манзил киритиши ва ҳайдовчи билан келишилган тўловни амалга ошириши шарт.\n\n" +
+	"4. Тўловлар ҳайдовчи ва мижоз ўртасида тўғридан-тўғри амалга оширилади.\n\n" +
+	"5. Платформа транспорт ҳодисалари ёки низолар учун тўлиқ жавобгар эмас.\n\n" +
+	"6. Платформадаги бонуслар фақат ички баланс ҳисобланади ва нақд пулга ечиб бўлмайди.\n\n" +
+	"7. Қоидаларга зид ҳаракатлар аниқланса, akkaunt блокланиши мумкин.\n\n" +
+	"8. Ушбу келишувни қабул қилиш орқали сиз барча шартларга розилик билдирасиз.\n\n" +
+	"👇 Давом этиш учун тасдиқланг:"

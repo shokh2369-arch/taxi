@@ -99,9 +99,9 @@ func setupMarkArrivedTestDB(t *testing.T) *sql.DB {
 }
 
 const (
-	testRiderText = "✅ Haydovchi sizning manzilingizga yetib keldi.\n\nSafar boshlashga tayyor: haydovchi bilan uchrashing. Haydovchi safarni boshlagach, yo‘l davom etadi."
-	testDriverText  = "✅ Mijozga yetib keldingiz. Yo‘lovchiga xabar yuborildi. Safarni boshlashingiz mumkin."
-	testDriverTextRetry = "Mijozga xabar yetmadi, qayta urinib ko‘ring"
+	testRiderText = "✅ Ҳайдовчи сизнинг манзилингизга етиб келди.\n\nСафар бошлашга тайёр: ҳайдовчи билан учрашинг. Ҳайдовчи сафарни бошлагач, йўл давом этади."
+	testDriverText      = "✅ Мижозга етиб келдингиз. Йўловчига хабар юборилди. Сафарни бошлашингиз мумкин."
+	testDriverTextRetry = "Мижозга хабар етмади, қайта уриниб кўринг"
 )
 
 // pickLat/pickLng — driver same coords, fresh live location within 90s.

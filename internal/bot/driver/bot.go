@@ -29,7 +29,7 @@ var liveLocationStepsPNG []byte
 
 const (
 	btnLiveLocation     = driverloc.BtnShareLiveLocation
-	btnPending          = "⏳ Tasdiqlash kutilmoqda"
+	btnPending          = "⏳ Тасдиқлаш кутилмоқда"
 	cbAccept            = "accept:"
 	cbDriverAcceptTerms = "driver_accept_terms"
 
@@ -40,25 +40,25 @@ const (
 	// Live Location = only edited_message.location updates; active only when last_live_location_at within 90s.
 	liveLocationActiveSeconds = 90
 	// Onboarding: shown when driver completes registration (live location = online; no separate online button).
-	onboardingMessage = "🚕 YettiQanot Haydovchi\n\nPastdagi «" + driverloc.BtnShareLiveLocation + "» tugmasi faqat qo‘llanmani ko‘rsatadi (jonli lokatsiyani o‘zi yoqmaysiz). Jonli lokatsiyani 📎 → Location → «Share Live Location» orqali ulang.\n\nJonli lokatsiya yoqilguncha siz oflayn hisoblanasiz."
+	onboardingMessage = "🚕 YettiQanot ҳайдовчи\n\nПастдаги «" + driverloc.BtnShareLiveLocation + "» тугмаси фақат қўлланмани кўрсатади (жонли локацияни ўзи ёқмайди). Жонли локацияни 📎 → Location → «Share Live Location» орқали уланг.\n\nЖонли локация ёқилгунча сиз офлайн ҳисобланасиз."
 
 	// Welcome promo message: shown once after registration (same copy as approval notifier / accounting constant).
 	welcomeBonusMessage = accounting.DriverNewPromoProgramMessage
 	// Bilingual instruction line for all Live Location prompts.
 	liveLocationBilingualInstruction = "📎 → Геопозиция / Location → Транслировать геопозицию / Share Live Location"
 	// One-time warning when Live Location becomes inactive.
-	liveLocationInactiveWarningMessage = "📍 Jonli lokatsiya o'chdi.\nBuyurtmalar kelmaydi.\n\nQayta yoqish: " + liveLocationBilingualInstruction
+	liveLocationInactiveWarningMessage = "📍 Жонли локация ўчди.\nБуюртмалар келмайди.\n\nҚайта ёқиш: " + liveLocationBilingualInstruction
 	// Live is on but driver cannot receive orders (e.g. low balance); once per cooldown.
-	offlineButLiveReminderMessage  = "📡 Jonli lokatsiya yoqilgan.\n\nBuyurtmalar olish uchun balansingiz yetarli bo‘lishi kerak. Balansni to‘ldiring."
-	insufficientBalanceMessage     = "Balansingiz yetarli emas. So'rovlar olish uchun balansni to'ldiring."
-	// Registration: car types (Uzbekistan taxi market). "Boshqa" allows manual input.
-	carTypeBoshqa = "Boshqa"
+	offlineButLiveReminderMessage  = "📡 Жонли локация ёқилган.\n\nБуюртмалар олиш учун балансингиз етарли бўлиши керак. Балансни тўлдиринг."
+	insufficientBalanceMessage     = "Балансингиз етарли эмас. Сўровлар олиш учун балансни тўлдиринг."
+	// Registration: car types (Uzbekistan taxi market). "Бошқа" allows manual input.
+	carTypeBoshqa = "Бошқа"
 )
 
 func driverAgreementInlineKeyboard() tgbotapi.InlineKeyboardMarkup {
 	return tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("✅ Qabul qilaman", cbDriverAcceptTerms),
+			tgbotapi.NewInlineKeyboardButtonData("✅ Қабул қиламан", cbDriverAcceptTerms),
 		),
 	)
 }
@@ -146,7 +146,7 @@ func blockDriverLiveForMissingLegal(ctx context.Context, bot *tgbotapi.BotAPI, d
 		log.Printf("driver: ActiveLegalFingerprint (live block) user_id=%d: %v", userID, err)
 		// Safe fallback: send once via existing gating (it will store fingerprint if possible).
 		sendDriverAgreementForDriver(bot, db, chatID, userID, false, false)
-		send(bot, chatID, "⚠️ Joriy shartnomani qabul qilmasdan jonli lokatsiya orqali onlayn bo‘lish mumkin emas. Shartnomani qabul qiling, so‘ng lokatsiyani qayta ulang.")
+		send(bot, chatID, "⚠️ Жорий шартномани қабул қилмасдан жонли локация орқали онлайн бўлиш мумкин эмас. Шартномани қабул қилинг, сўнг локацияни қайта уланг.")
 		sendOrUpdatePinnedStatus(bot, db, cfg, chatID, userID)
 		return
 	}
@@ -166,7 +166,7 @@ func blockDriverLiveForMissingLegal(ctx context.Context, bot *tgbotapi.BotAPI, d
 
 	// First time we block for this legal bundle (or versions were bumped) → send oferta once.
 	sendDriverAgreementForDriver(bot, db, chatID, userID, true, false)
-	send(bot, chatID, "⚠️ Joriy shartnomani qabul qilmasdan jonli lokatsiya orqali onlayn bo‘lish mumkin emas. Quyidagi matnni o‘qing, «✅ Qabul qilaman» ni bosing, so‘ng lokatsiyani qayta ulang.")
+	send(bot, chatID, "⚠️ Жорий шартномани қабул қилмасдан жонли локация орқали онлайн бўлиш мумкин эмас. Қуйидаги матнни ўқинг, «✅ Қабул қиламан» ни босинг, сўнг локацияни қайта уланг.")
 	sendOrUpdatePinnedStatus(bot, db, cfg, chatID, userID)
 }
 
@@ -203,16 +203,16 @@ func resetDriverLiveOnlineStateForLegalRelive(ctx context.Context, db *sql.DB, u
 }
 
 func postLegalReliveMessage(pendingRequestID string) string {
-	s := "✅ Yangi shartnoma qabul qilindi.\n\nTizimda hozir oflaynsiz. Buyurtmalar olish uchun Telegramda jonli lokatsiyani qayta ulang («" + driverloc.BtnShareLiveLocation + "»)."
+	s := "✅ Янги шартнома қабул қилинди.\n\nТизимда ҳозир офлайнсиз. Буюртмалар олиш учун Telegramда жонли локацияни қайта уланг («" + driverloc.BtnShareLiveLocation + "»)."
 	if strings.TrimSpace(pendingRequestID) != "" {
-		s += "\n\nBuyurtmani qabul qilish uchun ham jonli lokatsiyani ulang — so‘rov amal qilishi bilan qayta urinib ko‘ring."
+		s += "\n\nБуюртмани қабул қилиш учун ҳам жонли локацияни уланг — сўров амал қилиши билан қайта уриниб кўринг."
 	}
 	return s
 }
 
 var (
 	carTypes = []string{"Cobalt", "Nexia", "Nexia 2", "Nexia 3", "Matiz", "Gentra", "Lacetti", "Malibu", "BYD", "Lada", "Damas", carTypeBoshqa}
-	colors   = []string{"Oq", "Qora", "Sariq", "Qizil", "Kulrang", "Boshqa"}
+	colors   = []string{"Оқ", "Қора", "Сариқ", "Қизил", "Кулранг", "Бошқа"}
 )
 
 func carTypeKeyboard() tgbotapi.ReplyKeyboardMarkup {
@@ -232,9 +232,9 @@ func carTypeKeyboard() tgbotapi.ReplyKeyboardMarkup {
 
 func colorKeyboard() tgbotapi.ReplyKeyboardMarkup {
 	rows := [][]tgbotapi.KeyboardButton{
-		{tgbotapi.NewKeyboardButton("Oq"), tgbotapi.NewKeyboardButton("Qora")},
-		{tgbotapi.NewKeyboardButton("Sariq"), tgbotapi.NewKeyboardButton("Qizil")},
-		{tgbotapi.NewKeyboardButton("Kulrang"), tgbotapi.NewKeyboardButton("Boshqa")},
+		{tgbotapi.NewKeyboardButton("Оқ"), tgbotapi.NewKeyboardButton("Қора")},
+		{tgbotapi.NewKeyboardButton("Сариқ"), tgbotapi.NewKeyboardButton("Қизил")},
+		{tgbotapi.NewKeyboardButton("Кулранг"), tgbotapi.NewKeyboardButton(carTypeBoshqa)},
 	}
 	kb := tgbotapi.NewReplyKeyboard(rows...)
 	kb.ResizeKeyboard = true
@@ -349,14 +349,14 @@ func handleLiveLocationInstruction(bot *tgbotapi.BotAPI, db *sql.DB, chatID, tel
 	ctx := context.Background()
 	var userID int64
 	if err := db.QueryRowContext(ctx, `SELECT id FROM users WHERE telegram_id = ?1`, telegramID).Scan(&userID); err != nil || userID == 0 {
-		send(bot, chatID, "Xatolik.")
+		send(bot, chatID, "Хатолик.")
 		return
 	}
 	var verificationStatus sql.NullString
 	_ = db.QueryRowContext(ctx, `SELECT verification_status FROM drivers WHERE user_id = ?1`, userID).Scan(&verificationStatus)
 	if !verificationStatus.Valid || strings.TrimSpace(verificationStatus.String) != "approved" {
 		kb := driverKeyboardForVerificationPending()
-		m := tgbotapi.NewMessage(chatID, "Tasdiqlash kutilmoqda. Admin profilingizni tekshirmoqda.")
+		m := tgbotapi.NewMessage(chatID, "Тасдиқлаш кутилмоқда. Админ профилингизни текширмоқда.")
 		m.ReplyMarkup = kb
 		if _, err := bot.Send(m); err != nil {
 			log.Printf("driver: send pending verification live-location message: %v", err)
@@ -393,12 +393,12 @@ func Run(ctx context.Context, cfg *config.Config, db *sql.DB, bot *tgbotapi.BotA
 
 	// Set command panel (global, Latin descriptions).
 	driverCommands := tgbotapi.NewSetMyCommands(
-		tgbotapi.BotCommand{Command: "start", Description: "Botni boshlash"},
-		tgbotapi.BotCommand{Command: "status", Description: "Holat va balans"},
-		tgbotapi.BotCommand{Command: "bonuslar", Description: "Bonuslar va referral statistikasi"},
-		tgbotapi.BotCommand{Command: "referral", Description: "Do'stlarni taklif qilish"},
-		tgbotapi.BotCommand{Command: "leaderboard", Description: "Eng faol haydovchilar"},
-		tgbotapi.BotCommand{Command: "terms", Description: "Foydalanish qoidalari"},
+		tgbotapi.BotCommand{Command: "start", Description: "Ботни бошлаш"},
+		tgbotapi.BotCommand{Command: "status", Description: "Ҳолат ва баланс"},
+		tgbotapi.BotCommand{Command: "bonuslar", Description: "Бонуслар ва referral статистикаси"},
+		tgbotapi.BotCommand{Command: "referral", Description: "Дўстларни таклиф қилиш"},
+		tgbotapi.BotCommand{Command: "leaderboard", Description: "Энг фаол ҳайдовчилар"},
+		tgbotapi.BotCommand{Command: "terms", Description: "Фойдаланиш қоидалари"},
 	)
 	if _, err := bot.Request(driverCommands); err != nil {
 		log.Printf("driver bot: setMyCommands: %v", err)
@@ -458,7 +458,7 @@ func SendKeyboardForDriver(bot *tgbotapi.BotAPI, db *sql.DB, chatID, userID int6
 		return
 	}
 	kb := getDriverKeyboard(db, userID)
-	m := tgbotapi.NewMessage(chatID, "Quyidagi tugmalardan foydalaning:")
+	m := tgbotapi.NewMessage(chatID, "Қуйидаги тугмалардан фойдаланинг:")
 	m.ReplyMarkup = kb
 	if _, err := bot.Send(m); err != nil {
 		log.Printf("driver: send keyboard for driver user_id=%d: %v", userID, err)
@@ -488,24 +488,24 @@ func formatStatusPanelText(ctx context.Context, db *sql.DB, cfg *config.Config, 
 	liveOK := isDriverSharingLiveLocation(ctx, db, userID)
 	balOK := isDriverBalanceSufficient(ctx, db, userID, cfg)
 
-	holat := "🔴 Offline"
+	holat := "🔴 Офлайн"
 	if liveOK {
-		holat = "🟢 Online"
+		holat = "🟢 Онлайн"
 	}
-	locLine := "❌ Jonli lokatsiya ulanmagan"
+	locLine := "❌ Жонли локация уланмаган"
 	if liveOK {
-		locLine = "✅ Jonli lokatsiya ulangan"
+		locLine = "✅ Жонли локация уланган"
 	}
 	platformCredit := promoBal
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "📊 Haydovchi holati\n\nHolat: %s\nLokatsiya: %s\n\n", holat, locLine)
-	fmt.Fprintf(&b, "💰 Promo / platform krediti: %d so'm\n(Real pul emas, naqdlashtirilmaydi)\n\n", platformCredit)
-	fmt.Fprintf(&b, "💵 Ichki pul balansi (top-up): %d so'm\nJami: %d so'm", cashBal, balance)
+	fmt.Fprintf(&b, "📊 Ҳайдовчи ҳолати\n\nҲолат: %s\nЛокация: %s\n\n", holat, locLine)
+	fmt.Fprintf(&b, "💰 Промо / платформа кредити: %d сўм\n(Реал пул эмас, нақдлаштирилмайди)\n\n", platformCredit)
+	fmt.Fprintf(&b, "💵 Ички пул баланси (top-up): %d сўм\nЖами: %d сўм", cashBal, balance)
 	if !liveOK {
-		fmt.Fprintf(&b, "\n\n⚠️ Ishlash uchun jonli lokatsiyani ulashing.")
+		fmt.Fprintf(&b, "\n\n⚠️ Ишлаш учун жонли локацияни уланг.")
 	} else if !balOK {
-		fmt.Fprintf(&b, "\n\n⚠️ Buyurtmalar uchun balans yetarli emas.")
+		fmt.Fprintf(&b, "\n\n⚠️ Буюртмалар учун баланс етарли эмас.")
 	}
 	return b.String(), nil
 }
@@ -642,7 +642,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 		ctx := context.Background()
 		_, content, err := legal.NewService(db).ActiveDocument(ctx, legal.DocPrivacyPolicyDriver)
 		if err != nil {
-			send(bot, chatID, "Maxfiylik siyosati yuklanmadi.")
+			send(bot, chatID, "Махфийлик сиёсати юкланмади.")
 		} else {
 			send(bot, chatID, content)
 		}
@@ -692,7 +692,7 @@ func handleStart(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, chatID, t
 	code, err := utils.GenerateReferralCode(ctx, db)
 	if err != nil {
 		log.Printf("driver: generate referral code: %v", err)
-		send(bot, chatID, "Xatolik. Qayta urinib ko'ring.")
+		send(bot, chatID, "Хатолик. Қайта уриниб кўринг.")
 		return
 	}
 	var refArg interface{}
@@ -710,7 +710,7 @@ func handleStart(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, chatID, t
 		telegramID, domain.RoleDriver, code, refArg).Scan(&userID)
 	if err != nil {
 		log.Printf("driver: upsert user: %v", err)
-		send(bot, chatID, "Xatolik. Qayta urinib ko'ring.")
+		send(bot, chatID, "Хатолик. Қайта уриниб кўринг.")
 		return
 	}
 	// Driver referral row for accounting (reward on trip FINISH after 3 finished trips; see accounting.TryGrantReferralReward).
@@ -736,7 +736,7 @@ func handleStart(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, chatID, t
 		if step == "phone" {
 			sendApplicationPrompt(bot, db, chatID, userID, step)
 		} else {
-			send(bot, chatID, "Ilovani to'ldiring. Keyingi savolga javob yuboring.")
+			send(bot, chatID, "Иловани тўлдиринг. Кейинги саволга жавоб юборинг.")
 		}
 		return
 	}
@@ -746,7 +746,7 @@ func handleStart(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, chatID, t
 	if !driverHasAcceptedAgreement(ctx, db, userID) {
 		sendDriverAgreementForDriver(bot, db, chatID, userID, false, false)
 		if !driverHasAcceptedAgreement(ctx, db, userID) {
-			send(bot, chatID, "⚠️ Admin tasdiqigacha buyurtma olish uchun shartnomani qabul qilishingiz kerak.")
+			send(bot, chatID, "⚠️ Админ тасдиқигача буюртма олиш учун шартномани қабул қилишингиз керак.")
 		}
 	}
 	// Rewards and signup bonus are paid when docs are submitted (handleApplicationPhoto).
@@ -885,10 +885,10 @@ func clearApplicationStep(ctx context.Context, db *sql.DB, userID int64) {
 func sendApplicationPrompt(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64, driverUserID int64, step string) {
 	switch step {
 	case "phone":
-		text := "Ilovani to'ldiring. Telefon raqamingizni yuboring (tugmani bosing yoki yozing)."
+		text := "Иловани тўлдиринг. Телефон рақамингизни юборинг (тугмани босинг ёки ёзинг)."
 		kb := tgbotapi.NewReplyKeyboard(
 			tgbotapi.NewKeyboardButtonRow(
-				tgbotapi.NewKeyboardButtonContact("📞 Telefon raqamini yuborish"),
+				tgbotapi.NewKeyboardButtonContact("📞 Телефон рақамини юбориш"),
 			),
 		)
 		kb.ResizeKeyboard = true
@@ -900,13 +900,13 @@ func sendApplicationPrompt(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64, drive
 		}
 		return
 	case "first_name":
-		send(bot, chatID, "Ismingizni kiriting")
+		send(bot, chatID, "Исмингизни киритинг")
 		return
 	case "last_name":
-		send(bot, chatID, "Familyangizni kiriting")
+		send(bot, chatID, "Фамилиянгизни киритинг")
 		return
 	case "car_type":
-		text := "Mashina turini tanlang yoki «Boshqa» bosing va yozing."
+		text := "Машина турини танланг ёки «Бошқа» босинг ва ёзинг."
 		kb := carTypeKeyboard()
 		m := tgbotapi.NewMessage(chatID, text)
 		m.ReplyMarkup = kb
@@ -915,10 +915,10 @@ func sendApplicationPrompt(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64, drive
 		}
 		return
 	case "car_type_manual":
-		send(bot, chatID, "Mashina modelini yozing.")
+		send(bot, chatID, "Машина моделини ёзинг.")
 		return
 	case "color":
-		text := "Mashina rangini tanlang yoki «Boshqa» bosing va yozing."
+		text := "Машина рангини танланг ёки «Бошқа» босинг ва ёзинг."
 		kb := colorKeyboard()
 		m := tgbotapi.NewMessage(chatID, text)
 		m.ReplyMarkup = kb
@@ -927,23 +927,23 @@ func sendApplicationPrompt(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64, drive
 		}
 		return
 	case "color_manual":
-		send(bot, chatID, "Mashina rangini yozing.")
+		send(bot, chatID, "Машина рангини ёзинг.")
 		return
 	case "plate":
-		text := "🚘 Davlat raqamingizni to‘liq kiriting\n\nMasalan: 20N306ZB"
+		text := "🚘 Давлат рақамингизни тўлиқ киритинг\n\nМасалан: 20N306ZB"
 		send(bot, chatID, text)
 		return
 	case "license_photo":
-		text := "📄 Haydovchilik guvohnomasi\n\nIltimos, haydovchilik guvohnomangiz rasmini yuboring.\n\nTalablar:\n• rasm aniq bo'lsin\n• barcha ma'lumotlar ko'rinsin"
+		text := "📄 Ҳайдовчилик гувоҳномаси\n\nИлтимос, ҳайдовчилик гувоҳномангиз расмини юборинг.\n\nТалаблар:\n• расм аниқ бўлсин\n• барча маълумотлар кўринсин"
 		send(bot, chatID, text)
 		return
 	case "vehicle_doc":
-		text := "🚗 Tex pasport\n\nMashinaning tex pasporti rasmini yuboring.\n\nTalablar:\n• rasm aniq bo'lsin\n• davlat raqami ko'rinsin"
+		text := "🚗 Тех паспорт\n\nМашинанинг тех паспорти расмини юборинг.\n\nТалаблар:\n• расм аниқ бўлсин\n• давлат рақами кўринсин"
 		send(bot, chatID, text)
 		return
 	default:
 		_, _ = db.ExecContext(context.Background(), `UPDATE drivers SET application_step = ?1 WHERE user_id = ?2`, step, driverUserID)
-		send(bot, chatID, "Telefon raqamingizni yuboring.")
+		send(bot, chatID, "Телефон рақамингизни юборинг.")
 	}
 }
 
@@ -979,17 +979,17 @@ func handleApplicationPhoto(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config
 	// Require driver agreement (oferta) before sending admin approval request.
 	if !driverHasAcceptedAgreement(ctx, db, userID) {
 		sendDriverAgreementForDriver(bot, db, chatID, userID, true, false)
-		send(bot, chatID, "⚠️ Avval shartnomani qabul qilishingiz kerak.")
+		send(bot, chatID, "⚠️ Аввал шартномани қабул қилишингиз керак.")
 		return true
 	}
 
 	sendAdminApprovalRequest(ctx, bot, db, cfg, userID, telegramID)
 
 	// Notify driver.
-	send(bot, chatID, "✅ Ma’lumotlaringiz qabul qilindi.\nAdmin tasdiqlashidan so‘ng sizga xabar beriladi.")
+	send(bot, chatID, "✅ Маълумотларингиз қабул қилинди.\nАдмин тасдиқлашидан сўнг сизга хабар берилади.")
 	rewardReferrerOnApplicationComplete(bot, db, userID)
 	kb := getDriverKeyboard(db, userID)
-	m := tgbotapi.NewMessage(chatID, "Tasdiqlash kutilmoqda. Holatni /status buyrug'i orqali tekshiring.")
+	m := tgbotapi.NewMessage(chatID, "Тасдиқлаш кутилмоқда. Ҳолатни /status буюрғи орқали текширинг.")
 	m.ReplyMarkup = kb
 	_, _ = bot.Send(m)
 	return true
@@ -1015,7 +1015,7 @@ func sendAdminApprovalRequest(ctx context.Context, bot *tgbotapi.BotAPI, db *sql
 	}
 	fullName := strings.TrimSpace(strings.TrimSpace(firstName.String) + " " + strings.TrimSpace(lastName.String))
 	adminText := fmt.Sprintf(
-		"🚕 Yangi haydovchi tasdiqlash uchun\n\n👤 Ism familiya: %s\n📞 Telefon: %s\n🚗 Mashina: %s\n🎨 Rang: %s\n🔢 Raqam: %s\n👤 Telegram ID: %d\n\n📄 Hujjatlar quyida",
+		"🚕 Янги ҳайдовчи тасдиқлаш учун\n\n👤 Исм фамилия: %s\n📞 Телефон: %s\n🚗 Машина: %s\n🎨 Ранг: %s\n🔢 Рақам: %s\n👤 Telegram ID: %d\n\n📄 Ҳужжатлар қуйида",
 		fullName, phone.String, carModel.String, color.String, plateNumber.String, telegramID,
 	)
 	adminChatID := cfg.AdminID
@@ -1090,11 +1090,11 @@ func sendAdminApprovalRequest(ctx context.Context, bot *tgbotapi.BotAPI, db *sql
 	// Instruction text + inline buttons via admin bot (callbacks handled by admin bot).
 	kb := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("✅ Approve", fmt.Sprintf("approve_driver_%d", userID)),
-			tgbotapi.NewInlineKeyboardButtonData("❌ Reject", fmt.Sprintf("reject_driver_%d", userID)),
+			tgbotapi.NewInlineKeyboardButtonData("✅ Тасдиқлаш", fmt.Sprintf("approve_driver_%d", userID)),
+			tgbotapi.NewInlineKeyboardButtonData("❌ Рад этиш", fmt.Sprintf("reject_driver_%d", userID)),
 		),
 	)
-	inlineMsg := tgbotapi.NewMessage(adminChatID, "Haydovchini tasdiqlang yoki rad eting.")
+	inlineMsg := tgbotapi.NewMessage(adminChatID, "Ҳайдовчини тасдиқланг ёки рад этинг.")
 	inlineMsg.ReplyMarkup = kb
 	if _, err := adminBot.Send(inlineMsg); err != nil {
 		log.Printf("driver: admin approval inline buttons send error user_id=%d: %v", userID, err)
@@ -1130,7 +1130,7 @@ func handleApplicationText(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID 
 		var otherUserID int64
 		err := db.QueryRowContext(ctx, `SELECT user_id FROM drivers WHERE phone = ?1 AND user_id != ?2 LIMIT 1`, text, userID).Scan(&otherUserID)
 		if err == nil {
-			send(bot, chatID, "Bu telefon raqami allaqachon ro'yxatdan o'tgan. Boshqa raqamdan foydalaning.")
+			send(bot, chatID, "Бу телефон рақами аллақачон рўйхатдан ўтган. Бошқа рақамдан фойдаланинг.")
 			return true
 		}
 		_, err = db.ExecContext(ctx, `UPDATE drivers SET phone = ?1, application_step = 'first_name' WHERE user_id = ?2`, text, userID)
@@ -1156,7 +1156,7 @@ func handleApplicationText(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID 
 	case "car_type":
 		if text == carTypeBoshqa {
 			_, _ = db.ExecContext(ctx, `UPDATE drivers SET application_step = ?1 WHERE user_id = ?2`, "car_type_manual", userID)
-			send(bot, chatID, "Mashina modelini yozing.")
+			send(bot, chatID, "Машина моделини ёзинг.")
 		} else {
 			_, err = db.ExecContext(ctx, `UPDATE drivers SET car_type = ?1, application_step = 'color' WHERE user_id = ?2`, text, userID)
 			if err != nil {
@@ -1171,9 +1171,9 @@ func handleApplicationText(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID 
 		}
 		sendApplicationPrompt(bot, db, chatID, userID, "color")
 	case "color":
-		if text == "Boshqa" {
+		if text == carTypeBoshqa {
 			_, _ = db.ExecContext(ctx, `UPDATE drivers SET application_step = ?1 WHERE user_id = ?2`, "color_manual", userID)
-			send(bot, chatID, "Mashina rangini yozing.")
+			send(bot, chatID, "Машина рангини ёзинг.")
 		} else {
 			_, err = db.ExecContext(ctx, `UPDATE drivers SET color = ?1, application_step = 'plate' WHERE user_id = ?2`, text, userID)
 			if err != nil {
@@ -1191,7 +1191,7 @@ func handleApplicationText(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID 
 		plate := strings.ToUpper(strings.TrimSpace(text))
 		matched, _ := regexp.MatchString(`^[0-9]{2}[A-Z]{1}[0-9]{3}[A-Z]{2}$`, plate)
 		if !matched {
-			send(bot, chatID, "❌ Noto‘g‘ri raqam formati.\n\nTo‘g‘ri format: 20N306ZB\nIltimos, davlat raqamini to‘liq kiriting.")
+			send(bot, chatID, "❌ Нотўғри рақам формати.\n\nТўғри формат: 20N306ZB\nИлтимос, давлат рақамини тўлиқ киритинг.")
 			return true
 		}
 		// Enforce unique plate: if another driver already registered this plate, block and ask for a different one.
@@ -1201,7 +1201,7 @@ func handleApplicationText(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID 
 			WHERE (COALESCE(plate_number,'') = ?1 OR COALESCE(plate,'') = ?1) AND user_id != ?2
 			LIMIT 1`,
 			plate, userID).Scan(&existingUserID); err == nil && existingUserID != 0 {
-			send(bot, chatID, "❌ Bu raqam allaqachon ro'yxatdan o'tgan.\n\nIltimos, boshqa davlat raqamini kiriting.")
+			send(bot, chatID, "❌ Бу рақам аллақачон рўйхатдан ўтган.\n\nИлтимос, бошқа давлат рақамини киритинг.")
 			return true
 		}
 		log.Printf("driver: plate validated user_id=%d plate=%s", userID, plate)
@@ -1239,9 +1239,9 @@ func rewardReferrerOnApplicationComplete(bot *tgbotapi.BotAPI, db *sql.DB, newDr
 	// Mark this referred user as stage1 processed (notification sent).
 	_, _ = db.ExecContext(ctx, `UPDATE users SET referral_stage1_reward_paid = 1 WHERE id = ?1`, newDriverUserID)
 	var newDriverName string
-	_ = db.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(TRIM(name), ''), 'Yangi haydovchi') FROM users WHERE id = ?1`, newDriverUserID).Scan(&newDriverName)
+	_ = db.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(TRIM(name), ''), 'Янги ҳайдовчи') FROM users WHERE id = ?1`, newDriverUserID).Scan(&newDriverName)
 	if referrerTelegramID != 0 && bot != nil {
-		msg := fmt.Sprintf("🎉 Do'stingiz %s taklif havolangiz orqali haydovchi bo'lib ro'yxatdan o'tdi.\n\nU 3 ta safarni yakunlagach sizga\n20 000 promo kredit beriladi (real pul emas).", newDriverName)
+		msg := fmt.Sprintf("🎉 Дўстингиз %s таклиф ҳаволангиз орқали ҳайдовчи бўлиб рўйхатдан ўтди.\n\nУ 3 та сафарни якунлагач сизга\n20 000 промо кредит берилади (реал пул эмас).", newDriverName)
 		if _, err := bot.Send(tgbotapi.NewMessage(referrerTelegramID, msg)); err != nil {
 			log.Printf("driver: notify referrer: %v", err)
 		}
@@ -1255,7 +1255,7 @@ func handleReferral(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) 
 	var userID int64
 	var referralCode sql.NullString
 	if err := db.QueryRowContext(ctx, `SELECT u.id, u.referral_code FROM users u WHERE u.telegram_id = ?1`, telegramID).Scan(&userID, &referralCode); err != nil || userID == 0 {
-		send(bot, chatID, "Avval /start bosing.")
+		send(bot, chatID, "Аввал /start босинг.")
 		return
 	}
 	code := referralCode.String
@@ -1264,12 +1264,12 @@ func handleReferral(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) 
 		code, err = utils.GenerateReferralCode(ctx, db)
 		if err != nil {
 			log.Printf("driver: generate referral code for /referral: %v", err)
-			send(bot, chatID, "Xatolik. Qayta urinib ko'ring.")
+			send(bot, chatID, "Хатолик. Қайта уриниб кўринг.")
 			return
 		}
 		if _, err := db.ExecContext(ctx, `UPDATE users SET referral_code = ?1 WHERE id = ?2`, code, userID); err != nil {
 			log.Printf("driver: save referral code: %v", err)
-			send(bot, chatID, "Xatolik. Qayta urinib ko'ring.")
+			send(bot, chatID, "Хатолик. Қайта уриниб кўринг.")
 			return
 		}
 	}
@@ -1278,7 +1278,7 @@ func handleReferral(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) 
 		botUsername = bot.Self.UserName
 	}
 	shareLink := utils.ReferralLink(botUsername, code)
-	text := "🎁 Haydovchi taklif qiling\n\nHar bir taklif qilingan haydovchi\n3 ta safarni yakunlagach\nsizga +20 000 promo kredit\n(real pul emas, naqdlashtirilmaydi)\n\nSizning referral havolangiz:\n" + shareLink
+	text := "🎁 Ҳайдовчи таклиф қилинг\n\nҲар бир таклиф қилинган ҳайдовчи\n3 та сафарни якунлагач\nсизга +20 000 промо кредит\n(реал пул эмас, нақдлаштирилмайди)\n\nСизнинг referral ҳаволангиз:\n" + shareLink
 	kb := getDriverKeyboard(db, userID)
 	m := tgbotapi.NewMessage(chatID, text)
 	m.ReplyMarkup = kb
@@ -1293,7 +1293,7 @@ func handleBonuslar(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) 
 	var userID int64
 	var referralCode sql.NullString
 	if err := db.QueryRowContext(ctx, `SELECT u.id, u.referral_code FROM users u WHERE u.telegram_id = ?1`, telegramID).Scan(&userID, &referralCode); err != nil || userID == 0 {
-		send(bot, chatID, "Avval /start bosing.")
+		send(bot, chatID, "Аввал /start босинг.")
 		return
 	}
 	code := referralCode.String
@@ -1302,12 +1302,12 @@ func handleBonuslar(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) 
 		code, err = utils.GenerateReferralCode(ctx, db)
 		if err != nil {
 			log.Printf("driver: generate referral code for /bonuslar: %v", err)
-			send(bot, chatID, "Xatolik. Qayta urinib ko'ring.")
+			send(bot, chatID, "Хатолик. Қайта уриниб кўринг.")
 			return
 		}
 		if _, err := db.ExecContext(ctx, `UPDATE users SET referral_code = ?1 WHERE id = ?2`, code, userID); err != nil {
 			log.Printf("driver: save referral code: %v", err)
-			send(bot, chatID, "Xatolik. Qayta urinib ko'ring.")
+			send(bot, chatID, "Хатолик. Қайта уриниб кўринг.")
 			return
 		}
 	}
@@ -1319,8 +1319,8 @@ func handleBonuslar(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) 
 	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE referred_by = ?1 AND COALESCE(referral_stage2_reward_paid, 0) = 1`, code).Scan(&stage2Count)
 	// stage2_count = referred drivers for whom inviter referral reward was granted (3 finished trips).
 	totalEarnings := stage2Count * accounting.ReferralRewardPromoSoM
-	text := fmt.Sprintf("📊 Referral statistikasi\n\nTaklif qilgan haydovchilar: %d\nPromo referral jami: %d so'm", referredCount, totalEarnings)
-	text += "\n\n🔗 Taklif havolasi: /referral"
+	text := fmt.Sprintf("📊 Referral статистикаси\n\nТаклиф қилган ҳайдовчилар: %d\nПромо referral жами: %d сўм", referredCount, totalEarnings)
+	text += "\n\n🔗 Таклиф ҳаволаси: /referral"
 	kb := getDriverKeyboard(db, userID)
 	m := tgbotapi.NewMessage(chatID, text)
 	m.ReplyMarkup = kb
@@ -1333,7 +1333,7 @@ func handleBonuslar(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) 
 func handleLeaderboard(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) {
 	ctx := context.Background()
 	rows, err := db.QueryContext(ctx, `
-		SELECT COALESCE(NULLIF(TRIM(u.name), ''), 'Haydovchi') AS name,
+		SELECT COALESCE(NULLIF(TRIM(u.name), ''), 'Ҳайдовчи') AS name,
 		       (SELECT COUNT(*) FROM users u2 INNER JOIN drivers d2 ON d2.user_id = u2.id WHERE u2.referred_by = u.referral_code) AS cnt
 		FROM users u
 		INNER JOIN drivers d ON d.user_id = u.id
@@ -1342,7 +1342,7 @@ func handleLeaderboard(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int6
 		LIMIT 10`)
 	if err != nil {
 		log.Printf("driver: leaderboard query: %v", err)
-		send(bot, chatID, "Xatolik. Qayta urinib ko'ring.")
+		send(bot, chatID, "Хатолик. Қайта уриниб кўринг.")
 		return
 	}
 	defer rows.Close()
@@ -1354,15 +1354,15 @@ func handleLeaderboard(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int6
 		if err := rows.Scan(&name, &cnt); err != nil {
 			continue
 		}
-		lines = append(lines, fmt.Sprintf("%d. %s — %d ta driver", rank, name, cnt))
+		lines = append(lines, fmt.Sprintf("%d. %s — %d та ҳайдовчи", rank, name, cnt))
 		rank++
 	}
 	if err := rows.Err(); err != nil {
 		log.Printf("driver: leaderboard rows: %v", err)
 	}
-	text := "🏆 Eng faol haydovchilar\n\n"
+	text := "🏆 Энг фаол ҳайдовчилар\n\n"
 	if len(lines) == 0 {
-		text += "Hali ma'lumot yo'q."
+		text += "Ҳали маълумот йўқ."
 	} else {
 		text += strings.Join(lines, "\n")
 	}
@@ -1381,7 +1381,7 @@ func handleStatus(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, chatID, 
 	ctx := context.Background()
 	var userID int64
 	if err := db.QueryRowContext(ctx, `SELECT id FROM users WHERE telegram_id = ?1`, telegramID).Scan(&userID); err != nil || userID == 0 {
-		send(bot, chatID, "Avval /start bosing.")
+		send(bot, chatID, "Аввал /start босинг.")
 		return
 	}
 	sendOrUpdatePinnedStatus(bot, db, cfg, chatID, userID)
@@ -1392,7 +1392,7 @@ func handleRequestLocation(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID 
 	var userID int64
 	_ = db.QueryRowContext(ctx, `SELECT id FROM users WHERE telegram_id = ?1`, telegramID).Scan(&userID)
 	kb := getDriverKeyboard(db, userID)
-	m := tgbotapi.NewMessage(chatID, "Lokatsiyani Telegramda 📎 → Location orqali yuboring.")
+	m := tgbotapi.NewMessage(chatID, "Локацияни Telegramда 📎 → Location орқали юборинг.")
 	m.ReplyMarkup = kb
 	if _, err := bot.Send(m); err != nil {
 		log.Printf("driver: send: %v", err)
@@ -1579,7 +1579,7 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 		if err := lSvc.AcceptActiveForTypes(ctx, userID, []string{legal.DocDriverTerms, legal.DocPrivacyPolicyDriver}, "", "telegram-bot"); err != nil {
 			log.Printf("driver: legal accept user_id=%d: %v", userID, err)
 			_, _ = bot.Request(tgbotapi.NewCallback(q.ID, ""))
-			send(bot, chatID, "Xatolik. Keyinroq urinib ko'ring.")
+			send(bot, chatID, "Хатолик. Кейинроқ уриниб кўринг.")
 			return
 		}
 		if err := legal.SyncDriverLegalPromptFingerprint(ctx, db, userID); err != nil {
@@ -1602,18 +1602,18 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 				send(bot, chatID, postLegalReliveMessage(payload))
 				if stStr == "approved" {
 					kb := getDriverKeyboard(db, userID)
-					m := tgbotapi.NewMessage(chatID, "📍 Jonli lokatsiyani qayta ulang — tizim sizni onlayn deb hisoblaydi.")
+					m := tgbotapi.NewMessage(chatID, "📍 Жонли локацияни қайта уланг — тизим сизни онлайн деб ҳисоблайди.")
 					m.ReplyMarkup = kb
 					_, _ = bot.Send(m)
 				} else if stStr == "pending_approval" && reaccepted {
 					kb := getDriverKeyboard(db, userID)
-					m := tgbotapi.NewMessage(chatID, "Tasdiqlash kutilmoqda. Holatni /status buyrug'i orqali tekshiring.")
+					m := tgbotapi.NewMessage(chatID, "Тасдиқлаш кутилмоқда. Ҳолатни /status буюрғи орқали текширинг.")
 					m.ReplyMarkup = kb
 					_, _ = bot.Send(m)
 					sendAdminApprovalRequest(ctx, bot, db, cfg, userID, telegramID)
 				} else if stStr == "pending_approval" {
 					kb := getDriverKeyboard(db, userID)
-					m := tgbotapi.NewMessage(chatID, "Tasdiqlash kutilmoqda. Holatni /status buyrug'i orqali tekshiring.")
+					m := tgbotapi.NewMessage(chatID, "Тасдиқлаш кутилмоқда. Ҳолатни /status буюрғи орқали текширинг.")
 					m.ReplyMarkup = kb
 					_, _ = bot.Send(m)
 				}
@@ -1633,7 +1633,7 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 			sendOrUpdatePinnedStatus(bot, db, cfg, chatID, userID)
 			send(bot, chatID, postLegalReliveMessage(""))
 			kb := getDriverKeyboard(db, userID)
-			m := tgbotapi.NewMessage(chatID, "📍 Jonli lokatsiyani qayta ulang — buyurtmalar faqat shundan keyin keladi.")
+			m := tgbotapi.NewMessage(chatID, "📍 Жонли локацияни қайта уланг — буюртмалар фақат шундан кейин келади.")
 			m.ReplyMarkup = kb
 			_, _ = bot.Send(m)
 			return
@@ -1642,15 +1642,15 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 		if before {
 			if stStr == "pending_approval" {
 				sendAdminApprovalRequest(ctx, bot, db, cfg, userID, telegramID)
-				send(bot, chatID, "✅ Shartnoma qabul qilingan.\n\nArizangiz adminga yuborildi.")
+				send(bot, chatID, "✅ Шартнома қабул қилинган.\n\nАризангиз админга юборилди.")
 			} else {
-				send(bot, chatID, "✅ Shartnoma qabul qilingan.")
+				send(bot, chatID, "✅ Шартнома қабул қилинган.")
 			}
 			return
 		}
-		send(bot, chatID, "✅ Shartnoma qabul qilindi.\n\nMa'lumotlaringiz admin tomonidan tekshiriladi.")
+		send(bot, chatID, "✅ Шартнома қабул қилинди.\n\nМаълумотларингиз админ томонидан текширилади.")
 		kb := getDriverKeyboard(db, userID)
-		m := tgbotapi.NewMessage(chatID, "Tasdiqlash kutilmoqda. Holatni /status buyrug'i orqali tekshiring.")
+		m := tgbotapi.NewMessage(chatID, "Тасдиқлаш кутилмоқда. Ҳолатни /status буюрғи орқали текширинг.")
 		m.ReplyMarkup = kb
 		_, _ = bot.Send(m)
 		sendAdminApprovalRequest(ctx, bot, db, cfg, userID, telegramID)
@@ -1663,7 +1663,7 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 	} else if strings.HasPrefix(data, "approve_driver_") || strings.HasPrefix(data, "reject_driver_") {
 		if cfg == nil || telegramID != cfg.AdminID {
 			if q.ID != "" {
-				_, _ = bot.Request(tgbotapi.NewCallback(q.ID, "Ruxsat yo'q"))
+				_, _ = bot.Request(tgbotapi.NewCallback(q.ID, "Рухсат йўқ"))
 			}
 			return
 		}
@@ -1706,7 +1706,7 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 			if err := db.QueryRowContext(ctx, `SELECT telegram_id FROM users WHERE id = ?1`, driverUserID).Scan(&driverTgID); err != nil || driverTgID == 0 {
 				return
 			}
-			msg := tgbotapi.NewMessage(driverTgID, "🎉 Profilingiz tasdiqlandi.\n\nBuyurtmalar olish uchun Telegramda jonli lokatsiyani ulang — boshqa «onlayn» tugmasi yo‘q; ulashganingizgacha siz oflayn.")
+			msg := tgbotapi.NewMessage(driverTgID, "🎉 Профилингиз тасдиқланди.\n\nБуюртмалар олиш учун Telegramда жонли локацияни уланг — бошқа «онлайн» тугмаси йўқ; улашганингизгача сиз офлайн.")
 			if _, err := bot.Send(msg); err != nil {
 				log.Printf("driver: notify approved driver send error user_id=%d: %v", driverUserID, err)
 				return
@@ -1720,7 +1720,7 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 				log.Printf("driver: driver rejected by admin user_id=%d", driverUserID)
 				var driverTgID int64
 				if err := db.QueryRowContext(ctx, `SELECT telegram_id FROM users WHERE id = ?1`, driverUserID).Scan(&driverTgID); err == nil && driverTgID != 0 {
-					msg := tgbotapi.NewMessage(driverTgID, "❌ Hujjatlaringiz tasdiqlanmadi.\nIltimos, aniqroq rasm yuboring.")
+					msg := tgbotapi.NewMessage(driverTgID, "❌ Ҳужжатларингиз тасдиқланмади.\nИлтимос, аниқроқ расм юборинг.")
 					if _, err := bot.Send(msg); err != nil {
 						log.Printf("driver: notify rejected driver send error user_id=%d: %v", driverUserID, err)
 					}
@@ -1738,7 +1738,7 @@ func handleAccept(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, assignme
 	var userID int64
 	err := db.QueryRowContext(ctx, `SELECT id FROM users WHERE telegram_id = ?1`, telegramID).Scan(&userID)
 	if err != nil || userID == 0 {
-		send(bot, chatID, "Xatolik.")
+		send(bot, chatID, "Хатолик.")
 		return
 	}
 	if !legal.NewService(db).DriverHasActiveLegal(ctx, userID) {
@@ -1749,21 +1749,21 @@ func handleAccept(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, assignme
 			_ = lSvc.SetPendingResume(ctx, userID, resumeDriverAccept, requestID)
 		}
 		sendDriverAgreementForDriver(bot, db, chatID, userID, true, false)
-		send(bot, chatID, "⚠️ Buyurtma qabul qilish uchun avval barcha hujjatlarni qabul qiling.")
+		send(bot, chatID, "⚠️ Буюртмани қабул қилиш учун аввал барча ҳужжатларни қабул қилинг.")
 		return
 	}
 	if assignmentService == nil {
-		send(bot, chatID, "Xatolik.")
+		send(bot, chatID, "Хатолик.")
 		return
 	}
 	assigned, tripID, err := assignmentService.TryAssign(ctx, requestID, userID)
 	if err != nil {
 		log.Printf("driver: TryAssign: %v", err)
-		send(bot, chatID, "Xatolik.")
+		send(bot, chatID, "Хатолик.")
 		return
 	}
 	if !assigned {
-		send(bot, chatID, "So'rov allaqachon boshqaga berilgan yoki bekor qilingan.")
+		send(bot, chatID, "Сўров аллақачон бошқаға берилган ёки бекор қилинган.")
 		return
 	}
 	if tripService != nil {
@@ -1795,15 +1795,15 @@ func sendWithOpenTripMapButton(bot *tgbotapi.BotAPI, chatID int64, cfg *config.C
 	webAppURL := base + "?trip_id=" + tripID + "&driver_id=" + strconv.FormatInt(driverUserID, 10)
 	kb := webAppKeyboard{
 		InlineKeyboard: [][]webAppButton{{
-			{Text: "🗺️ Safar xaritasini ochish", WebApp: &webAppInfo{URL: webAppURL}},
+			{Text: "🗺️ Сафар харитасини очиш", WebApp: &webAppInfo{URL: webAppURL}},
 		}},
 	}
-	m := tgbotapi.NewMessage(chatID, "Qabul qilindingiz ✅ Xarita ochish uchun tugmani bosing.")
+	m := tgbotapi.NewMessage(chatID, "Қабул қилдингиз ✅ Харита очиш учун тугмани босинг.")
 	m.ReplyMarkup = kb
 	if _, err := bot.Send(m); err != nil {
 		log.Printf("driver: send Open Trip Map button: %v", err)
 		// Fallback: send plain text with link
-		send(bot, chatID, "Qabul qildingiz ✅ Xaritani ochish: "+webAppURL)
+		send(bot, chatID, "Қабул қилдингиз ✅ Харитани очиш: "+webAppURL)
 	}
 }
 

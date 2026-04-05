@@ -99,9 +99,9 @@ func (s *AssignmentService) TryAssign(ctx context.Context, requestID string, dri
 		if phone == "" && userPhone.Valid && strings.TrimSpace(userPhone.String) != "" {
 			phone = strings.TrimSpace(userPhone.String)
 		}
-		body := "🚗 Haydovchi topildi!\n\nSizni quyidagi haydovchi olib ketadi:\n"
+		body := "🚗 Ҳайдовчи топилди!\n\nСизни қуйидаги ҳайдовчи олиб кетади:\n"
 		if phone != "" {
-			body += "📞 Telefon: " + phone + "\n"
+			body += "📞 Телефон: " + phone + "\n"
 		}
 		if carType != "" {
 			body += "🚗 " + carType
@@ -118,7 +118,7 @@ func (s *AssignmentService) TryAssign(ctx context.Context, requestID string, dri
 		msg := tgbotapi.NewMessage(chatID, body)
 		if s.cfg.RiderMapURL != "" {
 			riderMapURL := strings.TrimSuffix(s.cfg.RiderMapURL, "/") + "?trip_id=" + tripID
-			msg.ReplyMarkup = riderMapWebAppKeyboard("📍 Haydovchini kuzatish", riderMapURL)
+			msg.ReplyMarkup = riderMapWebAppKeyboard("📍 Ҳайдовчини кузатиш", riderMapURL)
 		}
 		if _, err := s.riderBot.Send(msg); err != nil {
 			log.Printf("assignment_service: notify rider: %v", assignmentErrStr(err))
@@ -126,12 +126,12 @@ func (s *AssignmentService) TryAssign(ctx context.Context, requestID string, dri
 		// Reply keyboard for trip-active state: Haydovchini kuzatish, Bekor qilish
 		riderTripActiveKeyboard := tgbotapi.NewReplyKeyboard(
 			tgbotapi.NewKeyboardButtonRow(
-				tgbotapi.NewKeyboardButton("📍 Haydovchini kuzatish"),
-				tgbotapi.NewKeyboardButton("❌ Bekor qilish"),
+				tgbotapi.NewKeyboardButton("📍 Ҳайдовчини кузатиш"),
+				tgbotapi.NewKeyboardButton("❌ Бекор қилиш"),
 			),
 		)
 		riderTripActiveKeyboard.ResizeKeyboard = true
-		kbMsg := tgbotapi.NewMessage(chatID, "Haydovchini xaritada kuzating yoki safarni bekor qilishingiz mumkin.")
+		kbMsg := tgbotapi.NewMessage(chatID, "Ҳайдовчини харитада кузатинг ёки сафарни бекор қилишингиз мумкин.")
 		kbMsg.ReplyMarkup = riderTripActiveKeyboard
 		if _, err := s.riderBot.Send(kbMsg); err != nil {
 			log.Printf("assignment_service: notify rider keyboard: %v", assignmentErrStr(err))
@@ -220,10 +220,10 @@ func (s *AssignmentService) expireRequests(ctx context.Context) {
 		if err != nil {
 			continue
 		}
-		msg := tgbotapi.NewMessage(telegramID, "Haydovchi topilmadi.")
+		msg := tgbotapi.NewMessage(telegramID, "Ҳайдовчи топилмади.")
 		msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
 			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("Qayta qidirish", "search_again"),
+				tgbotapi.NewInlineKeyboardButtonData("Қайта қидириш", "search_again"),
 			),
 		)
 		if _, err := s.riderBot.Send(msg); err != nil {
@@ -232,12 +232,12 @@ func (s *AssignmentService) expireRequests(ctx context.Context) {
 		// Restore main menu so rider has clear entry point
 		mainMenu := tgbotapi.NewReplyKeyboard(
 			tgbotapi.NewKeyboardButtonRow(
-				tgbotapi.NewKeyboardButton("🚕 Taxi chaqirish"),
-				tgbotapi.NewKeyboardButton("ℹ️ Yordam"),
+				tgbotapi.NewKeyboardButton("🚕 Такси чақириш"),
+				tgbotapi.NewKeyboardButton("ℹ️ Ёрдам"),
 			),
 		)
 		mainMenu.ResizeKeyboard = true
-		kbMsg := tgbotapi.NewMessage(telegramID, "Yangi so'rov uchun «Taxi chaqirish» ni bosing.")
+		kbMsg := tgbotapi.NewMessage(telegramID, "Янги сўров учун «Такси чақириш» ни босинг.")
 		kbMsg.ReplyMarkup = mainMenu
 		if _, err := s.riderBot.Send(kbMsg); err != nil {
 			log.Printf("assignment_service: rider main menu after expiry: %v", assignmentErrStr(err))

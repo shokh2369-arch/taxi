@@ -21,12 +21,12 @@ import (
 )
 
 const (
-	btnLocation        = "📍 Lokatsiya yuborish"
-	btnCancel          = "❌ Bekor qilish"
-	btnTaxiCall        = "🚕 Taxi chaqirish"
-	btnTaxiNew         = "🚕 Yangi taxi chaqirish"
-	btnHelp            = "ℹ️ Yordam"
-	btnTrackDriver     = "📍 Haydovchini kuzatish"
+	btnLocation        = "📍 Локация юбориш"
+	btnCancel          = "❌ Бекор қилиш"
+	btnTaxiCall        = "🚕 Такси чақириш"
+	btnTaxiNew         = "🚕 Янги такси чақириш"
+	btnHelp            = "ℹ️ Ёрдам"
+	btnTrackDriver     = "📍 Ҳайдовчини кузатиш"
 	cbRiderAcceptTerms = "rider_accept_terms"
 
 	resumeRiderLocation    = "rider_location"
@@ -153,7 +153,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 
 	if msg.Location != nil {
 		if riderUserID == 0 {
-			send(bot, chatID, "Avval /start bosing.")
+			send(bot, chatID, "Аввал /start босинг.")
 			return
 		}
 		if !legal.NewService(db).RiderHasActiveLegal(ctx, riderUserID) {
@@ -168,7 +168,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 
 	if msg.Text == btnTaxiCall || msg.Text == btnTaxiNew {
 		if riderUserID == 0 {
-			send(bot, chatID, "Avval /start bosing.")
+			send(bot, chatID, "Аввал /start босинг.")
 			return
 		}
 		if !legal.NewService(db).RiderHasActiveLegal(ctx, riderUserID) {
@@ -182,7 +182,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 
 	if msg.Text == btnTrackDriver {
 		if riderUserID == 0 {
-			send(bot, chatID, "Avval /start bosing.")
+			send(bot, chatID, "Аввал /start босинг.")
 			return
 		}
 		if !legal.NewService(db).RiderHasActiveLegal(ctx, riderUserID) {
@@ -199,7 +199,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 		if riderUserID != 0 {
 			sendRiderLegalScreens(bot, db, chatID)
 		} else {
-			send(bot, chatID, "⚠️ Davom etish uchun avval qoidalarni qabul qilishingiz kerak.\n\n/start buyrug'ini bosing.")
+			send(bot, chatID, "⚠️ Давом этиш учун аввал қоидаларни қабул қилишингиз керак.\n\n/start буюрғини босинг.")
 		}
 		return
 	}
@@ -216,10 +216,10 @@ func handleUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 
 func setBotCommands(bot *tgbotapi.BotAPI) {
 	cmd := tgbotapi.NewSetMyCommands(
-		tgbotapi.BotCommand{Command: "start", Description: "Bosh menyu"},
-		tgbotapi.BotCommand{Command: "cancel", Description: "Bekor qilish"},
-		tgbotapi.BotCommand{Command: "terms", Description: "Foydalanish qoidalari"},
-		tgbotapi.BotCommand{Command: "privacy", Description: "Maxfiylik siyosati"},
+		tgbotapi.BotCommand{Command: "start", Description: "Бош меню"},
+		tgbotapi.BotCommand{Command: "cancel", Description: "Бекор қилиш"},
+		tgbotapi.BotCommand{Command: "terms", Description: "Фойдаланиш қоидалари"},
+		tgbotapi.BotCommand{Command: "privacy", Description: "Махфийлик сиёсати"},
 	)
 	if _, err := bot.Request(cmd); err != nil {
 		log.Printf("rider bot: SetMyCommands: %v", err)
@@ -239,16 +239,16 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 			telegramID, domain.RoleRider)
 		var userID int64
 		if err := db.QueryRowContext(ctx, `SELECT id FROM users WHERE telegram_id = ?1`, telegramID).Scan(&userID); err != nil || userID == 0 {
-			send(bot, q.Message.Chat.ID, "Xatolik.")
+			send(bot, q.Message.Chat.ID, "Хатолик.")
 			return
 		}
 		lSvc := legal.NewService(db)
 		if err := lSvc.AcceptActiveForTypes(ctx, userID, []string{legal.DocUserTerms, legal.DocPrivacyPolicyUser}, "", "telegram-bot"); err != nil {
 			log.Printf("rider: legal accept: %v", err)
-			send(bot, q.Message.Chat.ID, "Xatolik. Keyinroq urinib ko'ring.")
+			send(bot, q.Message.Chat.ID, "Хатолик. Кейинроқ уриниб кўринг.")
 			return
 		}
-		send(bot, q.Message.Chat.ID, "✅ Qoidalar qabul qilindi.\n\nEndi siz bemalol buyurtma berishingiz mumkin.")
+		send(bot, q.Message.Chat.ID, "✅ Қоидалар қабул қилинди.\n\nЭнди сиз бемалол буюртма беришингиз мумкин.")
 		kind, payload, ok := lSvc.TakePendingResume(ctx, userID)
 		if ok {
 			switch kind {
@@ -319,7 +319,7 @@ func handleStart(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64, telegramID int6
 	code, err := utils.GenerateReferralCode(ctx, db)
 	if err != nil {
 		log.Printf("rider: generate referral code: %v", err)
-		send(bot, chatID, "Xatolik. Qayta urinib ko'ring.")
+		send(bot, chatID, "Хатолик. Қайта уриниб кўринг.")
 		return
 	}
 	var refArg interface{}
@@ -332,7 +332,7 @@ func handleStart(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64, telegramID int6
 		telegramID, domain.RoleRider, code, refArg)
 	if err != nil {
 		log.Printf("rider: upsert user: %v", err)
-		send(bot, chatID, "Xatolik. Qayta urinib ko‘ring.")
+		send(bot, chatID, "Хатолик. Қайта уриниб кўринг.")
 		return
 	}
 
@@ -341,7 +341,7 @@ func handleStart(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64, telegramID int6
 	}
 	var userID int64
 	if err := db.QueryRowContext(ctx, `SELECT id FROM users WHERE telegram_id = ?1`, telegramID).Scan(&userID); err != nil || userID == 0 {
-		send(bot, chatID, "Xatolik.")
+		send(bot, chatID, "Хатолик.")
 		return
 	}
 	if !legal.NewService(db).RiderHasActiveLegal(ctx, userID) {
@@ -360,7 +360,7 @@ func sendRiderLegalScreens(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64) {
 	}
 	kb := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("✅ Qabul qilaman", cbRiderAcceptTerms),
+			tgbotapi.NewInlineKeyboardButtonData("✅ Қабул қиламан", cbRiderAcceptTerms),
 		),
 	)
 	m := tgbotapi.NewMessage(chatID, text)
@@ -384,7 +384,7 @@ func sendActivePrivacy(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64) {
 	ctx := context.Background()
 	_, content, err := legal.NewService(db).ActiveDocument(ctx, legal.DocPrivacyPolicyUser)
 	if err != nil {
-		send(bot, chatID, "Maxfiylik siyosati hozircha yuklanmadi. /start orqali qayta urinib ko'ring.")
+		send(bot, chatID, "Махфийлик сиёсати ҳозирча юкланмади. /start орқали қайта уриниб кўринг.")
 		return
 	}
 	send(bot, chatID, content)
@@ -399,7 +399,7 @@ func sendMainMenu(bot *tgbotapi.BotAPI, chatID int64) {
 		),
 	)
 	kb.ResizeKeyboard = true
-	m := tgbotapi.NewMessage(chatID, "Quyidagi tugmalardan foydalaning:")
+	m := tgbotapi.NewMessage(chatID, "Қуйидаги тугмалардан фойдаланинг:")
 	m.ReplyMarkup = kb
 	if _, err := bot.Send(m); err != nil {
 		log.Printf("rider: send main menu: %v", err)
@@ -415,7 +415,7 @@ func SendMainMenuAfterFinish(bot *tgbotapi.BotAPI, chatID int64) {
 		),
 	)
 	kb.ResizeKeyboard = true
-	m := tgbotapi.NewMessage(chatID, "Safar tugadi. Yangi taxi chaqirish uchun tugmani bosing.")
+	m := tgbotapi.NewMessage(chatID, "Сафар тугади. Янги такси чақириш учун тугмани босинг.")
 	m.ReplyMarkup = kb
 	if _, err := bot.Send(m); err != nil {
 		log.Printf("rider: send main menu after finish: %v", err)
@@ -430,11 +430,11 @@ func handleTaxiCall(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) 
 }
 
 func handleHelp(bot *tgbotapi.BotAPI, chatID int64) {
-	text := "Yordam:\n\n" +
-		"• Taxi chaqirish — lokatsiyangizni yuboring, haydovchi topiladi.\n" +
-		"• Haydovchini kuzatish — safar davomida xaritada kuzating.\n" +
-		"• Bekor qilish — so'rovni yoki safarni bekor qilish.\n\n" +
-		"/start — bosh menyu\n/cancel — bekor qilish"
+	text := "Ёрдам:\n\n" +
+		"• Такси чақириш — локациянгизни юборинг, ҳайдовчи топилади.\n" +
+		"• Ҳайдовчини кузатиш — сафар давомида харитада кузатинг.\n" +
+		"• Бекор қилиш — сўровни ёки сафарни бекор қилиш.\n\n" +
+		"/start — бош меню\n/cancel — бекор қилиш"
 	kb := mainMenuReplyKeyboard()
 	m := tgbotapi.NewMessage(chatID, text)
 	m.ReplyMarkup = kb
@@ -458,7 +458,7 @@ func handleTrackDriver(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, cha
 	var userID int64
 	err := db.QueryRowContext(context.Background(), `SELECT id FROM users WHERE telegram_id = ?1`, telegramID).Scan(&userID)
 	if err != nil || userID == 0 {
-		send(bot, chatID, "Avval /start bosing.")
+		send(bot, chatID, "Аввал /start босинг.")
 		return
 	}
 	var tripID string
@@ -468,16 +468,16 @@ func handleTrackDriver(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, cha
 		ORDER BY id DESC LIMIT 1`,
 		userID, domain.TripStatusWaiting, domain.TripStatusArrived, domain.TripStatusStarted).Scan(&tripID)
 	if err != nil || tripID == "" {
-		send(bot, chatID, "Aktiv safar topilmadi.")
+		send(bot, chatID, "Актив сафар топилмади.")
 		return
 	}
 	if cfg == nil || cfg.RiderMapURL == "" {
-		send(bot, chatID, "Xarita hozircha mavjud emas.")
+		send(bot, chatID, "Харита ҳозирча мавжуд эмас.")
 		return
 	}
 	url := strings.TrimSuffix(cfg.RiderMapURL, "/") + "?trip_id=" + tripID
-	kb := riderMapWebAppKeyboard("📍 Xaritada kuzatish", url)
-	m := tgbotapi.NewMessage(chatID, "Haydovchini xaritada kuzatish uchun tugmani bosing:")
+	kb := riderMapWebAppKeyboard("📍 Харитада кузатиш", url)
+	m := tgbotapi.NewMessage(chatID, "Ҳайдовчини харитада кузатиш учун тугмани босинг:")
 	m.ReplyMarkup = kb
 	if _, err := bot.Send(m); err != nil {
 		log.Printf("rider: send track driver: %v", err)
@@ -514,12 +514,12 @@ func ensureRiderPhone(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64
 	}
 	kb := tgbotapi.NewReplyKeyboard(
 		tgbotapi.NewKeyboardButtonRow(
-			tgbotapi.NewKeyboardButtonContact("📞 Telefon raqamini yuborish"),
+			tgbotapi.NewKeyboardButtonContact("📞 Телефон рақамини юбориш"),
 		),
 	)
 	kb.ResizeKeyboard = true
 	kb.OneTimeKeyboard = true
-	m := tgbotapi.NewMessage(chatID, "Buyurtma berish uchun telefon raqamingiz kerak. Tugmani bosib raqamingizni yuboring.")
+	m := tgbotapi.NewMessage(chatID, "Буюртма бериш учун телефон рақамингиз керак. Тугмани босиб рақамингизни юборинг.")
 	m.ReplyMarkup = kb
 	if _, err := bot.Send(m); err != nil {
 		log.Printf("rider: send phone prompt: %v", err)
@@ -536,7 +536,7 @@ func handlePhoneContact(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int
 	if err != nil {
 		log.Printf("rider: save phone: %v", err)
 	}
-	send(bot, chatID, "Rahmat ✅ Endi menyudan «Taxi chaqirish» ni bosing.")
+	send(bot, chatID, "Раҳмат ✅ Энди менюдан «Такси чақириш» ни босинг.")
 	sendMainMenu(bot, chatID)
 }
 
@@ -548,7 +548,7 @@ func sendLocationPrompt(bot *tgbotapi.BotAPI, chatID int64) {
 	)
 	keyboard.ResizeKeyboard = true
 	keyboard.OneTimeKeyboard = true
-	m := tgbotapi.NewMessage(chatID, "Lokatsiyangizni yuboring.")
+	m := tgbotapi.NewMessage(chatID, "Локациянгизни юборинг.")
 	m.ReplyMarkup = keyboard
 	if _, err := bot.Send(m); err != nil {
 		log.Printf("rider: send: %v", err)
@@ -565,21 +565,21 @@ func handleLocation(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 		`SELECT id FROM users WHERE telegram_id = ?1`, telegramID).Scan(&userID)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			send(bot, chatID, "Avval /start bosing.")
+			send(bot, chatID, "Аввал /start босинг.")
 			return
 		}
 		log.Printf("rider: get user: %v", err)
-		send(bot, chatID, "Xatolik. Qayta urinib ko'ring.")
+		send(bot, chatID, "Хатолик. Қайта уриниб кўринг.")
 		return
 	}
 
 	// Anti-abuse: block new requests while rider is temporarily blocked.
 	if penalty, err := abuse.CheckRiderBlock(ctx, db, userID, time.Now()); err == nil && penalty != nil && penalty.BlockUntil != nil {
 		remaining := abuse.FormatRemaining(*penalty.BlockUntil, time.Now())
-		text := "⏳ Buyurtma vaqtincha cheklangan\n\n" +
-			"Ko‘p marotaba buyurtmani bekor qilganingiz sababli siz vaqtincha yangi buyurtma bera olmaysiz.\n\n" +
-			"⏱ Qayta urinib ko‘rish vaqti: " + remaining + "\n\n" +
-			"Iltimos, haydovchilar vaqtini hurmat qiling."
+		text := "⏳ Буюртма вақтинча чекланган\n\n" +
+			"Кўп маротаба буюртмани бекор қилганингиз сабабли сиз вақтинча янги буюртма бера олмайсиз.\n\n" +
+			"⏱ Қайта уриниб кўриш вақти: " + remaining + "\n\n" +
+			"Илтимос, ҳайдовчилар вақтини ҳурмат қилинг."
 		send(bot, chatID, text)
 		return
 	}
@@ -587,7 +587,7 @@ func handleLocation(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 	// Rate limit: only 1 active (PENDING) ride request per rider
 	var existing int
 	if err := db.QueryRowContext(context.Background(), `SELECT 1 FROM ride_requests WHERE rider_user_id = ?1 AND status = ?2 LIMIT 1`, userID, domain.RequestStatusPending).Scan(&existing); err == nil {
-		send(bot, chatID, "Sizda allaqachon faol so'rov bor. Haydovchi topilguncha yoki bekor qilinguncha kuting.")
+		send(bot, chatID, "Сизда аллақачон фаол сўров бор. Ҳайдовчи топилгунча ёки бекор қилингунча кутинг.")
 		return
 	}
 
@@ -600,7 +600,7 @@ func handleLocation(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 		requestID.String(), userID, lat, lng, cfg.MatchRadiusKm, domain.RequestStatusPending, expiresAt, pickupGrid)
 	if err != nil {
 		log.Printf("rider: create request: %v", err)
-		send(bot, chatID, "Xatolik. So‘rov yuborilmadi.")
+		send(bot, chatID, "Хатолик. Сўров юборилмади.")
 		return
 	}
 
@@ -610,7 +610,7 @@ func handleLocation(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 		}
 	}
 
-	send(bot, chatID, "So‘rov ketdi. Hozir yaqin haydovchilarga yubordim.")
+	send(bot, chatID, "Сўров кетди. Ҳозир яқин ҳайдовчиларга юбордим.")
 
 	keyboard := tgbotapi.NewReplyKeyboard(
 		tgbotapi.NewKeyboardButtonRow(
@@ -618,7 +618,7 @@ func handleLocation(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 		),
 	)
 	keyboard.ResizeKeyboard = true
-	m := tgbotapi.NewMessage(chatID, "Haydovchi topilguncha kuting. Bekor qilish tugmasini bosishingiz mumkin.")
+	m := tgbotapi.NewMessage(chatID, "Ҳайдовчи топилгунча кутинг. Бекор қилиш тугмасини босишингиз мумкин.")
 	m.ReplyMarkup = keyboard
 	if _, err := bot.Send(m); err != nil {
 		log.Printf("rider: send: %v", err)
@@ -635,7 +635,7 @@ func handleCancel(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, tripServ
 			return
 		}
 		log.Printf("rider: get user: %v", err)
-		send(bot, chatID, "Xatolik.")
+		send(bot, chatID, "Хатолик.")
 		return
 	}
 	// If rider has an active trip (WAITING or STARTED), cancel the trip first ("safarni bekor qilish").
@@ -650,11 +650,11 @@ func handleCancel(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, tripServ
 			result, err := tripService.CancelByRider(ctx, tripID, userID)
 			if err != nil {
 				log.Printf("rider: cancel trip: %v", err)
-				send(bot, chatID, "Xatolik.")
+				send(bot, chatID, "Хатолик.")
 				return
 			}
 			if result != nil {
-				send(bot, chatID, "Safar bekor qilindi.")
+				send(bot, chatID, "Сафар бекор қилинди.")
 				if ensureRiderPhone(bot, db, chatID, telegramID) {
 					return
 				}
@@ -673,15 +673,15 @@ func handleCancel(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, tripServ
 		domain.RequestStatusCancelled, userID, domain.RequestStatusPending)
 	if err != nil {
 		log.Printf("rider: cancel request: %v", err)
-		send(bot, chatID, "Xatolik.")
+		send(bot, chatID, "Хатолик.")
 		return
 	}
 	rows, _ := res.RowsAffected()
 	if rows == 0 {
-		send(bot, chatID, "Bekor qilinadigan so‘rov topilmadi.")
+		send(bot, chatID, "Бекор қилинадиган сўров топилмади.")
 		return
 	}
-	send(bot, chatID, "Bekor qilindi.")
+	send(bot, chatID, "Бекор қилинди.")
 	if ensureRiderPhone(bot, db, chatID, telegramID) {
 		return
 	}
@@ -705,11 +705,11 @@ func pollAndNotifyRider(ctx context.Context, bot *tgbotapi.BotAPI, db *sql.DB, c
 func notifyTripUpdates(bot *tgbotapi.BotAPI, db *sql.DB, notified *notifiedState) {}
 
 func formatSummary(km float64, fareAmount int64) string {
-	return fmt.Sprintf("Safar tugadi.\n%s\nNarx: %d", formatKm(km), fareAmount)
+	return fmt.Sprintf("Сафар тугади.\n%s\nНарх: %d", formatKm(km), fareAmount)
 }
 
 func formatKm(km float64) string {
-	return fmt.Sprintf("%.2f km", km)
+	return fmt.Sprintf("%.2f км", km)
 }
 
 func send(bot *tgbotapi.BotAPI, chatID int64, text string) {

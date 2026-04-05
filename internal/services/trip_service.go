@@ -229,11 +229,11 @@ func (s *TripService) StartTrip(ctx context.Context, tripID string, driverUserID
 			// When trip starts, remove the cancel button from rider keyboard (keep only "Track driver").
 			kb := tgbotapi.NewReplyKeyboard(
 				tgbotapi.NewKeyboardButtonRow(
-					tgbotapi.NewKeyboardButton("📍 Haydovchini kuzatish"),
+					tgbotapi.NewKeyboardButton("📍 Ҳайдовчини кузатиш"),
 				),
 			)
 			kb.ResizeKeyboard = true
-			msg := tgbotapi.NewMessage(riderTelegramID, "Safar boshlandi ▶️")
+			msg := tgbotapi.NewMessage(riderTelegramID, "Сафар бошланди ▶️")
 			msg.ReplyMarkup = kb
 			if _, err := s.riderBot.Send(msg); err != nil {
 				log.Printf("trip_service: notify rider start: %v", tripErrStr(err))
@@ -381,8 +381,8 @@ func (s *TripService) MarkArrived(ctx context.Context, tripID string, driverUser
 func riderTripActiveReplyKeyboard() tgbotapi.ReplyKeyboardMarkup {
 	kb := tgbotapi.NewReplyKeyboard(
 		tgbotapi.NewKeyboardButtonRow(
-			tgbotapi.NewKeyboardButton("📍 Haydovchini kuzatish"),
-			tgbotapi.NewKeyboardButton("❌ Bekor qilish"),
+			tgbotapi.NewKeyboardButton("📍 Ҳайдовчини кузатиш"),
+			tgbotapi.NewKeyboardButton("❌ Бекор қилиш"),
 		),
 	)
 	kb.ResizeKeyboard = true
@@ -417,9 +417,9 @@ func telegramSendRiderArrivedMessage(tripID string, chatID int64, bot telegramBo
 }
 
 func (s *TripService) notifyArrivedAtPickup(ctx context.Context, tripID string, driverUserID, riderUserID int64) {
-	const riderText = "✅ Haydovchi sizning manzilingizga yetib keldi.\n\nSafar boshlashga tayyor: haydovchi bilan uchrashing. Haydovchi safarni boshlagach, yo‘l davom etadi."
-	const driverTextSuccess = "✅ Mijozga yetib keldingiz. Yo‘lovchiga xabar yuborildi. Safarni boshlashingiz mumkin."
-	const driverTextRetry = "Mijozga xabar yetmadi, qayta urinib ko‘ring"
+	const riderText = "✅ Ҳайдовчи сизнинг манзилингизга етиб келди.\n\nСафар бошлашга тайёр: ҳайдовчи билан учрашинг. Ҳайдовчи сафарни бошлагач, йўл давом этади."
+	const driverTextSuccess = "✅ Мижозга етиб келдингиз. Йўловчига хабар юборилди. Сафарни бошлашингиз мумкин."
+	const driverTextRetry = "Мижозга хабар етмади, қайта уриниб кўринг"
 
 	log.Printf("ARRIVED_NOTIFY_BEGIN trip_id=%s driver_user_id=%d rider_user_id=%d", tripID, driverUserID, riderUserID)
 
@@ -454,10 +454,10 @@ func (s *TripService) notifyArrivedAtPickup(ctx context.Context, tripID string, 
 			if s.cfg != nil && strings.TrimSpace(s.cfg.RiderMapURL) != "" {
 				riderMapURL := strings.TrimSuffix(s.cfg.RiderMapURL, "/") + "?trip_id=" + tripID
 				m1 := tgbotapi.NewMessage(chatID, riderText)
-				m1.ReplyMarkup = riderMapWebAppKeyboard("📍 Haydovchini kuzatish", riderMapURL)
+				m1.ReplyMarkup = riderMapWebAppKeyboard("📍 Ҳайдовчини кузатиш", riderMapURL)
 				primaryResp, sendErr = telegramSendRiderArrivedMessage(tripID, chatID, s.riderBot, m1)
 				if sendErr == nil {
-					m2 := tgbotapi.NewMessage(chatID, "Haydovchini xaritada kuzating yoki safarni bekor qilishingiz mumkin.")
+					m2 := tgbotapi.NewMessage(chatID, "Ҳайдовчини харитада кузатинг ёки сафарни бекор қилишингиз мумкин.")
 					m2.ReplyMarkup = riderTripActiveReplyKeyboard()
 					if _, err2 := telegramSendRiderArrivedMessage(tripID, chatID, s.riderBot, m2); err2 != nil {
 						log.Printf("ARRIVED_NOTIFY_FAILED trip_id=%s error=%v", tripID, tripErrStr(fmt.Errorf("rider follow-up keyboard after primary message_id=%d: %w", primaryResp.MessageID, err2)))
@@ -734,8 +734,8 @@ func (s *TripService) FinishTrip(ctx context.Context, tripID string, driverUserI
 		// Restore main menu so rider is not stuck with outdated cancel-only keyboard
 		riderMainMenu := tgbotapi.NewReplyKeyboard(
 			tgbotapi.NewKeyboardButtonRow(
-				tgbotapi.NewKeyboardButton("🚕 Yangi taxi chaqirish"),
-				tgbotapi.NewKeyboardButton("ℹ️ Yordam"),
+				tgbotapi.NewKeyboardButton("🚕 Янги такси чақириш"),
+				tgbotapi.NewKeyboardButton("ℹ️ Ёрдам"),
 			),
 		)
 		riderMainMenu.ResizeKeyboard = true
@@ -824,13 +824,13 @@ func normalizeFare(rawFare int64) int64 {
 
 func formatTripSummary(distanceM, fareAmount int64, riderBonusUsed int64) string {
 	km := float64(distanceM) / 1000
-	return fmt.Sprintf("Safar tugadi.\nMasofa: %.2f km\nNarx: %d so'm", km, fareAmount)
+	return fmt.Sprintf("Сафар тугади.\nМасофа: %.2f км\nНарх: %d сўм", km, fareAmount)
 }
 
 // formatDriverTripCompletionMessage returns the driver trip completion message (Mini App finish): status + live location hint + distance/fare.
 func formatDriverTripCompletionMessage(distanceM, fareAmount int64) string {
 	km := float64(distanceM) / 1000
-	return fmt.Sprintf("✅ Safar tugadi.\nMasofa: %.2f km\nNarx: %d so'm\n\nYangi buyurtmalar faqat jonli lokatsiya orqali.", km, fareAmount)
+	return fmt.Sprintf("✅ Сафар тугади.\nМасофа: %.2f км\nНарх: %d сўм\n\nЯнги буюртмалар фақат жонли локация орқали.", km, fareAmount)
 }
 
 // CancelByDriver sets trip to CANCELLED_BY_DRIVER when status is WAITING or STARTED. Idempotent if already CANCELLED_BY_DRIVER.
@@ -864,17 +864,17 @@ func (s *TripService) CancelByDriver(ctx context.Context, tripID string, driverU
 	if riderUserID != 0 {
 		var telegramID int64
 		if err := s.db.QueryRowContext(ctx, `SELECT telegram_id FROM users WHERE id = ?1`, riderUserID).Scan(&telegramID); err == nil {
-			msg := tgbotapi.NewMessage(telegramID, "Haydovchi safarni bekor qildi.")
+			msg := tgbotapi.NewMessage(telegramID, "Ҳайдовчи сафарни бекор қилди.")
 			_, _ = s.riderBot.Send(msg)
 			// Restore rider main menu keyboard (same as no active trip) so bottom buttons are not stuck on active-trip state
 			mainMenu := tgbotapi.NewReplyKeyboard(
 				tgbotapi.NewKeyboardButtonRow(
-					tgbotapi.NewKeyboardButton("🚕 Taxi chaqirish"),
-					tgbotapi.NewKeyboardButton("ℹ️ Yordam"),
+					tgbotapi.NewKeyboardButton("🚕 Такси чақириш"),
+					tgbotapi.NewKeyboardButton("ℹ️ Ёрдам"),
 				),
 			)
 			mainMenu.ResizeKeyboard = true
-			kbMsg := tgbotapi.NewMessage(telegramID, "Yangi so'rov uchun «Taxi chaqirish» ni bosing.")
+			kbMsg := tgbotapi.NewMessage(telegramID, "Янги сўров учун «Такси чақириш» ни босинг.")
 			kbMsg.ReplyMarkup = mainMenu
 			_, _ = s.riderBot.Send(kbMsg)
 		}
@@ -917,7 +917,7 @@ func (s *TripService) CancelByRider(ctx context.Context, tripID string, riderUse
 	if driverUserID != 0 {
 		var telegramID int64
 		if err := s.db.QueryRowContext(ctx, `SELECT telegram_id FROM users WHERE id = ?1`, driverUserID).Scan(&telegramID); err == nil {
-			msg := tgbotapi.NewMessage(telegramID, "Mijoz safarni bekor qildi.")
+			msg := tgbotapi.NewMessage(telegramID, "Мижоз сафарни бекор қилди.")
 			_, _ = s.driverBot.Send(msg)
 		}
 	}
@@ -933,7 +933,7 @@ func (s *TripService) CancelByRider(ctx context.Context, tripID string, riderUse
 		} else if penalty != nil && penalty.ShouldWarn && s.riderBot != nil {
 			var telegramID int64
 			if err := s.db.QueryRowContext(ctx, `SELECT telegram_id FROM users WHERE id = ?1`, riderUserID).Scan(&telegramID); err == nil && telegramID != 0 {
-				const warnText = "⚠️ Diqqat\n\nSiz buyurtmalarni tez-tez bekor qilyapsiz.\nAgar bu davom etsa, vaqtincha cheklov qo‘yilishi mumkin."
+				const warnText = "⚠️ Диққат\n\nСиз буюртмаларни тез-тез бекор қиляпсиз.\nАгар бу давом этса, вақтинча чеклов қўйилиши мумкин."
 				if _, err := s.riderBot.Send(tgbotapi.NewMessage(telegramID, warnText)); err != nil {
 					log.Printf("rider_abuse: warn_send_failed rider_user_id=%d err=%v", riderUserID, tripErrStr(err))
 				}

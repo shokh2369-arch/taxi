@@ -21,7 +21,7 @@ func (s *Service) RiderAgreementPromptMessage(ctx context.Context) (string, erro
 	if len(parts) == 0 {
 		return "", fmt.Errorf("no active rider legal documents")
 	}
-	return strings.Join(parts, "\n\n───────────\n\n") + "\n\n👇 Davom etish uchun tasdiqlang:", nil
+	return strings.Join(parts, "\n\n───────────\n\n") + "\n\n👇 Давом этиш учун тасдиқланг:", nil
 }
 
 // DriverAgreementPromptMessage builds driver-facing legal text (active driver oferta + privacy only).
@@ -39,5 +39,5 @@ func (s *Service) DriverAgreementPromptMessage(ctx context.Context) (string, err
 	if len(parts) == 0 {
 		return "", fmt.Errorf("no active driver legal documents")
 	}
-	return strings.Join(parts, "\n\n───────────\n\n") + "\n\n👇 Davom etish uchun tasdiqlang:", nil
+	return strings.Join(parts, "\n\n───────────\n\n") + "\n\n👇 Давом этиш учун тасдиқланг:", nil
 }

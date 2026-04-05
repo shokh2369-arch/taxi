@@ -32,9 +32,9 @@ func writeTripError(c *gin.Context, tripID string, err error) {
 	case errors.Is(err, domain.ErrAlreadyFinished), errors.Is(err, domain.ErrAlreadyCancelled):
 		c.JSON(http.StatusConflict, gin.H{"ok": false, "error": err.Error(), "trip_id": tripID})
 	case errors.Is(err, domain.ErrTooFarFromPickup):
-		c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "Mijozga hali yetib bormagansiz. Avval pickup nuqtasiga yeting.", "trip_id": tripID})
+		c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "Мижозга ҳали етиб бормагансиз. Аввал олиб кетиш нуқтасига етиң.", "trip_id": tripID})
 	case errors.Is(err, domain.ErrDriverLocationStale), errors.Is(err, domain.ErrLiveLocationInactive):
-		c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "Jonli lokatsiyangiz yangilanmagan yoki o‘chirilgan. Telegramda jonli lokatsiyani yoqing.", "trip_id": tripID})
+		c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "Жонли локациянгиз янгиланмаган ёки ўчирилган. Telegramда жонли локацияни ёқинг.", "trip_id": tripID})
 	default:
 		c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": "operation failed", "trip_id": tripID})
 	}

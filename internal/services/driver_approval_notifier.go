@@ -54,7 +54,7 @@ func notifyApprovedDrivers(ctx context.Context, db *sql.DB, driverBot *tgbotapi.
 		}
 
 		// 1) Profil tasdiqlandi xabari
-		msg := tgbotapi.NewMessage(telegramID, "🎉 Profilingiz tasdiqlandi.\n\nBuyurtmalar olish uchun Telegramda jonli lokatsiyani ulang — boshqa «onlayn» tugmasi yo‘q.\n\nVideo qo'llanmalar: https://t.me/+iD_MYyWnntE1NmMy")
+		msg := tgbotapi.NewMessage(telegramID, "🎉 Профилингиз тасдиқланди.\n\nБуюртмалар олиш учун Telegramда жонли локацияни уланг — бошқа «онлайн» тугмаси йўқ.\n\nВидео қўлланмалар: https://t.me/+iD_MYyWnntE1NmMy")
 		if _, err := driverBot.Send(msg); err != nil {
 			log.Printf("driver_approval_notifier: send approved message user_id=%d: %v", userID, err)
 			continue
@@ -78,7 +78,7 @@ func notifyApprovedDrivers(ctx context.Context, db *sql.DB, driverBot *tgbotapi.
 			),
 		)
 		kb.ResizeKeyboard = true
-		keyboardMsg := tgbotapi.NewMessage(telegramID, "Quyidagi tugmalardan foydalaning:")
+		keyboardMsg := tgbotapi.NewMessage(telegramID, "Қуйидаги тугмалардан фойдаланинг:")
 		keyboardMsg.ReplyMarkup = kb
 		if _, err := driverBot.Send(keyboardMsg); err != nil {
 			log.Printf("driver_approval_notifier: send keyboard user_id=%d: %v", userID, err)

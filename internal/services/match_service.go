@@ -22,7 +22,7 @@ const (
 	defaultDriverCooldown  = 5
 	dispatchBatchSize      = 3  // send request to N nearest drivers per batch
 	dispatchBatchWaitSec   = 60 // wait this many seconds for any driver in the batch to accept before trying next batch
-	liveLocationOrderHint  = "\n\n📍 Jonli lokatsiya yoqilgan bo'lsa buyurtmalar tezroq keladi."
+	liveLocationOrderHint  = "\n\n📍 Жонли локация ёқилган бўлса буюртмалар тезроқ келади."
 	// Live location considered active only when last_live_location_at within 90s (same as dispatch).
 	liveLocationActiveSeconds = 90
 	// DriverLocationFreshnessSeconds: only drivers with last_seen_at within this many seconds are eligible for dispatch.
@@ -75,11 +75,11 @@ func sampleString(ss []string, maxItems int) string {
 
 // formatOrderMessageToDriver builds the text sent to the driver for a new order (distance + client phone if available).
 func formatOrderMessageToDriver(distKm float64, riderPhone string) string {
-	text := fmt.Sprintf("Yangi so'rov (%.1f km uzoqda).", distKm)
+	text := fmt.Sprintf("Янги сўров (%.1f км узоқда).", distKm)
 	if riderPhone != "" {
-		text += "\n📞 Mijoz: " + riderPhone
+		text += "\n📞 Мижоз: " + riderPhone
 	}
-	text += "\nQabul qilasizmi?"
+	text += "\nҚабул қиласизми?"
 	return text
 }
 
@@ -306,7 +306,7 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 			msg := tgbotapi.NewMessage(c.TelegramID, text)
 			msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
 				tgbotapi.NewInlineKeyboardRow(
-					tgbotapi.NewInlineKeyboardButtonData("✅ Qabul qilish", acceptCallbackPrefix+requestID),
+					tgbotapi.NewInlineKeyboardButtonData("✅ Қабул қилиш", acceptCallbackPrefix+requestID),
 				),
 			)
 			sentMsg, sendErr := s.bot.Send(msg)
@@ -553,7 +553,7 @@ func (s *MatchService) NotifyDriverOfPendingRequests(ctx context.Context, driver
 		msg := tgbotapi.NewMessage(telegramID, text)
 		msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
 			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("✅ Qabul qilish", acceptCallbackPrefix+item.requestID),
+				tgbotapi.NewInlineKeyboardButtonData("✅ Қабул қилиш", acceptCallbackPrefix+item.requestID),
 			),
 		)
 		sentMsg, sendErr := s.bot.Send(msg)

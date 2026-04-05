@@ -294,7 +294,7 @@ func TryGrantReferralReward(ctx context.Context, db *sql.DB, referredUserID int6
 
 // ReferralRewardInviterTelegramMessage is sent to the inviter after a successful grant (Uzbek).
 func ReferralRewardInviterTelegramMessage(promoBalance int64) string {
-	return fmt.Sprintf("🎉 Tabriklaymiz!\n\nSiz taklif qilgan haydovchi 3 ta safarni yakunladi\n\n🎁 Sizga +20 000 promo kredit berildi\n\n💰 Jami promo balans: %d", promoBalance)
+	return fmt.Sprintf("🎉 Табриклаймиз!\n\nСиз таклиф қилган ҳайдовчи 3 та сафарни якунлади\n\n🎁 Сизга +20 000 промо кредит берилди\n\n💰 Жами промо баланс: %d", promoBalance)
 }
 
 // DriverReferralStatus is optional API payload for the referred driver’s progress.

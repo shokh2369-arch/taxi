@@ -2,12 +2,12 @@
 package driverloc
 
 // BtnShareLiveLocation is the reply keyboard label for live-location help.
-const BtnShareLiveLocation = "Jonli lokatsiyani ulashish"
+const BtnShareLiveLocation = "Жонли локацияни улашиш"
 
-// LiveInstruction is the standard 4-step live location guide (Uzbek Latin).
-const LiveInstruction = `📍 Jonli lokatsiyani ulash
+// LiveInstruction is the standard 4-step live location guide (Uzbek Cyrillic).
+const LiveInstruction = `📍 Жонли локацияни улаш
 
-1. Chat oynasida 📎 tugmasini bosing
-2. Location / Geopozitsiya ni tanlang
-3. Share Live Location / Translyatsiya geopozitsiya ni bosing
-4. Vaqtni tanlab yuboring`
+1. Чат ойнасида 📎 тугмасини босинг
+2. Location / Геопозиция ни танланг
+3. Share Live Location / Трансляция геопозиция ни босинг
+4. Вақтни танлаб юборинг`

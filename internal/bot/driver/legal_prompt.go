@@ -62,7 +62,7 @@ func sendDriverAgreementForDriver(bot *tgbotapi.BotAPI, db *sql.DB, chatID, user
 		st = strings.TrimSpace(stored.String)
 	}
 	if periodicNudgeOnly && !alwaysFull && st == fp {
-		m := tgbotapi.NewMessage(chatID, "⚠️ Yangilangan shartnomani qabul qilish uchun «✅ Qabul qilaman» tugmasini bosing.")
+		m := tgbotapi.NewMessage(chatID, "⚠️ Янгиланган шартномани қабул қилиш учун «✅ Қабул қиламан» тугмасини босинг.")
 		m.ReplyMarkup = driverAgreementInlineKeyboard()
 		if _, err := bot.Send(m); err != nil {
 			log.Printf("driver: legal nudge: %v", err)
@@ -70,13 +70,13 @@ func sendDriverAgreementForDriver(bot *tgbotapi.BotAPI, db *sql.DB, chatID, user
 		return
 	}
 	if alwaysFull {
-		send(bot, chatID, "📄 Haydovchi shartnomasi (oferta). Quyidagi xabar(lar)ni o‘qing va oxiridagi «Qabul qilaman» tugmasini bosing.")
+		send(bot, chatID, "📄 Ҳайдовчи шартномаси (оферта). Қуйидаги хабар(лар)ни ўқинг ва охиридаги «Қабул қиламан» тугмасини босинг.")
 	} else if st != "" && st != fp {
 		labels := legal.ActiveLegalFingerprintLabels(fp)
 		if labels != "" {
-			send(bot, chatID, "📄 Shartnoma yangilandi. Faol versiyalar: "+labels+"\n\nQuyidagi matnni o‘qing va «✅ Qabul qilaman» tugmasini bosing.")
+			send(bot, chatID, "📄 Шартнома янгиланди. Фаол версиялар: "+labels+"\n\nҚуйидаги матнни ўқинг ва «✅ Қабул қиламан» тугмасини босинг.")
 		} else {
-			send(bot, chatID, "📄 Shartnoma yangilandi (yangi versiya). Quyidagi matnni o‘qing va qabul qiling.")
+			send(bot, chatID, "📄 Шартнома янгиланди (янги версия). Қуйидаги матнни ўқинг ва қабул қилинг.")
 		}
 	}
 	sendDriverAgreement(bot, db, chatID)

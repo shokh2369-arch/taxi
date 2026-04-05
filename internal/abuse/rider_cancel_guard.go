@@ -199,7 +199,7 @@ func CheckRiderBlock(ctx context.Context, db *sql.DB, riderUserID int64, now tim
 func FormatRemaining(until time.Time, now time.Time) string {
 	dur := until.Sub(now)
 	if dur <= 0 {
-		return "hozir"
+		return "ҳозир"
 	}
 	minutes := int(dur.Minutes() + 0.5)
 	if minutes < 60 {
@@ -217,19 +217,19 @@ func FormatRemaining(until time.Time, now time.Time) string {
 
 func fmtDurationUz(hours, minutes int) string {
 	if hours > 0 && minutes > 0 {
-		return fmt.Sprintf("%d soat %d daqiqadan so‘ng", hours, minutes)
+		return fmt.Sprintf("%d соат %d дақиқадан кейин", hours, minutes)
 	}
 	if hours > 0 {
-		return fmt.Sprintf("%d soatdan so‘ng", hours)
+		return fmt.Sprintf("%d соатдан кейин", hours)
 	}
-	return fmt.Sprintf("%d minutdan so‘ng", minutes)
+	return fmt.Sprintf("%d минутдан кейин", minutes)
 }
 
 func fmtDurationUzDays(days int) string {
 	if days <= 1 {
-		return "1 kundan so‘ng"
+		return "1 кундан кейин"
 	}
-	return fmt.Sprintf("%d kundan so‘ng", days)
+	return fmt.Sprintf("%d кундан кейин", days)
 }
 
 // --- internal helpers ---

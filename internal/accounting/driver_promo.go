@@ -24,15 +24,15 @@ const (
 )
 
 // DriverNewPromoProgramMessage is the canonical driver onboarding copy for the current promo program (Uzbek).
-const DriverNewPromoProgramMessage = `🎁 Sizga 20 000 promo kredit berildi
+const DriverNewPromoProgramMessage = `🎁 Сизга 20 000 промо кредит берилди
 
-🚀 Birinchi 3 ta safar uchun:
-har safar +10 000 promo kredit
+🚀 Биринчи 3 та сафар учун:
+ҳар сафар +10 000 промо кредит
 
-ℹ️ Promo kredit:
-— real pul emas
-— naqdlashtirilmaydi
-— platforma ichida ishlatiladi`
+ℹ️ Промо кредит:
+— реал пул эмас
+— нақдлаштирилмайди
+— платформа ичида ишлатилади`
 
 // DriverPromoProgramStatus is returned for API/bot (GET /driver/promo-program).
 type DriverPromoProgramStatus struct {
@@ -246,11 +246,11 @@ func TryGrantFirstThreeTripPromo(ctx context.Context, db *sql.DB, driverUserID i
 func FirstThreeTripBonusTelegramMessage(tripNum int, promoBalance int64) string {
 	switch tripNum {
 	case 1:
-		return fmt.Sprintf("🎉 Tabriklaymiz!\n\n1-safaringiz yakunlandi\n+10 000 promo kredit qo‘shildi\n\n💰 Jami promo balans: %d\n\n🚀 Yana 2 ta safar qiling va bonus oling", promoBalance)
+		return fmt.Sprintf("🎉 Табриклаймиз!\n\n1-сафарингиз якунланди\n+10 000 промо кредит қўшилди\n\n💰 Жами промо баланс: %d\n\n🚀 Яна 2 та сафар қилинг ва бонус олинг", promoBalance)
 	case 2:
-		return fmt.Sprintf("🎉 2-safar yakunlandi\n\n+10 000 promo kredit\n\n💰 Balans: %d\n\n🚀 Yana 1 ta safar qoldi", promoBalance)
+		return fmt.Sprintf("🎉 2-сафар якунланди\n\n+10 000 промо кредит\n\n💰 Баланс: %d\n\n🚀 Яна 1 та сафар қолди", promoBalance)
 	case 3:
-		return fmt.Sprintf("🔥 Ajoyib!\n\n3-safar yakunlandi\n+10 000 promo kredit\n\n💰 Balans: %d\n\n✅ Barcha boshlang‘ich bonuslar berildi", promoBalance)
+		return fmt.Sprintf("🔥 Ажойиб!\n\n3-сафар якунланди\n+10 000 промо кредит\n\n💰 Баланс: %d\n\n✅ Барча бошланғич бонуслар берилди", promoBalance)
 	default:
 		return ""
 	}

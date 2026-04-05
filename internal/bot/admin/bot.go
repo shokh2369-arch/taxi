@@ -16,14 +16,14 @@ import (
 )
 
 const (
-	btnFareMenu       = "💰 Narx belgilash"
-	btnBaseFare       = "🚕 Start narxi"
-	btnTier0_1        = "1️⃣ 0–1 km narxi"
-	btnTier1_2        = "2️⃣ 1–2 km narxi"
-	btnTier2Plus      = "♾ 2 km dan yuqori narx"
-	btnCommissionPct  = "📊 Komissiya %"
-	btnViewTariff     = "📄 Joriy tarifni ko'rish"
-	btnBack           = "◀️ Orqaga"
+	btnFareMenu       = "💰 Нарх белгилаш"
+	btnBaseFare       = "🚕 Старт нархи"
+	btnTier0_1        = "1️⃣ 0–1 км нархи"
+	btnTier1_2        = "2️⃣ 1–2 км нархи"
+	btnTier2Plus      = "♾ 2 км дан юқори нарх"
+	btnCommissionPct  = "📊 Комиссия %"
+	btnViewTariff     = "📄 Жорий тарифни кўриш"
+	btnBack           = "◀️ Орқага"
 )
 
 // pendingEdit indicates which fare field the admin is editing (value is the field key).
@@ -93,7 +93,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB, fareSvc 
 		return
 	}
 	if fromID != cfg.AdminID {
-		_, _ = bot.Send(tgbotapi.NewMessage(chatID, "⛔ Sizga ruxsat yo'q."))
+		_, _ = bot.Send(tgbotapi.NewMessage(chatID, "⛔ Сизга рухсат йўқ."))
 		return
 	}
 
@@ -117,19 +117,19 @@ func handleUpdate(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB, fareSvc 
 		sendFareSubmenu(bot, chatID)
 	case btnBaseFare:
 		state.set(fromID, "base_fare")
-		sendMessage(bot, chatID, "Yangi start narxini kiriting (so'm):")
+		sendMessage(bot, chatID, "Янги старт нархини киритинг (сўм):")
 	case btnTier0_1:
 		state.set(fromID, "tier_0_1")
-		sendMessage(bot, chatID, "0–1 km uchun narxni kiriting (so'm/km):")
+		sendMessage(bot, chatID, "0–1 км учун нархни киритинг (сўм/км):")
 	case btnTier1_2:
 		state.set(fromID, "tier_1_2")
-		sendMessage(bot, chatID, "1–2 km uchun narxni kiriting (so'm/km):")
+		sendMessage(bot, chatID, "1–2 км учун нархни киритинг (сўм/км):")
 	case btnTier2Plus:
 		state.set(fromID, "tier_2_plus")
-		sendMessage(bot, chatID, "2 km dan yuqori uchun narxni kiriting (so'm/km):")
+		sendMessage(bot, chatID, "2 км дан юқори учун нархни киритинг (сўм/км):")
 	case btnCommissionPct:
 		state.set(fromID, "commission_percent")
-		sendMessage(bot, chatID, "Komissiya foizini kiriting (0–100):")
+		sendMessage(bot, chatID, "Комиссия фоизини киритинг (0–100):")
 	case btnViewTariff:
 		sendCurrentTariff(bot, fareSvc, chatID)
 	case btnBack:
@@ -182,7 +182,7 @@ func handleApprovalCallback(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB
 			// Already approved: just reflect this in admin message if possible.
 			if q.Message != nil {
 				edit := tgbotapi.NewEditMessageText(q.Message.Chat.ID, q.Message.MessageID,
-					fmt.Sprintf("✅ Haydovchi allaqachon tasdiqlangan (user_id=%d).", driverUserID))
+					fmt.Sprintf("✅ Ҳайдовчи аллақачон тасдиқланган (user_id=%d).", driverUserID))
 				_, _ = bot.Request(edit)
 			}
 			return
@@ -201,7 +201,7 @@ func handleApprovalCallback(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB
 		// Update admin message to show success and remove buttons.
 		if q.Message != nil {
 			editText := tgbotapi.NewEditMessageText(q.Message.Chat.ID, q.Message.MessageID,
-				fmt.Sprintf("✅ Haydovchi tasdiqlandi (user_id=%d).", driverUserID))
+				fmt.Sprintf("✅ Ҳайдовчи тасдиқланди (user_id=%d).", driverUserID))
 			_, _ = bot.Request(editText)
 			clearMarkup := tgbotapi.NewEditMessageReplyMarkup(q.Message.Chat.ID, q.Message.MessageID, tgbotapi.InlineKeyboardMarkup{})
 			_, _ = bot.Request(clearMarkup)
@@ -214,7 +214,7 @@ func handleApprovalCallback(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB
 		// Already approved: reflect in admin message if possible.
 		if q.Message != nil {
 			edit := tgbotapi.NewEditMessageText(q.Message.Chat.ID, q.Message.MessageID,
-				fmt.Sprintf("✅ Haydovchi allaqachon tasdiqlangan (user_id=%d).", driverUserID))
+				fmt.Sprintf("✅ Ҳайдовчи аллақачон тасдиқланган (user_id=%d).", driverUserID))
 			_, _ = bot.Request(edit)
 		}
 		return
@@ -230,7 +230,7 @@ func handleApprovalCallback(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB
 		return
 	}
 	if driverTgID != 0 && driverBot != nil {
-		rej := tgbotapi.NewMessage(driverTgID, "❌ Hujjatlaringiz tasdiqlanmadi.\nIltimos, aniqroq rasm yuboring.")
+		rej := tgbotapi.NewMessage(driverTgID, "❌ Ҳужжатларингиз тасдиқланмади.\nИлтимос, аниқроқ расм юборинг.")
 		if _, err := driverBot.Send(rej); err != nil {
 			log.Printf("admin bot: notify rejected driver via driver bot send error user_id=%d: %v", driverUserID, err)
 		}
@@ -239,7 +239,7 @@ func handleApprovalCallback(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB
 	// Update admin message to show rejection and remove buttons.
 	if q.Message != nil {
 		editText := tgbotapi.NewEditMessageText(q.Message.Chat.ID, q.Message.MessageID,
-			fmt.Sprintf("❌ Haydovchi rad etildi (user_id=%d).", driverUserID))
+			fmt.Sprintf("❌ Ҳайдовчи рад этилди (user_id=%d).", driverUserID))
 		_, _ = bot.Request(editText)
 		clearMarkup := tgbotapi.NewEditMessageReplyMarkup(q.Message.Chat.ID, q.Message.MessageID, tgbotapi.InlineKeyboardMarkup{})
 		_, _ = bot.Request(clearMarkup)
@@ -249,11 +249,11 @@ func handleApprovalCallback(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB
 func handleNumericInput(bot *tgbotapi.BotAPI, cfg *config.Config, fareSvc *services.FareService, state *fareEditState, chatID, adminTelegramID int64, text, field string) {
 	val, err := strconv.ParseInt(strings.TrimSpace(text), 10, 64)
 	if err != nil {
-		sendMessage(bot, chatID, "Iltimos, butun son kiriting.")
+		sendMessage(bot, chatID, "Илтимос, бутун сон киритинг.")
 		return
 	}
 	if field != "commission_percent" && val < 0 {
-		sendMessage(bot, chatID, "Iltimos, musbat butun son kiriting (so'm).")
+		sendMessage(bot, chatID, "Илтимос, мусбат бутун сон киритинг (сўм).")
 		return
 	}
 	ctx := context.Background()
@@ -268,7 +268,7 @@ func handleNumericInput(bot *tgbotapi.BotAPI, cfg *config.Config, fareSvc *servi
 		_, err = fareSvc.UpdateTier2Plus(ctx, val, adminTelegramID)
 	case "commission_percent":
 		if val < 0 || val > 100 {
-			sendMessage(bot, chatID, "Iltimos, 0 dan 100 gacha butun son kiriting.")
+			sendMessage(bot, chatID, "Илтимос, 0 дан 100 гача бутун сон киритинг.")
 			state.clear(adminTelegramID)
 			return
 		}
@@ -281,10 +281,10 @@ func handleNumericInput(bot *tgbotapi.BotAPI, cfg *config.Config, fareSvc *servi
 	state.clear(adminTelegramID)
 	if err != nil {
 		log.Printf("admin bot: update fare %s: %v", field, err)
-		sendMessage(bot, chatID, "Xatolik: yangilash amalga oshmadi.")
+		sendMessage(bot, chatID, "Хатолик: янгилаш амалга ошмади.")
 		return
 	}
-	sendMessage(bot, chatID, "✅ Yangilandi.")
+	sendMessage(bot, chatID, "✅ Янгиланди.")
 	sendCurrentTariff(bot, fareSvc, chatID)
 	sendFareSubmenu(bot, chatID)
 }
@@ -294,7 +294,7 @@ func sendMainMenu(bot *tgbotapi.BotAPI, chatID int64) {
 		tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton(btnFareMenu)),
 	)
 	kb.ResizeKeyboard = true
-	msg := tgbotapi.NewMessage(chatID, "Admin panel. Quyidagi tugmalardan foydalaning:")
+	msg := tgbotapi.NewMessage(chatID, "Админ панели. Қуйидаги тугмалардан фойдаланинг:")
 	msg.ReplyMarkup = kb
 	if _, err := bot.Send(msg); err != nil {
 		log.Printf("admin bot: send main menu: %v", err)
@@ -320,7 +320,7 @@ func sendFareSubmenu(bot *tgbotapi.BotAPI, chatID int64) {
 		),
 	)
 	kb.ResizeKeyboard = true
-	msg := tgbotapi.NewMessage(chatID, "Narx sozlamalari:")
+	msg := tgbotapi.NewMessage(chatID, "Нарх созламалари:")
 	msg.ReplyMarkup = kb
 	if _, err := bot.Send(msg); err != nil {
 		log.Printf("admin bot: send fare submenu: %v", err)
@@ -331,11 +331,11 @@ func sendCurrentTariff(bot *tgbotapi.BotAPI, fareSvc *services.FareService, chat
 	ctx := context.Background()
 	settings, err := fareSvc.GetFareSettings(ctx)
 	if err != nil {
-		sendMessage(bot, chatID, "Tarifni o'qishda xatolik.")
+		sendMessage(bot, chatID, "Тарифни ўқишда хатолик.")
 		return
 	}
 	text := fmt.Sprintf(
-		"📄 Joriy tarif:\n\n🚕 Start narxi: %d so'm\n1️⃣ 0–1 km: %d so'm/km\n2️⃣ 1–2 km: %d so'm/km\n♾ 2+ km: %d so'm/km\n\n📊 Komissiya: %d%%",
+		"📄 Жорий тариф:\n\n🚕 Старт нархи: %d сўм\n1️⃣ 0–1 км: %d сўм/км\n2️⃣ 1–2 км: %d сўм/км\n♾ 2+ км: %d сўм/км\n\n📊 Комиссия: %d%%",
 		settings.BaseFare, settings.Tier0_1Km, settings.Tier1_2Km, settings.Tier2PlusKm, settings.CommissionPercent,
 	)
 	sendMessage(bot, chatID, text)
