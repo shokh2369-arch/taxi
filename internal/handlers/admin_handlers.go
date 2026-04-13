@@ -6,37 +6,42 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"taxi-mvp/internal/utils"
 	"taxi-mvp/internal/services"
 )
 
 // AdminHandlers exposes admin HTTP endpoints.
 type AdminHandlers struct {
 	svc       *services.AdminService
+	matchSvc  *services.MatchService
 	driverBot *tgbotapi.BotAPI
 	db        *sql.DB
 }
 
 // NewAdminHandlers creates AdminHandlers. driverBot can be nil; then verify notifications are skipped.
 // db is used for legal monitoring and rider list routes; may be nil (those routes are skipped).
-func NewAdminHandlers(svc *services.AdminService, driverBot *tgbotapi.BotAPI, db *sql.DB) *AdminHandlers {
-	return &AdminHandlers{svc: svc, driverBot: driverBot, db: db}
+func NewAdminHandlers(svc *services.AdminService, matchSvc *services.MatchService, driverBot *tgbotapi.BotAPI, db *sql.DB) *AdminHandlers {
+	return &AdminHandlers{svc: svc, matchSvc: matchSvc, driverBot: driverBot, db: db}
 }
 
-// Register registers /admin routes on the given router.
+// Register registers admin routes on the given router.
 func (h *AdminHandlers) Register(r *gin.Engine) {
 	if h == nil || h.svc == nil {
 		return
 	}
-	g := r.Group("/admin")
-	{
+	for _, base := range []string{"/admin", "/api/admin", "/api/v1/admin", "/v1/admin"} {
+		g := r.Group(base)
 		g.GET("/drivers", h.ListDrivers)
 		g.GET("/map/drivers", h.ListDriversForMap)
 		g.GET("/map/ride-requests", h.ListRideRequestsForMap)
+		g.GET("/nearest-drivers", h.NearestDriversForRequest)
+		g.GET("/nearest-requests", h.NearestRequestsForDriver)
 		g.GET("/drivers/:id/ledger", h.ListDriverLedger)
 		g.GET("/riders", h.ListRiders)
 		g.POST("/drivers/:id/add-balance", h.AddBalance)
@@ -46,6 +51,138 @@ func (h *AdminHandlers) Register(r *gin.Engine) {
 		g.GET("/payments", h.ListPayments)
 		g.GET("/dashboard", h.Dashboard)
 	}
+}
+
+func queryFirstNonEmpty(c *gin.Context, keys ...string) string {
+	for _, k := range keys {
+		if v := strings.TrimSpace(c.Query(k)); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// NearestDriversForRequest returns dispatch-eligible drivers nearest to a ride request pickup.
+// GET /v1/admin/nearest-drivers?request_id=... (aliases: ride_request_id, requestId, id).
+//
+// Admin default: **unlimited distance** (no radius filtering). Distance is computed for sorting/display.
+func (h *AdminHandlers) NearestDriversForRequest(c *gin.Context) {
+	requestID := queryFirstNonEmpty(c, "request_id", "ride_request_id", "requestId", "id")
+	if requestID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "request_id query parameter is required"})
+		return
+	}
+	if h.matchSvc == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "nearest drivers unavailable"})
+		return
+	}
+
+	// Optional explicit radius filter (admin default is unlimited when omitted).
+	var maxDistKmPtr *float64
+	if s := queryFirstNonEmpty(c, "radius_km", "max_distance_km", "radius"); s != "" {
+		if v, err := strconv.ParseFloat(s, 64); err == nil && v > 0 {
+			maxDistKmPtr = &v
+		}
+	}
+
+	drivers, err := h.matchSvc.AdminNearestDispatchDrivers(c.Request.Context(), requestID, maxDistKmPtr)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "ride request not found"})
+			return
+		}
+		log.Printf("admin nearest-drivers: request_id=%s err=%v", requestID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list nearest drivers"})
+		return
+	}
+	c.JSON(http.StatusOK, drivers)
+}
+
+type adminNearestRequest struct {
+	RequestID string  `json:"request_id"`
+	PickupLat float64 `json:"pickup_lat,omitempty"`
+	PickupLng float64 `json:"pickup_lng,omitempty"`
+	ExpiresAt string  `json:"expires_at,omitempty"`
+	DistanceKm float64 `json:"distance_km,omitempty"`
+	RiderPhone string `json:"rider_phone,omitempty"`
+}
+
+// NearestRequestsForDriver returns pending ride requests that can be offered to the selected driver.
+// GET /v1/admin/nearest-requests?driver_id=... (aliases: driverId, id).
+//
+// Admin default: **unlimited distance** (no radius filtering). Requests must be pending and not expired.
+func (h *AdminHandlers) NearestRequestsForDriver(c *gin.Context) {
+	if h == nil || h.db == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "db unavailable"})
+		return
+	}
+
+	driverIDStr := queryFirstNonEmpty(c, "driver_id", "driverId", "id")
+	driverID, err := strconv.ParseInt(driverIDStr, 10, 64)
+	if err != nil || driverID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "driver_id query parameter is required"})
+		return
+	}
+
+	// Load driver last known coordinates (required to compute distance; if missing, return empty list).
+	var lastLat, lastLng sql.NullFloat64
+	if err := h.db.QueryRowContext(c.Request.Context(), `SELECT last_lat, last_lng FROM drivers WHERE user_id = ?1`, driverID).Scan(&lastLat, &lastLng); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "driver not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load driver location"})
+		return
+	}
+	if !lastLat.Valid || !lastLng.Valid {
+		c.JSON(http.StatusOK, []adminNearestRequest{})
+		return
+	}
+
+	rows, err := h.db.QueryContext(c.Request.Context(), `
+		SELECT r.id, r.pickup_lat, r.pickup_lng, COALESCE(r.expires_at,''), COALESCE(u.phone,'')
+		FROM ride_requests r
+		JOIN users u ON u.id = r.rider_user_id
+		WHERE r.status = 'PENDING'
+		  AND r.expires_at > datetime('now')
+		  AND (r.assigned_driver_user_id IS NULL OR r.assigned_driver_user_id = 0)
+		  AND r.pickup_lat IS NOT NULL AND r.pickup_lng IS NOT NULL`)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list ride requests"})
+		return
+	}
+	defer rows.Close()
+
+	out := make([]adminNearestRequest, 0, 32)
+	for rows.Next() {
+		var (
+			reqID string
+			pLat, pLng float64
+			expiresAt string
+			riderPhone string
+		)
+		if err := rows.Scan(&reqID, &pLat, &pLng, &expiresAt, &riderPhone); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read ride requests"})
+			return
+		}
+		distKm := utils.HaversineMeters(lastLat.Float64, lastLng.Float64, pLat, pLng) / 1000
+		out = append(out, adminNearestRequest{
+			RequestID: reqID,
+			PickupLat: pLat,
+			PickupLng: pLng,
+			ExpiresAt: expiresAt,
+			DistanceKm: distKm,
+			RiderPhone: strings.TrimSpace(riderPhone),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list ride requests"})
+		return
+	}
+
+	// Sorting is optional; distance filtering is intentionally NOT applied for admin.
+	sort.Slice(out, func(i, j int) bool { return out[i].DistanceKm < out[j].DistanceKm })
+	c.JSON(http.StatusOK, out)
 }
 
 // ListRiders returns admin rider DTOs (GET /admin/riders).

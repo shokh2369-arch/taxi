@@ -320,6 +320,7 @@ type AdminMapDriver struct {
 	LastLng            float64 `json:"last_lng"`
 	IsActive           int     `json:"is_active"`
 	LiveLocationActive int     `json:"live_location_active"`
+	LastLocationAt     string  `json:"last_location_at,omitempty"`
 }
 
 // AdminMapRideRequest is a minimal view for active ride requests on the admin map.
@@ -330,13 +331,14 @@ type AdminMapRideRequest struct {
 	Status     string  `json:"status"`
 }
 
-// ListActiveDriversForMap returns only drivers with valid coordinates and active live location.
+// ListActiveDriversForMap returns drivers with valid coordinates for the admin map.
+// IMPORTANT: it must include offline drivers too (is_active=0, live_location_active=0).
 func (s *AdminService) ListActiveDriversForMap(ctx context.Context) ([]AdminMapDriver, error) {
 	if s.db == nil {
 		return nil, nil
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT user_id, last_lat, last_lng, is_active, COALESCE(live_location_active, 0)
+		SELECT user_id, last_lat, last_lng, COALESCE(is_active, 0), COALESCE(live_location_active, 0), COALESCE(last_seen_at, '')
 		FROM drivers
 		WHERE last_lat IS NOT NULL AND last_lng IS NOT NULL`)
 	if err != nil {
@@ -346,7 +348,7 @@ func (s *AdminService) ListActiveDriversForMap(ctx context.Context) ([]AdminMapD
 	var out []AdminMapDriver
 	for rows.Next() {
 		var d AdminMapDriver
-		if err := rows.Scan(&d.ID, &d.LastLat, &d.LastLng, &d.IsActive, &d.LiveLocationActive); err != nil {
+		if err := rows.Scan(&d.ID, &d.LastLat, &d.LastLng, &d.IsActive, &d.LiveLocationActive, &d.LastLocationAt); err != nil {
 			return nil, err
 		}
 		out = append(out, d)
