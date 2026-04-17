@@ -12,8 +12,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"taxi-mvp/internal/utils"
 	"taxi-mvp/internal/services"
+	"taxi-mvp/internal/utils"
 )
 
 // AdminHandlers exposes admin HTTP endpoints.
@@ -96,7 +96,8 @@ type adminOfferRideBody struct {
 	DriverIDAlt int64 `json:"driverId"`
 }
 
-// OfferRideRequest sends a dispatch offer to one driver (Telegram + request_notifications), same as auto-dispatch.
+// OfferRideRequest sends a dispatch offer to one driver (Telegram + request_notifications).
+// If a row already exists with SENT, TIMEOUT, or REJECTED, the offer is sent again and the row is refreshed.
 // POST body: { "driver_id": <int> } (optional alias "driverId").
 func (h *AdminHandlers) OfferRideRequest(c *gin.Context) {
 	requestID := strings.TrimSpace(c.Param("request_id"))
@@ -129,8 +130,10 @@ func (h *AdminHandlers) OfferRideRequest(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "ride request not found or not pending"})
 		case errors.Is(err, services.ErrAdminDriverNotEligible):
 			c.JSON(http.StatusBadRequest, gin.H{"error": "driver not eligible for offer"})
+		case errors.Is(err, services.ErrAdminOfferAlreadyAccepted):
+			c.JSON(http.StatusConflict, gin.H{"error": "driver already accepted this request"})
 		case errors.Is(err, services.ErrAdminOfferExists):
-			c.JSON(http.StatusConflict, gin.H{"error": "offer already sent to this driver"})
+			c.JSON(http.StatusConflict, gin.H{"error": "offer already recorded for this driver"})
 		case errors.Is(err, services.ErrAdminOfferNoTelegram):
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "telegram bot not configured"})
 		case errors.Is(err, services.ErrAdminOfferTelegramFail):
@@ -145,12 +148,12 @@ func (h *AdminHandlers) OfferRideRequest(c *gin.Context) {
 }
 
 type adminNearestRequest struct {
-	RequestID string  `json:"request_id"`
-	PickupLat float64 `json:"pickup_lat,omitempty"`
-	PickupLng float64 `json:"pickup_lng,omitempty"`
-	ExpiresAt string  `json:"expires_at,omitempty"`
+	RequestID  string  `json:"request_id"`
+	PickupLat  float64 `json:"pickup_lat,omitempty"`
+	PickupLng  float64 `json:"pickup_lng,omitempty"`
+	ExpiresAt  string  `json:"expires_at,omitempty"`
 	DistanceKm float64 `json:"distance_km,omitempty"`
-	RiderPhone string `json:"rider_phone,omitempty"`
+	RiderPhone string  `json:"rider_phone,omitempty"`
 }
 
 // NearestRequestsForDriver returns pending ride requests that can be offered to the selected driver.
@@ -202,9 +205,9 @@ func (h *AdminHandlers) NearestRequestsForDriver(c *gin.Context) {
 	out := make([]adminNearestRequest, 0, 32)
 	for rows.Next() {
 		var (
-			reqID string
+			reqID      string
 			pLat, pLng float64
-			expiresAt string
+			expiresAt  string
 			riderPhone string
 		)
 		if err := rows.Scan(&reqID, &pLat, &pLng, &expiresAt, &riderPhone); err != nil {
@@ -213,10 +216,10 @@ func (h *AdminHandlers) NearestRequestsForDriver(c *gin.Context) {
 		}
 		distKm := utils.HaversineMeters(lastLat.Float64, lastLng.Float64, pLat, pLng) / 1000
 		out = append(out, adminNearestRequest{
-			RequestID: reqID,
-			PickupLat: pLat,
-			PickupLng: pLng,
-			ExpiresAt: expiresAt,
+			RequestID:  reqID,
+			PickupLat:  pLat,
+			PickupLng:  pLng,
+			ExpiresAt:  expiresAt,
 			DistanceKm: distKm,
 			RiderPhone: strings.TrimSpace(riderPhone),
 		})
@@ -287,7 +290,7 @@ type adjustBalanceRequest struct {
 }
 
 type deductBalanceRequest struct {
-	Amount int64  `form:"amount"`              // parsed from form data when not JSON
+	Amount int64  `form:"amount"`               // parsed from form data when not JSON
 	Reason string `json:"reason" form:"reason"` // optional, for audit/log
 }
 
@@ -553,4 +556,3 @@ func (h *AdminHandlers) Dashboard(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, summary)
 }
-

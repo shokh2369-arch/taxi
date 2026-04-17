@@ -19,11 +19,11 @@ import (
 )
 
 const (
-	acceptCallbackPrefix   = "accept:"
-	defaultDriverCooldown  = 5
-	dispatchBatchSize      = 3  // send request to N nearest drivers per batch
-	dispatchBatchWaitSec   = 60 // wait this many seconds for any driver in the batch to accept before trying next batch
-	liveLocationOrderHint  = "\n\n📍 Жонли локация ёқилган бўлса буюртмалар тезроқ келади."
+	acceptCallbackPrefix  = "accept:"
+	defaultDriverCooldown = 5
+	dispatchBatchSize     = 3  // send request to N nearest drivers per batch
+	dispatchBatchWaitSec  = 60 // wait this many seconds for any driver in the batch to accept before trying next batch
+	liveLocationOrderHint = "\n\n📍 Жонли локация ёқилган бўлса буюртмалар тезроқ келади."
 	// Live location considered active only when last_live_location_at within 90s (same as dispatch).
 	liveLocationActiveSeconds = 90
 	// DriverLocationFreshnessSeconds: only drivers with last_seen_at within this many seconds are eligible for dispatch.
@@ -36,11 +36,12 @@ const (
 
 // Sentinel errors for admin manual offers (POST .../ride-requests/:id/offer).
 var (
-	ErrRideRequestNotOfferable = errors.New("ride request not found or not pending")
-	ErrAdminDriverNotEligible  = errors.New("driver not eligible for this offer")
-	ErrAdminOfferExists        = errors.New("offer already sent to this driver")
-	ErrAdminOfferNoTelegram    = errors.New("driver bot unavailable for telegram delivery")
-	ErrAdminOfferTelegramFail  = errors.New("failed to deliver offer via telegram")
+	ErrRideRequestNotOfferable   = errors.New("ride request not found or not pending")
+	ErrAdminDriverNotEligible    = errors.New("driver not eligible for this offer")
+	ErrAdminOfferExists          = errors.New("offer already recorded for this driver in an unexpected state")
+	ErrAdminOfferAlreadyAccepted = errors.New("driver already accepted this request")
+	ErrAdminOfferNoTelegram      = errors.New("driver bot unavailable for telegram delivery")
+	ErrAdminOfferTelegramFail    = errors.New("failed to deliver offer via telegram")
 )
 
 func truncateLog(s string, maxChars int) string {
@@ -114,11 +115,11 @@ func (s *MatchService) isDriverSharingLiveLocation(ctx context.Context, driverUs
 
 // MatchService handles ride request dispatch: batches of nearest drivers, 10s acceptance timeout per batch, then next batch.
 type MatchService struct {
-	db                 *sql.DB
-	bot                *tgbotapi.BotAPI
-	cfg                *config.Config
-	lastDriverNotif    map[int64]time.Time
-	lastDriverNotifMu  sync.Mutex
+	db                *sql.DB
+	bot               *tgbotapi.BotAPI
+	cfg               *config.Config
+	lastDriverNotif   map[int64]time.Time
+	lastDriverNotifMu sync.Mutex
 }
 
 // NewMatchService returns a MatchService that sends request messages via the driver bot.
@@ -677,15 +678,25 @@ func (s *MatchService) AdminSendOfferToDriver(ctx context.Context, requestID str
 		return err
 	}
 
-	var dup int
+	var existingNotifStatus string
+	var hasNotif bool
 	err = s.db.QueryRowContext(ctx, `
-		SELECT 1 FROM request_notifications WHERE request_id = ?1 AND driver_user_id = ?2`,
-		requestID, driverUserID).Scan(&dup)
+		SELECT status FROM request_notifications WHERE request_id = ?1 AND driver_user_id = ?2`,
+		requestID, driverUserID).Scan(&existingNotifStatus)
 	if err == nil {
-		return ErrAdminOfferExists
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
+		hasNotif = true
+	} else if !errors.Is(err, sql.ErrNoRows) {
 		return err
+	}
+	if hasNotif {
+		switch existingNotifStatus {
+		case domain.NotificationStatusAccepted:
+			return ErrAdminOfferAlreadyAccepted
+		case domain.NotificationStatusSent, domain.NotificationStatusTimeout, domain.NotificationStatusRejected:
+			// Admin resend: same row, new Telegram message + refresh polling row.
+		default:
+			return fmt.Errorf("%w (status=%q)", ErrAdminOfferExists, existingNotifStatus)
+		}
 	}
 
 	pred := s.sqlAdminOfferDriverPredicates()
@@ -740,11 +751,25 @@ func (s *MatchService) AdminSendOfferToDriver(ctx context.Context, requestID str
 		msgID = 0
 	}
 
-	if err := s.insertOfferNotification(ctx, requestID, driverUserID, chatID, msgID); err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "unique") {
-			return ErrAdminOfferExists
+	if !hasNotif {
+		if err := s.insertOfferNotification(ctx, requestID, driverUserID, chatID, msgID); err != nil {
+			if strings.Contains(strings.ToLower(err.Error()), "unique") {
+				return ErrAdminOfferExists
+			}
+			return err
 		}
+		return nil
+	}
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE request_notifications
+		SET chat_id = ?1, message_id = ?2, status = ?3
+		WHERE request_id = ?4 AND driver_user_id = ?5`,
+		chatID, msgID, domain.NotificationStatusSent, requestID, driverUserID)
+	if err != nil {
 		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrAdminOfferExists
 	}
 	return nil
 }
