@@ -586,7 +586,7 @@ func (s *MatchService) NotifyDriverOfPendingRequests(ctx context.Context, driver
 	}
 }
 
-// AdminNearestDispatchDriver is one driver eligible for an admin offer for a request, with distance from pickup.
+// AdminNearestDispatchDriver is one driver who may receive a manual admin offer, with distance from pickup.
 // Distance is computed for sorting/display only.
 type AdminNearestDispatchDriver struct {
 	ID         int64   `json:"id"`
@@ -597,21 +597,16 @@ type AdminNearestDispatchDriver struct {
 }
 
 // sqlAdminOfferDriverPredicates is the shared WHERE clause (after JOIN) for admin manual offers.
-// Eligibility is intentionally looser than automatic grid dispatch: no live-location freshness requirement,
-// so any approved driver with coordinates and no active trip can be listed and offered.
+// This must stay aligned with what the admin UI can select: map + GET /nearest-requests do not require
+// balance, legal acceptances, or fresh live location. Automatic dispatch still enforces those separately.
 func (s *MatchService) sqlAdminOfferDriverPredicates() string {
-	balanceCond := ""
-	if s.cfg == nil || !s.cfg.InfiniteDriverBalance {
-		balanceCond = " AND d.balance > 0"
-	}
 	return `d.verification_status = 'approved'
-		  AND ` + legal.SQLDriverDispatchLegalOK + balanceCond + `
 		  AND d.last_lat IS NOT NULL AND d.last_lng IS NOT NULL
 		  AND NOT EXISTS (SELECT 1 FROM trips t WHERE t.driver_user_id = d.user_id AND t.status IN ('WAITING','ARRIVED','STARTED'))`
 }
 
-// AdminNearestDispatchDrivers returns drivers eligible for a manual admin offer: approved, legal, balance (unless infinite),
-// last known coordinates, and not on an active trip. **Distance does not filter results**; results are sorted by km from pickup.
+// AdminNearestDispatchDrivers returns drivers the admin may manually offer: approved, last known coordinates,
+// and not on an active trip. **Distance does not filter results**; results are sorted by km from pickup.
 func (s *MatchService) AdminNearestDispatchDrivers(ctx context.Context, requestID string) ([]AdminNearestDispatchDriver, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("match service unavailable")
