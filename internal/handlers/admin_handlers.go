@@ -63,10 +63,10 @@ func queryFirstNonEmpty(c *gin.Context, keys ...string) string {
 	return ""
 }
 
-// NearestDriversForRequest returns dispatch-eligible drivers nearest to a ride request pickup.
+// NearestDriversForRequest returns drivers eligible for a manual admin offer for this request.
 // GET /v1/admin/nearest-drivers?request_id=... (aliases: ride_request_id, requestId, id).
 //
-// Admin default: **unlimited distance** (no radius filtering). Distance is computed for sorting/display.
+// Distance does not affect who is included: all eligible drivers are returned, sorted by km from pickup for display only.
 func (h *AdminHandlers) NearestDriversForRequest(c *gin.Context) {
 	requestID := queryFirstNonEmpty(c, "request_id", "ride_request_id", "requestId", "id")
 	if requestID == "" {
@@ -78,15 +78,7 @@ func (h *AdminHandlers) NearestDriversForRequest(c *gin.Context) {
 		return
 	}
 
-	// Optional explicit radius filter (admin default is unlimited when omitted).
-	var maxDistKmPtr *float64
-	if s := queryFirstNonEmpty(c, "radius_km", "max_distance_km", "radius"); s != "" {
-		if v, err := strconv.ParseFloat(s, 64); err == nil && v > 0 {
-			maxDistKmPtr = &v
-		}
-	}
-
-	drivers, err := h.matchSvc.AdminNearestDispatchDrivers(c.Request.Context(), requestID, maxDistKmPtr)
+	drivers, err := h.matchSvc.AdminNearestDispatchDrivers(c.Request.Context(), requestID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "ride request not found"})

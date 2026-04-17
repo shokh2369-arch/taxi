@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -597,12 +596,23 @@ type AdminNearestDispatchDriver struct {
 	LastLng    float64 `json:"last_lng"`
 }
 
-// AdminNearestDispatchDrivers returns drivers that are eligible to receive an admin offer for a request,
-// sorted by distance ascending.
-//
-// IMPORTANT: **No distance filtering is applied for admin**. The optional maxDistanceKm is only applied
-// when explicitly provided (e.g. for debugging). Admin dashboards should omit it to get unlimited results.
-func (s *MatchService) AdminNearestDispatchDrivers(ctx context.Context, requestID string, maxDistanceKm *float64) ([]AdminNearestDispatchDriver, error) {
+// sqlAdminOfferDriverPredicates is the shared WHERE clause (after JOIN) for admin manual offers.
+// Eligibility is intentionally looser than automatic grid dispatch: no live-location freshness requirement,
+// so any approved driver with coordinates and no active trip can be listed and offered.
+func (s *MatchService) sqlAdminOfferDriverPredicates() string {
+	balanceCond := ""
+	if s.cfg == nil || !s.cfg.InfiniteDriverBalance {
+		balanceCond = " AND d.balance > 0"
+	}
+	return `d.verification_status = 'approved'
+		  AND ` + legal.SQLDriverDispatchLegalOK + balanceCond + `
+		  AND d.last_lat IS NOT NULL AND d.last_lng IS NOT NULL
+		  AND NOT EXISTS (SELECT 1 FROM trips t WHERE t.driver_user_id = d.user_id AND t.status IN ('WAITING','ARRIVED','STARTED'))`
+}
+
+// AdminNearestDispatchDrivers returns drivers eligible for a manual admin offer: approved, legal, balance (unless infinite),
+// last known coordinates, and not on an active trip. **Distance does not filter results**; results are sorted by km from pickup.
+func (s *MatchService) AdminNearestDispatchDrivers(ctx context.Context, requestID string) ([]AdminNearestDispatchDriver, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("match service unavailable")
 	}
@@ -611,25 +621,11 @@ func (s *MatchService) AdminNearestDispatchDrivers(ctx context.Context, requestI
 		return nil, err
 	}
 
-	locationFreshSinceStr := time.Now().Add(-time.Duration(driverLocationFreshnessSeconds) * time.Second).UTC().Format("2006-01-02 15:04:05")
-	balanceCond := ""
-	if s.cfg == nil || !s.cfg.InfiniteDriverBalance {
-		balanceCond = " AND d.balance > 0"
-	}
-	args := []interface{}{locationFreshSinceStr, locationFreshSinceStr}
+	pred := s.sqlAdminOfferDriverPredicates()
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT d.user_id, u.telegram_id, d.last_lat, d.last_lng
 		FROM drivers d JOIN users u ON u.id = d.user_id
-		WHERE COALESCE(d.is_active, 0) = 1
-		  AND COALESCE(d.manual_offline, 0) = 0
-		  AND COALESCE(d.live_location_active, 0) = 1`+balanceCond+`
-		  AND d.verification_status = 'approved'
-		  AND `+legal.SQLDriverDispatchLegalOK+`
-		  AND d.last_live_location_at IS NOT NULL AND d.last_live_location_at >= ?2
-		  AND d.last_seen_at IS NOT NULL AND d.last_seen_at >= ?1
-		  AND d.last_lat IS NOT NULL AND d.last_lng IS NOT NULL
-		  AND NOT EXISTS (SELECT 1 FROM trips t WHERE t.driver_user_id = d.user_id AND t.status IN ('WAITING','ARRIVED','STARTED'))`,
-		args...)
+		WHERE `+pred)
 	if err != nil {
 		return nil, err
 	}
@@ -643,9 +639,6 @@ func (s *MatchService) AdminNearestDispatchDrivers(ctx context.Context, requestI
 			continue
 		}
 		distKm := utils.HaversineMeters(pickupLat, pickupLng, lat, lng) / 1000
-		if maxDistanceKm != nil && !math.IsInf(*maxDistanceKm, 0) && !math.IsNaN(*maxDistanceKm) && distKm > *maxDistanceKm {
-			continue
-		}
 		candidates = append(candidates, driverCandidate{UserID: uID, TelegramID: telegramID, LastLat: lat, LastLng: lng, DistKm: distKm})
 	}
 	if err := rows.Err(); err != nil {
@@ -700,27 +693,14 @@ func (s *MatchService) AdminSendOfferToDriver(ctx context.Context, requestID str
 		return err
 	}
 
-	locationFreshSinceStr := time.Now().Add(-time.Duration(driverLocationFreshnessSeconds) * time.Second).UTC().Format("2006-01-02 15:04:05")
-	balanceCond := ""
-	if s.cfg == nil || !s.cfg.InfiniteDriverBalance {
-		balanceCond = " AND d.balance > 0"
-	}
+	pred := s.sqlAdminOfferDriverPredicates()
 	var telegramID int64
 	var lastLat, lastLng float64
 	err = s.db.QueryRowContext(ctx, `
 		SELECT u.telegram_id, d.last_lat, d.last_lng
 		FROM drivers d JOIN users u ON u.id = d.user_id
-		WHERE d.user_id = ?3
-		  AND COALESCE(d.is_active, 0) = 1
-		  AND COALESCE(d.manual_offline, 0) = 0
-		  AND COALESCE(d.live_location_active, 0) = 1`+balanceCond+`
-		  AND d.verification_status = 'approved'
-		  AND `+legal.SQLDriverDispatchLegalOK+`
-		  AND d.last_live_location_at IS NOT NULL AND d.last_live_location_at >= ?2
-		  AND d.last_seen_at IS NOT NULL AND d.last_seen_at >= ?1
-		  AND d.last_lat IS NOT NULL AND d.last_lng IS NOT NULL
-		  AND NOT EXISTS (SELECT 1 FROM trips t WHERE t.driver_user_id = d.user_id AND t.status IN ('WAITING','ARRIVED','STARTED'))`,
-		locationFreshSinceStr, locationFreshSinceStr, driverUserID).Scan(&telegramID, &lastLat, &lastLng)
+		WHERE d.user_id = ?1 AND `+pred,
+		driverUserID).Scan(&telegramID, &lastLat, &lastLng)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrAdminDriverNotEligible
