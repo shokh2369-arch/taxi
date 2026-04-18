@@ -368,9 +368,9 @@ func (s *MatchService) BroadcastRequest(ctx context.Context, requestID string) e
 	return nil
 }
 
-// PulseDriverOnlineFromHTTP marks an eligible driver online and triggers NotifyDriverOfPendingRequests when
-// ENABLE_DRIVER_HTTP_LIVE_LOCATION is used with POST /driver/location. Same DB gates as dispatch (approved, legal, balance, profile fields).
-// No-op if the driver already has an active trip or fails eligibility. Does not change Telegram live-location behavior when the flag is off.
+// PulseDriverOnlineFromHTTP marks an eligible driver online and triggers NotifyDriverOfPendingRequests after POST /driver/location
+// when cfg.EnableDriverHTTPLiveLocation is true (default). Same DB gates as dispatch (approved, legal, balance, profile fields).
+// No-op if the driver already has an active trip or fails eligibility. Telegram bot online/live paths are separate and unchanged.
 func (s *MatchService) PulseDriverOnlineFromHTTP(ctx context.Context, driverUserID int64) {
 	if s == nil || s.db == nil {
 		return

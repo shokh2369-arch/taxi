@@ -144,8 +144,8 @@ func DriverLocation(db *sql.DB, tripSvc *services.TripService, matchSvc *service
 				}
 			}
 		}
-		// Without ENABLE_DRIVER_HTTP_LIVE_LOCATION, this endpoint updates grid/trip only; Telegram live drives dispatch eligibility.
-		// When ENABLE_DRIVER_HTTP_LIVE_LOCATION=true, last_live_location_at / live_location_active are refreshed here for standalone clients (see README).
+		// Telegram driver bot is unchanged: it still sets last_live_location_at / live_location_active from live location edits.
+		// HTTP uses cfg.EnableDriverHTTPLiveLocation (default true; set ENABLE_DRIVER_HTTP_LIVE_LOCATION=false for grid-only pings).
 
 		if ignoredReason != "" {
 			c.JSON(http.StatusOK, gin.H{"ok": true, "ignored": ignoredReason})

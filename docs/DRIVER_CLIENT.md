@@ -6,7 +6,7 @@ This document describes the **stable wire contract** for clients that call the s
 
 | Variable | Default | Effect |
 |----------|---------|--------|
-| **`ENABLE_DRIVER_HTTP_LIVE_LOCATION`** | off (unset / not `true` or `1`) | When **off**, `POST /driver/location` updates `last_lat` / `last_lng` / `last_seen_at` / `grid_id` only. **Telegram** live location remains the primary signal for dispatch eligibility. When **`true`**, the same endpoint also refreshes **`last_live_location_at`** / **`live_location_active`** and can mark the driver online for matching (see **`README.md`**). |
+| **`ENABLE_DRIVER_HTTP_LIVE_LOCATION`** | **on** by default (unset or any value except `false` / `0` / `no` / `off`) | When **on**, `POST /driver/location` refreshes **`last_live_location_at`** / **`live_location_active`** (parallel to Telegram live) and can mark the driver online for matching. Set **`false`** so HTTP updates **`last_lat` / `last_lng` / `last_seen_at` / `grid_id` only** and **Telegram** live remains required for dispatch eligibility (see **`README.md`**). |
 | **`ENABLE_DRIVER_ID_HEADER`** | on | When **on** (default), `X-Driver-Id` may authenticate drivers on HTTP (and WebSocket when initData is absent). Set to `false`, `0`, `no`, or `off` to require Telegram initData only. |
 | **`DRIVER_AUTH_DEBUG`** | off | Logs non-sensitive booleans about header paths; never logs header values. |
 

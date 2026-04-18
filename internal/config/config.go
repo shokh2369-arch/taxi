@@ -27,7 +27,7 @@ type Config struct {
 	APIAddr                 string   // HTTP API address for driver location and trip (e.g. :8080)
 	EnableDriverIDHeader    bool     // Default true in code; set ENABLE_DRIVER_ID_HEADER=false (or 0/no/off) to ignore X-Driver-Id (Telegram-only hardening)
 	DriverAuthDebug         bool     // If true, log driver header path flags (never log header value or ids); env DRIVER_AUTH_DEBUG
-	EnableDriverHTTPLiveLocation bool // If true, POST /driver/location also refreshes last_live_location_at / live_location_active (and may mark driver online) for standalone apps; default off preserves Telegram-only live semantics
+	EnableDriverHTTPLiveLocation bool // If true, POST /driver/location refreshes last_live_location_at / live_location_active and may mark driver online (same signals dispatch uses for Telegram live). Default on; set ENABLE_DRIVER_HTTP_LIVE_LOCATION=false for Telegram-only HTTP pings (Mini App map without treating HTTP as live).
 	AdminID                 int64    // Telegram user ID of the admin (only this user can use admin bot fare menu)
 	AdminBotToken           string   // Telegram bot token for admin bot (optional; if empty, admin bot is not started)
 	InfiniteDriverBalance   bool     // If true, dispatch ignores balance and no commission is deducted (temporary launch mode)
@@ -70,7 +70,7 @@ func Load() (*Config, error) {
 		RiderMapURL:            getRiderMapURL(getEnv("WEBAPP_URL", "https://example.com/webapp"), getEnv("RIDER_MAP_URL", "")),
 		APIAddr:                getAPIAddr(),
 		EnableDriverIDHeader:        envEnableDriverIDHeader(),
-		EnableDriverHTTPLiveLocation: getEnv("ENABLE_DRIVER_HTTP_LIVE_LOCATION", "") == "true" || getEnv("ENABLE_DRIVER_HTTP_LIVE_LOCATION", "") == "1",
+		EnableDriverHTTPLiveLocation: envEnableDriverHTTPLiveLocation(),
 		DriverAuthDebug:            getEnv("DRIVER_AUTH_DEBUG", "") == "true" || getEnv("DRIVER_AUTH_DEBUG", "") == "1",
 		AdminID:                getEnvInt64("ADMIN_ID", 0),
 		AdminBotToken:          getEnvFirst("ADMIN_BOT_TOKEN", "ADMIN_BOT", ""),
@@ -99,6 +99,19 @@ func Load() (*Config, error) {
 // Set ENABLE_DRIVER_ID_HEADER to false, 0, no, or off (case-insensitive) to disable and require Telegram initData only.
 func envEnableDriverIDHeader() bool {
 	s := strings.TrimSpace(strings.ToLower(os.Getenv("ENABLE_DRIVER_ID_HEADER")))
+	switch s {
+	case "false", "0", "no", "off":
+		return false
+	default:
+		return true
+	}
+}
+
+// envEnableDriverHTTPLiveLocation is true by default so native/Mini App clients that only send POST /driver/location
+// are eligible for dispatch like Telegram live-location sharers. Set ENABLE_DRIVER_HTTP_LIVE_LOCATION to false, 0, no, or off
+// (case-insensitive) to restore legacy behavior: HTTP location updates grid/last_seen only; Telegram live drives live_location_*.
+func envEnableDriverHTTPLiveLocation() bool {
+	s := strings.TrimSpace(strings.ToLower(os.Getenv("ENABLE_DRIVER_HTTP_LIVE_LOCATION")))
 	switch s {
 	case "false", "0", "no", "off":
 		return false

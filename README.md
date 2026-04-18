@@ -70,7 +70,7 @@ Create a **`.env`** in the project root (optional: use [godotenv](https://github
 | `REQUEST_EXPIRES_SECONDS`, `DRIVER_SEEN_SECONDS` | Request TTL and driver visibility window |
 | `ENABLE_DRIVER_ID_HEADER` | **Default on in code** (unset = `X-Driver-Id` allowed). Set **`false`**, **`0`**, **`no`**, or **`off`** to require Telegram initData only (stricter production) |
 | `DRIVER_AUTH_DEBUG` | `true` / `1` to log boolean flags `driver_header_path_enabled` and `x_driver_id_header_present` per path (never logs header value or ids) |
-| `ENABLE_DRIVER_HTTP_LIVE_LOCATION` | `true` / `1` so **`POST /driver/location`** refreshes live-location columns and drivers can be matched; also **records offers in the DB if Telegram `Send` fails** so **`GET /driver/available-requests`** works for web/native clients; default off |
+| `ENABLE_DRIVER_HTTP_LIVE_LOCATION` | Default **on** (unset or any value except `false` / `0` / `no` / `off`): **`POST /driver/location`** refreshes **`last_live_location_at`** / **`live_location_active`** (like Telegram live) and drivers can be matched; also **records offers in the DB if Telegram `Send` fails** so **`GET /driver/available-requests`** works for web/native. Set **`false`** for legacy **Telegram-only** live semantics (HTTP updates grid / `last_seen` only). |
 | `ADMIN_BOT_TOKEN`, `ADMIN_ID` | Optional admin bot + Telegram user id for fare admin flows |
 | `INFINITE_DRIVER_BALANCE` | If `true`, dispatch ignores balance and trip commission is skipped |
 | `COMMISSION_PERCENT` | Platform commission on normalized fare when infinite balance is off |
@@ -142,7 +142,7 @@ Driver routes use **`tryDriverID`** then **`RequireDriverAuth`** (Telegram initD
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/trip/:id` | Trip info (`status` may be **`WAITING`**, **`ARRIVED`**, **`STARTED`**, …) |
-| `POST` | `/driver/location` | Driver location ping (map tracking). Dispatch freshness uses Telegram live unless **`ENABLE_DRIVER_HTTP_LIVE_LOCATION`** (see **`docs/AUTH.md`**) |
+| `POST` | `/driver/location` | Driver location ping. By default also refreshes live-location columns for dispatch (see **`ENABLE_DRIVER_HTTP_LIVE_LOCATION`**; **`docs/AUTH.md`**) |
 | `POST` | `/trip/arrived` | **`WAITING` → `ARRIVED`**: server checks pickup distance + fresh Telegram live location (same rules as starting from `WAITING`). Optional explicit “at pickup” step. Body: `{ "trip_id" }`. |
 | `POST` | `/trip/start` | **`WAITING` or `ARRIVED` → `STARTED`**. From **`WAITING`**, server enforces near-pickup + live location (do not rely on Mini App alone). From **`ARRIVED`**, proximity is **not** re-checked. Distance/fare accumulation still only after **`STARTED`**. On failure: e.g. too early → **400** with Uzbek message *“Mijozga hali yetib bormagansiz…”* |
 | `POST` | `/trip/finish` | Finish trip: **trip → `FINISHED`**, first-3 promo, referral check, and **commission** run in **one DB transaction**; if any of those steps fails, the transaction rolls back (trip stays non-**`FINISHED`**). **Telegram** notifications run **after** a successful commit. |
@@ -299,7 +299,7 @@ All amounts below are **promo platform credit** unless stated otherwise: **not r
 4. **Finish:** Rider and driver notifications; **promo** and **referral** grants visible in DB (`drivers.promo_balance`, `driver_ledger`).
 5. **Admin / legal:** If used, verify verification and legal acceptance flows.
 6. **Shutdown:** SIGINT/SIGTERM; process exits cleanly.
-7. **Optional native driver client:** **`X-Driver-Id`** is enabled by default; use **`ENABLE_DRIVER_HTTP_LIVE_LOCATION`** when the app streams GPS without Telegram live. To harden Telegram-only deploys, set **`ENABLE_DRIVER_ID_HEADER=false`**.
+7. **Native driver client:** **`X-Driver-Id`** is enabled by default; **`ENABLE_DRIVER_HTTP_LIVE_LOCATION`** defaults **on** so HTTP GPS counts as live for dispatch. To require Telegram live only (HTTP map pings do not set **`live_location_active`**), set **`ENABLE_DRIVER_HTTP_LIVE_LOCATION=false`**. To harden Telegram-only deploys, set **`ENABLE_DRIVER_ID_HEADER=false`**.
 
 ---
 
