@@ -123,6 +123,8 @@ Notable migration themes:
 
 ## HTTP API reference
 
+Native / Flutter driver clients (same HTTP API as the Mini App): **`docs/DRIVER_CLIENT.md`**.
+
 Public prefixes include **`/admin/...`** (dashboard), **`/api/...`**, **`/v1/...`** — see **`internal/handlers`** and **`internal/server`**.
 
 ### Health and static

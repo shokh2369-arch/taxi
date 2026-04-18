@@ -12,6 +12,20 @@ import (
 	"taxi-mvp/internal/utils"
 )
 
+// OpenAPI (informal) — Driver dispatch HTTP
+//
+// GET /driver/available-requests:
+//   200: { assigned_trip: null | { trip_id, status }, available_requests, requests, pending_requests, queue, orders, jobs: Offer[] }
+//   Offer: { request_id, trip_id?, pickup_lat, pickup_lng, distance_km, radius_km, expires_at? }
+//
+// POST /driver/accept-request:
+//   body: { trip_id?, request_id? }
+//   200: { ok, trip_id, request_id?, assigned?, result?, status? } | idempotent already_assigned
+//   400: { ok: false, error, request_id? } | { error: invalid body | ... }
+//   403/404: trip_id-only branch
+//   409: { ok: false, error: "request no longer available", request_id }
+//   503: assignment unavailable
+//
 // DriverAcceptRequestBody is accepted for POST /driver/accept-request. At least one of trip_id or request_id should be set.
 type DriverAcceptRequestBody struct {
 	TripID    string `json:"trip_id"`
