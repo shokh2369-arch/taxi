@@ -123,7 +123,7 @@ Notable migration themes:
 
 ## HTTP API reference
 
-Native / Flutter driver clients (same HTTP API as the Mini App): **`docs/DRIVER_CLIENT.md`**.
+Native / Flutter driver clients (same HTTP API as the Mini App): **`docs/DRIVER_CLIENT.md`**, **`docs/AUTH.md`**, and team handoff **`docs/DRIVER_HTTP_API_HANDOFF.md`**.
 
 Public prefixes include **`/admin/...`** (dashboard), **`/api/...`**, **`/v1/...`** — see **`internal/handlers`** and **`internal/server`**.
 

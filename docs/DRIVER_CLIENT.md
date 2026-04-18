@@ -190,4 +190,5 @@ curl -sS -H "Connection: Upgrade" -H "Upgrade: websocket" \
 ## Related
 
 - **`docs/AUTH.md`** — full auth matrix and security notes.
+- **`docs/DRIVER_HTTP_API_HANDOFF.md`** — single-page route table and verification checklist for backend / Flutter parity.
 - **`README.md`** — deployment, `ENABLE_DRIVER_HTTP_LIVE_LOCATION`, and Mini App URLs.
