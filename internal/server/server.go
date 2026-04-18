@@ -50,6 +50,10 @@ func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc
 	r.GET("/", healthHandler)
 	r.HEAD("/", healthHandler)
 
+	// Native driver login: phone + OTP via existing Telegram driver bot (no Telegram init_data).
+	r.POST("/auth/request-code", handlers.DriverAuthRequestCode(db, driverBot))
+	r.POST("/auth/verify-code", handlers.DriverAuthVerifyCode(db))
+
 	driverHdr := auth.DriverIDHeaderMiddlewareOpts{Enable: cfg.EnableDriverIDHeader, Debug: cfg.DriverAuthDebug}
 	tryDriverID := auth.TryDriverIDHeader(db, driverHdr)
 	driverAuth := auth.RequireDriverAuth(db, cfg.DriverBotToken, cfg.EnableDriverIDHeader)
