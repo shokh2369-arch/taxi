@@ -43,17 +43,6 @@ func adminIsMissingColumnErr(err error) bool {
 	return strings.Contains(msg, "no such column") || strings.Contains(msg, "has no column")
 }
 
-func adminParseUTCTime(s string) (time.Time, error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return time.Time{}, fmt.Errorf("empty time")
-	}
-	if t, err := time.ParseInLocation("2006-01-02 15:04:05", s, time.UTC); err == nil {
-		return t, nil
-	}
-	return time.Parse(time.RFC3339, s)
-}
-
 // NewAdminService constructs an AdminService.
 func NewAdminService(
 	db *sql.DB,
@@ -362,7 +351,7 @@ func (s *AdminService) ListActiveDriversForMap(ctx context.Context) ([]AdminMapD
 	if s.db == nil {
 		return nil, nil
 	}
-	cutoff := time.Now().UTC().Add(-90 * time.Second)
+	cutoff := time.Now().UTC().Add(-90 * time.Second).Format("2006-01-02 15:04:05")
 
 	// Prefer effective location (APP fresh wins) but stay backward compatible when DB isn't migrated.
 	queryApp := `
@@ -422,20 +411,12 @@ func (s *AdminService) ListActiveDriversForMap(ctx context.Context) ([]AdminMapD
 				d.LastLat, d.LastLng = lastLat.Float64, lastLng.Float64
 			}
 
-			// Mark driver "live" on map if either source is fresh (same 90s window).
-			appFresh := false
-			if appActive == 1 && appLast.Valid && strings.TrimSpace(appLast.String) != "" {
-				if t, err := adminParseUTCTime(appLast.String); err == nil {
-					appFresh = t.After(cutoff)
-				}
-			}
-			tgFresh := false
-			if liveActive == 1 && strings.TrimSpace(lastLiveAt) != "" {
-				if t, err := adminParseUTCTime(lastLiveAt); err == nil {
-					tgFresh = t.After(cutoff)
-				}
-			}
-			if appFresh || tgFresh {
+			// Mark driver "live" on map when:
+			// - Native app location is fresh (<=90s), OR
+			// - Telegram live flag is on (legacy admin-map semantics; do not gate by timestamp).
+			appFresh := appActive == 1 && appLast.Valid && appLast.String != "" && appLast.String >= cutoff
+			tgLive := liveActive == 1
+			if appFresh || tgLive {
 				d.LiveLocationActive = 1
 			} else {
 				d.LiveLocationActive = 0
