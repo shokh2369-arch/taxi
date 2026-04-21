@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"database/sql"
+	"log"
 	"net/http"
 	"strings"
 
@@ -61,7 +62,22 @@ func DriverAvailableRequests(db *sql.DB) gin.HandlerFunc {
 		driverID := u.UserID
 
 		var lastLat, lastLng sql.NullFloat64
-		_ = db.QueryRowContext(ctx, `SELECT last_lat, last_lng FROM drivers WHERE user_id = ?1`, driverID).Scan(&lastLat, &lastLng)
+		var appLat, appLng sql.NullFloat64
+		var appLast sql.NullString
+		var appActive sql.NullInt64
+		_ = db.QueryRowContext(ctx, `
+			SELECT last_lat, last_lng, app_lat, app_lng, app_last_seen_at, COALESCE(app_location_active, 0)
+			FROM drivers WHERE user_id = ?1`, driverID).Scan(&lastLat, &lastLng, &appLat, &appLng, &appLast, &appActive)
+		loc := services.EffectiveDriverLocation{
+			AppLat:            appLat,
+			AppLng:            appLng,
+			AppLastSeenAt:     appLast,
+			AppLocationActive: appActive,
+			LastLat:           lastLat,
+			LastLng:           lastLng,
+		}
+		eLat, eLng := services.GetEffectiveDriverLocation(loc)
+		log.Println("Driver location source:", services.GetEffectiveDriverLocationSource(loc))
 
 		rows, err := db.QueryContext(ctx, `
 			SELECT r.id, r.pickup_lat, r.pickup_lng, r.radius_km, COALESCE(r.expires_at,'')
@@ -82,8 +98,8 @@ func DriverAvailableRequests(db *sql.DB) gin.HandlerFunc {
 			if err := rows.Scan(&o.RequestID, &o.PickupLat, &o.PickupLng, &o.RadiusKm, &o.ExpiresAt); err != nil {
 				continue
 			}
-			if lastLat.Valid && lastLng.Valid {
-				o.DistanceKm = utils.HaversineMeters(lastLat.Float64, lastLng.Float64, o.PickupLat, o.PickupLng) / 1000
+			if eLat != 0 || eLng != 0 {
+				o.DistanceKm = utils.HaversineMeters(eLat, eLng, o.PickupLat, o.PickupLng) / 1000
 			}
 			offers = append(offers, o)
 		}

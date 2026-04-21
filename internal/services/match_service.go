@@ -141,12 +141,14 @@ func (s *MatchService) insertOfferNotification(ctx context.Context, requestID st
 type driverCandidate struct {
 	UserID     int64
 	TelegramID int64
-	LastLat    float64
-	LastLng    float64
-	AppLat    sql.NullFloat64
-	AppLng    sql.NullFloat64
-	AppLastAt sql.NullString
-	AppActive int
+	LastLat    sql.NullFloat64
+	LastLng    sql.NullFloat64
+	AppLat     sql.NullFloat64
+	AppLng     sql.NullFloat64
+	AppLastAt  sql.NullString
+	AppActive  int
+	EffLat     float64
+	EffLng     float64
 	DistKm     float64
 }
 
@@ -186,7 +188,9 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 	if s.cfg != nil && s.cfg.DispatchDebug {
 		log.Printf("dispatch_debug: request=%s pickup=(%.5f,%.5f) grids_count=%d grids=%v", requestID, pickupLat, pickupLng, len(gridIDs), gridIDs)
 	}
-	// Dispatch only for drivers with Telegram Live Location: live_location_active=1 and last_live_location_at within 90s.
+	// Online for dispatch when either:
+	// - Telegram live is fresh (same behavior as before)
+	// - Native app location is fresh (app_location_active=1 and app_last_seen_at within 90s)
 	locationFreshSinceStr := time.Now().Add(-time.Duration(driverLocationFreshnessSeconds) * time.Second).UTC().Format("2006-01-02 15:04:05")
 	// When InfiniteDriverBalance is true, all drivers get orders regardless of balance; otherwise require balance > 0.
 	balanceCond := ""
@@ -205,12 +209,17 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 		SELECT d.user_id, u.telegram_id, d.last_lat, d.last_lng,
 		       d.app_lat, d.app_lng, d.app_last_seen_at, COALESCE(d.app_location_active, 0)
 		FROM drivers d JOIN users u ON u.id = d.user_id
-		WHERE COALESCE(d.live_location_active, 0) = 1`+balanceCond+`
+		WHERE 1=1`+balanceCond+`
+		  AND (
+				(COALESCE(d.live_location_active, 0) = 1
+				 AND d.last_live_location_at IS NOT NULL AND d.last_live_location_at >= ?2
+				 AND d.last_seen_at IS NOT NULL AND d.last_seen_at >= ?1)
+			 OR (COALESCE(d.app_location_active, 0) = 1
+				 AND d.app_last_seen_at IS NOT NULL AND d.app_last_seen_at >= ?1)
+		  )`+`
 		  AND d.verification_status = 'approved'
 		  AND `+legal.SQLDriverDispatchLegalOK+`
-		  AND d.last_live_location_at IS NOT NULL AND d.last_live_location_at >= ?2
-		  AND d.last_seen_at IS NOT NULL AND d.last_seen_at >= ?1
-		  AND d.last_lat IS NOT NULL AND d.last_lng IS NOT NULL
+		  AND ((d.last_lat IS NOT NULL AND d.last_lng IS NOT NULL) OR (d.app_lat IS NOT NULL AND d.app_lng IS NOT NULL))
 		  AND d.phone IS NOT NULL AND d.phone != ''
 		  AND d.car_type IS NOT NULL AND d.car_type != ''
 		  AND d.color IS NOT NULL AND d.color != ''
@@ -223,12 +232,17 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 			SELECT d.user_id, u.telegram_id, d.last_lat, d.last_lng,
 			       d.app_lat, d.app_lng, d.app_last_seen_at, COALESCE(d.app_location_active, 0)
 			FROM drivers d JOIN users u ON u.id = d.user_id
-			WHERE COALESCE(d.live_location_active, 0) = 1`+balanceCond+`
+			WHERE 1=1`+balanceCond+`
+			  AND (
+					(COALESCE(d.live_location_active, 0) = 1
+					 AND d.last_live_location_at IS NOT NULL AND d.last_live_location_at >= ?2
+					 AND d.last_seen_at IS NOT NULL AND d.last_seen_at >= ?1)
+				 OR (COALESCE(d.app_location_active, 0) = 1
+					 AND d.app_last_seen_at IS NOT NULL AND d.app_last_seen_at >= ?1)
+			  )`+`
 			  AND d.verification_status = 'approved'
 			  AND `+legal.SQLDriverDispatchLegalOK+`
-			  AND d.last_live_location_at IS NOT NULL AND d.last_live_location_at >= ?2
-			  AND d.last_seen_at IS NOT NULL AND d.last_seen_at >= ?1
-			  AND d.last_lat IS NOT NULL AND d.last_lng IS NOT NULL
+			  AND ((d.last_lat IS NOT NULL AND d.last_lng IS NOT NULL) OR (d.app_lat IS NOT NULL AND d.app_lng IS NOT NULL))
 			  AND (d.grid_id IN (`+placeholders+`) OR d.grid_id IS NULL)
 			  AND NOT EXISTS (SELECT 1 FROM trips t WHERE t.driver_user_id = d.user_id AND t.status IN ('WAITING','ARRIVED','STARTED'))`,
 			args...)
@@ -242,7 +256,7 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 	for rows.Next() {
 		var uID int64
 		var telegramID int64
-		var lat, lng float64
+		var lat, lng sql.NullFloat64
 		var appLat, appLng sql.NullFloat64
 		var appLast sql.NullString
 		var appActive int
@@ -254,8 +268,8 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 			AppLng:            appLng,
 			AppLastSeenAt:     appLast,
 			AppLocationActive: sql.NullInt64{Int64: int64(appActive), Valid: true},
-			LastLat:           sql.NullFloat64{Float64: lat, Valid: true},
-			LastLng:           sql.NullFloat64{Float64: lng, Valid: true},
+			LastLat:           lat,
+			LastLng:           lng,
 		}
 		eLat, eLng := GetEffectiveDriverLocation(loc)
 		log.Println("Driver location source:", GetEffectiveDriverLocationSource(loc))
@@ -272,6 +286,8 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 			AppLng:     appLng,
 			AppLastAt:  appLast,
 			AppActive:  appActive,
+			EffLat:     eLat,
+			EffLng:     eLng,
 			DistKm:     distKm,
 		})
 	}
@@ -443,7 +459,7 @@ func (s *MatchService) NotifyDriverOfPendingRequests(ctx context.Context, driver
 	case <-time.After(800 * time.Millisecond):
 	}
 	var telegramID int64
-	var lat, lng float64
+	var lat, lng sql.NullFloat64
 	var appLat, appLng sql.NullFloat64
 	var appLast sql.NullString
 	var appActive int
@@ -459,9 +475,13 @@ func (s *MatchService) NotifyDriverOfPendingRequests(ctx context.Context, driver
 		       d.app_lat, d.app_lng, d.app_last_seen_at, COALESCE(d.app_location_active, 0),
 		       d.is_active, d.last_seen_at, d.last_live_location_at, COALESCE(d.live_location_active, 0)
 		FROM drivers d JOIN users u ON u.id = d.user_id
-		WHERE d.user_id = ?1 AND d.verification_status = 'approved' AND `+legal.SQLDriverDispatchLegalOK+` AND d.last_lat IS NOT NULL AND d.last_lng IS NOT NULL`+balanceCond,
+		WHERE d.user_id = ?1 AND d.verification_status = 'approved' AND `+legal.SQLDriverDispatchLegalOK+`
+		  AND ((d.last_lat IS NOT NULL AND d.last_lng IS NOT NULL) OR (d.app_lat IS NOT NULL AND d.app_lng IS NOT NULL))`+balanceCond,
 		driverUserID).Scan(&telegramID, &lat, &lng, &appLat, &appLng, &appLast, &appActive, &isActive, &lastSeenAt, &lastLiveAt, &liveLocationActive)
 	if err != nil {
+		if s.cfg != nil && s.cfg.DispatchDebug {
+			log.Printf("dispatch_debug: driver=%d skipped: not_eligible_or_missing err=%v", driverUserID, truncateLog(err.Error(), logMaxChars))
+		}
 		return
 	}
 	loc := EffectiveDriverLocation{
@@ -469,38 +489,40 @@ func (s *MatchService) NotifyDriverOfPendingRequests(ctx context.Context, driver
 		AppLng:            appLng,
 		AppLastSeenAt:     appLast,
 		AppLocationActive: sql.NullInt64{Int64: int64(appActive), Valid: true},
-		LastLat:           sql.NullFloat64{Float64: lat, Valid: true},
-		LastLng:           sql.NullFloat64{Float64: lng, Valid: true},
+		LastLat:           lat,
+		LastLng:           lng,
 	}
 	eLat, eLng := GetEffectiveDriverLocation(loc)
 	log.Println("Driver location source:", GetEffectiveDriverLocationSource(loc))
+	if eLat == 0 && eLng == 0 {
+		if s.cfg != nil && s.cfg.DispatchDebug {
+			log.Printf("dispatch_debug: driver=%d skipped: no_effective_location", driverUserID)
+		}
+		return
+	}
 	if isActive != 1 {
 		if s.cfg != nil && s.cfg.DispatchDebug {
 			log.Printf("dispatch_debug: driver=%d skipped: is_active=%d", driverUserID, isActive)
 		}
 		return
 	}
-	// Dispatch only for Telegram Live Location: live_location_active=1 and last_live_location_at within 90s.
-	if liveLocationActive != 1 {
-		if s.cfg != nil && s.cfg.DispatchDebug {
-			log.Printf("dispatch_debug: driver=%d skipped: live_location_active=%d", driverUserID, liveLocationActive)
+	// Online / dispatch eligible when either app location is fresh OR Telegram live is fresh.
+	appFresh := false
+	if appActive == 1 && appLast.Valid && appLast.String != "" {
+		if t, err := parseUTCTime(appLast.String); err == nil {
+			appFresh = time.Since(t) <= driverLocationFreshnessSeconds*time.Second
 		}
-		return
 	}
-	if !lastLiveAt.Valid || lastLiveAt.String == "" {
-		if s.cfg != nil && s.cfg.DispatchDebug {
-			log.Printf("dispatch_debug: driver=%d skipped: no last_live_location_at", driverUserID)
+	telegramFresh := false
+	if liveLocationActive == 1 && lastLiveAt.Valid && lastLiveAt.String != "" {
+		if t, err := parseUTCTime(lastLiveAt.String); err == nil {
+			telegramFresh = time.Since(t) <= driverLocationFreshnessSeconds*time.Second
 		}
-		return
 	}
-	if t, err := parseUTCTime(lastLiveAt.String); err == nil {
-		if time.Since(t) > driverLocationFreshnessSeconds*time.Second {
-			if s.cfg != nil && s.cfg.DispatchDebug {
-				log.Printf("dispatch_debug: driver=%d skipped: live location stale (last_live_location_at > %ds)", driverUserID, driverLocationFreshnessSeconds)
-			}
-			return
+	if !appFresh && !telegramFresh {
+		if s.cfg != nil && s.cfg.DispatchDebug {
+			log.Printf("dispatch_debug: driver=%d skipped: stale_location app_fresh=%v telegram_fresh=%v", driverUserID, appFresh, telegramFresh)
 		}
-	} else {
 		return
 	}
 	// Skip if driver already has an active (WAITING/ARRIVED/STARTED) trip.
@@ -646,7 +668,7 @@ type AdminNearestDispatchDriver struct {
 // balance, legal acceptances, or fresh live location. Automatic dispatch still enforces those separately.
 func (s *MatchService) sqlAdminOfferDriverPredicates() string {
 	return `d.verification_status = 'approved'
-		  AND d.last_lat IS NOT NULL AND d.last_lng IS NOT NULL
+		  AND ((d.last_lat IS NOT NULL AND d.last_lng IS NOT NULL) OR (d.app_lat IS NOT NULL AND d.app_lng IS NOT NULL))
 		  AND NOT EXISTS (SELECT 1 FROM trips t WHERE t.driver_user_id = d.user_id AND t.status IN ('WAITING','ARRIVED','STARTED'))`
 }
 
@@ -675,7 +697,7 @@ func (s *MatchService) AdminNearestDispatchDrivers(ctx context.Context, requestI
 	var candidates []driverCandidate
 	for rows.Next() {
 		var uID, telegramID int64
-		var lat, lng float64
+		var lat, lng sql.NullFloat64
 		var appLat, appLng sql.NullFloat64
 		var appLast sql.NullString
 		var appActive int
@@ -687,8 +709,8 @@ func (s *MatchService) AdminNearestDispatchDrivers(ctx context.Context, requestI
 			AppLng:            appLng,
 			AppLastSeenAt:     appLast,
 			AppLocationActive: sql.NullInt64{Int64: int64(appActive), Valid: true},
-			LastLat:           sql.NullFloat64{Float64: lat, Valid: true},
-			LastLng:           sql.NullFloat64{Float64: lng, Valid: true},
+			LastLat:           lat,
+			LastLng:           lng,
 		}
 		eLat, eLng := GetEffectiveDriverLocation(loc)
 		log.Println("Driver location source:", GetEffectiveDriverLocationSource(loc))
@@ -702,6 +724,8 @@ func (s *MatchService) AdminNearestDispatchDrivers(ctx context.Context, requestI
 			AppLng:     appLng,
 			AppLastAt:  appLast,
 			AppActive:  appActive,
+			EffLat:     eLat,
+			EffLng:     eLng,
 			DistKm:     distKm,
 		})
 	}
@@ -716,8 +740,8 @@ func (s *MatchService) AdminNearestDispatchDrivers(ctx context.Context, requestI
 			ID:         c.UserID,
 			TelegramID: c.TelegramID,
 			DistanceKm: c.DistKm,
-			LastLat:    c.LastLat,
-			LastLng:    c.LastLng,
+			LastLat:    c.EffLat,
+			LastLng:    c.EffLng,
 		})
 	}
 	return out, nil
@@ -769,7 +793,7 @@ func (s *MatchService) AdminSendOfferToDriver(ctx context.Context, requestID str
 
 	pred := s.sqlAdminOfferDriverPredicates()
 	var telegramID int64
-	var lastLat, lastLng float64
+	var lastLat, lastLng sql.NullFloat64
 	var appLat, appLng sql.NullFloat64
 	var appLast sql.NullString
 	var appActive int
@@ -791,8 +815,8 @@ func (s *MatchService) AdminSendOfferToDriver(ctx context.Context, requestID str
 		AppLng:            appLng,
 		AppLastSeenAt:     appLast,
 		AppLocationActive: sql.NullInt64{Int64: int64(appActive), Valid: true},
-		LastLat:           sql.NullFloat64{Float64: lastLat, Valid: true},
-		LastLng:           sql.NullFloat64{Float64: lastLng, Valid: true},
+		LastLat:           lastLat,
+		LastLng:           lastLng,
 	}
 	eLat, eLng := GetEffectiveDriverLocation(loc)
 	log.Println("Driver location source:", GetEffectiveDriverLocationSource(loc))
