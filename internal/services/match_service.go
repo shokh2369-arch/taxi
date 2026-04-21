@@ -143,6 +143,10 @@ type driverCandidate struct {
 	TelegramID int64
 	LastLat    float64
 	LastLng    float64
+	AppLat    sql.NullFloat64
+	AppLng    sql.NullFloat64
+	AppLastAt sql.NullString
+	AppActive int
 	DistKm     float64
 }
 
@@ -198,7 +202,8 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 		args = append(args, g)
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT d.user_id, u.telegram_id, d.last_lat, d.last_lng
+		SELECT d.user_id, u.telegram_id, d.last_lat, d.last_lng,
+		       d.app_lat, d.app_lng, d.app_last_seen_at, COALESCE(d.app_location_active, 0)
 		FROM drivers d JOIN users u ON u.id = d.user_id
 		WHERE COALESCE(d.live_location_active, 0) = 1`+balanceCond+`
 		  AND d.verification_status = 'approved'
@@ -215,7 +220,8 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 		args...)
 	if err != nil {
 		rows, _ = s.db.QueryContext(ctx, `
-			SELECT d.user_id, u.telegram_id, d.last_lat, d.last_lng
+			SELECT d.user_id, u.telegram_id, d.last_lat, d.last_lng,
+			       d.app_lat, d.app_lng, d.app_last_seen_at, COALESCE(d.app_location_active, 0)
 			FROM drivers d JOIN users u ON u.id = d.user_id
 			WHERE COALESCE(d.live_location_active, 0) = 1`+balanceCond+`
 			  AND d.verification_status = 'approved'
@@ -237,14 +243,37 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 		var uID int64
 		var telegramID int64
 		var lat, lng float64
-		if err := rows.Scan(&uID, &telegramID, &lat, &lng); err != nil {
+		var appLat, appLng sql.NullFloat64
+		var appLast sql.NullString
+		var appActive int
+		if err := rows.Scan(&uID, &telegramID, &lat, &lng, &appLat, &appLng, &appLast, &appActive); err != nil {
 			continue
 		}
-		distKm := utils.HaversineMeters(pickupLat, pickupLng, lat, lng) / 1000
+		loc := EffectiveDriverLocation{
+			AppLat:            appLat,
+			AppLng:            appLng,
+			AppLastSeenAt:     appLast,
+			AppLocationActive: sql.NullInt64{Int64: int64(appActive), Valid: true},
+			LastLat:           sql.NullFloat64{Float64: lat, Valid: true},
+			LastLng:           sql.NullFloat64{Float64: lng, Valid: true},
+		}
+		eLat, eLng := GetEffectiveDriverLocation(loc)
+		log.Println("Driver location source:", GetEffectiveDriverLocationSource(loc))
+		distKm := utils.HaversineMeters(pickupLat, pickupLng, eLat, eLng) / 1000
 		if distKm > radiusKm {
 			continue
 		}
-		candidates = append(candidates, driverCandidate{UserID: uID, TelegramID: telegramID, LastLat: lat, LastLng: lng, DistKm: distKm})
+		candidates = append(candidates, driverCandidate{
+			UserID:     uID,
+			TelegramID: telegramID,
+			LastLat:    lat,
+			LastLng:    lng,
+			AppLat:     appLat,
+			AppLng:     appLng,
+			AppLastAt:  appLast,
+			AppActive:  appActive,
+			DistKm:     distKm,
+		})
 	}
 	// Audit: candidate drivers (always log for dispatch audit)
 	{
@@ -415,6 +444,9 @@ func (s *MatchService) NotifyDriverOfPendingRequests(ctx context.Context, driver
 	}
 	var telegramID int64
 	var lat, lng float64
+	var appLat, appLng sql.NullFloat64
+	var appLast sql.NullString
+	var appActive int
 	var isActive int
 	var lastSeenAt, lastLiveAt sql.NullString
 	var liveLocationActive int
@@ -423,13 +455,25 @@ func (s *MatchService) NotifyDriverOfPendingRequests(ctx context.Context, driver
 		balanceCond = ""
 	}
 	err := s.db.QueryRowContext(ctx, `
-		SELECT u.telegram_id, d.last_lat, d.last_lng, d.is_active, d.last_seen_at, d.last_live_location_at, COALESCE(d.live_location_active, 0)
+		SELECT u.telegram_id, d.last_lat, d.last_lng,
+		       d.app_lat, d.app_lng, d.app_last_seen_at, COALESCE(d.app_location_active, 0),
+		       d.is_active, d.last_seen_at, d.last_live_location_at, COALESCE(d.live_location_active, 0)
 		FROM drivers d JOIN users u ON u.id = d.user_id
 		WHERE d.user_id = ?1 AND d.verification_status = 'approved' AND `+legal.SQLDriverDispatchLegalOK+` AND d.last_lat IS NOT NULL AND d.last_lng IS NOT NULL`+balanceCond,
-		driverUserID).Scan(&telegramID, &lat, &lng, &isActive, &lastSeenAt, &lastLiveAt, &liveLocationActive)
+		driverUserID).Scan(&telegramID, &lat, &lng, &appLat, &appLng, &appLast, &appActive, &isActive, &lastSeenAt, &lastLiveAt, &liveLocationActive)
 	if err != nil {
 		return
 	}
+	loc := EffectiveDriverLocation{
+		AppLat:            appLat,
+		AppLng:            appLng,
+		AppLastSeenAt:     appLast,
+		AppLocationActive: sql.NullInt64{Int64: int64(appActive), Valid: true},
+		LastLat:           sql.NullFloat64{Float64: lat, Valid: true},
+		LastLng:           sql.NullFloat64{Float64: lng, Valid: true},
+	}
+	eLat, eLng := GetEffectiveDriverLocation(loc)
+	log.Println("Driver location source:", GetEffectiveDriverLocationSource(loc))
 	if isActive != 1 {
 		if s.cfg != nil && s.cfg.DispatchDebug {
 			log.Printf("dispatch_debug: driver=%d skipped: is_active=%d", driverUserID, isActive)
@@ -503,7 +547,7 @@ func (s *MatchService) NotifyDriverOfPendingRequests(ctx context.Context, driver
 		if err := rows.Scan(&requestID, &pickupLat, &pickupLng, &radiusKm, &pickupGrid); err != nil {
 			continue
 		}
-		distKm := utils.HaversineMeters(pickupLat, pickupLng, lat, lng) / 1000
+		distKm := utils.HaversineMeters(pickupLat, pickupLng, eLat, eLng) / 1000
 		if distKm > radiusKm {
 			if s.cfg != nil && s.cfg.DispatchDebug {
 				log.Printf("dispatch_debug: driver=%d request=%s pickup_grid=%s dist_km=%.3f reason=outside_radius",
@@ -619,7 +663,8 @@ func (s *MatchService) AdminNearestDispatchDrivers(ctx context.Context, requestI
 
 	pred := s.sqlAdminOfferDriverPredicates()
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT d.user_id, u.telegram_id, d.last_lat, d.last_lng
+		SELECT d.user_id, u.telegram_id, d.last_lat, d.last_lng,
+		       d.app_lat, d.app_lng, d.app_last_seen_at, COALESCE(d.app_location_active, 0)
 		FROM drivers d JOIN users u ON u.id = d.user_id
 		WHERE `+pred)
 	if err != nil {
@@ -631,11 +676,34 @@ func (s *MatchService) AdminNearestDispatchDrivers(ctx context.Context, requestI
 	for rows.Next() {
 		var uID, telegramID int64
 		var lat, lng float64
-		if err := rows.Scan(&uID, &telegramID, &lat, &lng); err != nil {
+		var appLat, appLng sql.NullFloat64
+		var appLast sql.NullString
+		var appActive int
+		if err := rows.Scan(&uID, &telegramID, &lat, &lng, &appLat, &appLng, &appLast, &appActive); err != nil {
 			continue
 		}
-		distKm := utils.HaversineMeters(pickupLat, pickupLng, lat, lng) / 1000
-		candidates = append(candidates, driverCandidate{UserID: uID, TelegramID: telegramID, LastLat: lat, LastLng: lng, DistKm: distKm})
+		loc := EffectiveDriverLocation{
+			AppLat:            appLat,
+			AppLng:            appLng,
+			AppLastSeenAt:     appLast,
+			AppLocationActive: sql.NullInt64{Int64: int64(appActive), Valid: true},
+			LastLat:           sql.NullFloat64{Float64: lat, Valid: true},
+			LastLng:           sql.NullFloat64{Float64: lng, Valid: true},
+		}
+		eLat, eLng := GetEffectiveDriverLocation(loc)
+		log.Println("Driver location source:", GetEffectiveDriverLocationSource(loc))
+		distKm := utils.HaversineMeters(pickupLat, pickupLng, eLat, eLng) / 1000
+		candidates = append(candidates, driverCandidate{
+			UserID:     uID,
+			TelegramID: telegramID,
+			LastLat:    lat,
+			LastLng:    lng,
+			AppLat:     appLat,
+			AppLng:     appLng,
+			AppLastAt:  appLast,
+			AppActive:  appActive,
+			DistKm:     distKm,
+		})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -702,11 +770,15 @@ func (s *MatchService) AdminSendOfferToDriver(ctx context.Context, requestID str
 	pred := s.sqlAdminOfferDriverPredicates()
 	var telegramID int64
 	var lastLat, lastLng float64
+	var appLat, appLng sql.NullFloat64
+	var appLast sql.NullString
+	var appActive int
 	err = s.db.QueryRowContext(ctx, `
-		SELECT u.telegram_id, d.last_lat, d.last_lng
+		SELECT u.telegram_id, d.last_lat, d.last_lng,
+		       d.app_lat, d.app_lng, d.app_last_seen_at, COALESCE(d.app_location_active, 0)
 		FROM drivers d JOIN users u ON u.id = d.user_id
 		WHERE d.user_id = ?1 AND `+pred,
-		driverUserID).Scan(&telegramID, &lastLat, &lastLng)
+		driverUserID).Scan(&telegramID, &lastLat, &lastLng, &appLat, &appLng, &appLast, &appActive)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrAdminDriverNotEligible
@@ -714,7 +786,17 @@ func (s *MatchService) AdminSendOfferToDriver(ctx context.Context, requestID str
 		return err
 	}
 
-	distKm := utils.HaversineMeters(pickupLat, pickupLng, lastLat, lastLng) / 1000
+	loc := EffectiveDriverLocation{
+		AppLat:            appLat,
+		AppLng:            appLng,
+		AppLastSeenAt:     appLast,
+		AppLocationActive: sql.NullInt64{Int64: int64(appActive), Valid: true},
+		LastLat:           sql.NullFloat64{Float64: lastLat, Valid: true},
+		LastLng:           sql.NullFloat64{Float64: lastLng, Valid: true},
+	}
+	eLat, eLng := GetEffectiveDriverLocation(loc)
+	log.Println("Driver location source:", GetEffectiveDriverLocationSource(loc))
+	distKm := utils.HaversineMeters(pickupLat, pickupLng, eLat, eLng) / 1000
 	var riderPhone string
 	_ = s.db.QueryRowContext(ctx, `SELECT COALESCE(u.phone,'') FROM ride_requests r JOIN users u ON u.id = r.rider_user_id WHERE r.id = ?1`, requestID).Scan(&riderPhone)
 	riderPhone = strings.TrimSpace(riderPhone)

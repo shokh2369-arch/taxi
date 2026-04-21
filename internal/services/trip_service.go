@@ -107,9 +107,13 @@ func (s *TripService) ensureDriverNearPickup(ctx context.Context, tripID string,
 	var lastLat, lastLng sql.NullFloat64
 	var lastLive sql.NullString
 	var liveActive int
+	var appLat, appLng sql.NullFloat64
+	var appLast sql.NullString
+	var appActive int
 	err := s.db.QueryRowContext(ctx, `
-		SELECT last_lat, last_lng, last_live_location_at, COALESCE(live_location_active, 0)
-		FROM drivers WHERE user_id = ?1`, driverUserID).Scan(&lastLat, &lastLng, &lastLive, &liveActive)
+		SELECT last_lat, last_lng, last_live_location_at, COALESCE(live_location_active, 0),
+		       app_lat, app_lng, app_last_seen_at, COALESCE(app_location_active, 0)
+		FROM drivers WHERE user_id = ?1`, driverUserID).Scan(&lastLat, &lastLng, &lastLive, &liveActive, &appLat, &appLng, &appLast, &appActive)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			log.Printf("trip_service: pickup_guard_reject op=%s trip_id=%s driver_user_id=%d reason=driver_row_missing", op, tripID, driverUserID)
@@ -141,10 +145,20 @@ func (s *TripService) ensureDriverNearPickup(ctx context.Context, tripID string,
 		log.Printf("trip_service: pickup_guard_reject op=%s trip_id=%s driver_user_id=%d reason=driver_coords_missing", op, tripID, driverUserID)
 		return domain.ErrDriverLocationStale
 	}
-	distM := utils.HaversineMeters(lastLat.Float64, lastLng.Float64, pickupLat, pickupLng)
+	loc := EffectiveDriverLocation{
+		AppLat:            appLat,
+		AppLng:            appLng,
+		AppLastSeenAt:     appLast,
+		AppLocationActive: sql.NullInt64{Int64: int64(appActive), Valid: true},
+		LastLat:           lastLat,
+		LastLng:           lastLng,
+	}
+	dLat, dLng := GetEffectiveDriverLocation(loc)
+	log.Println("Driver location source:", GetEffectiveDriverLocationSource(loc))
+	distM := utils.HaversineMeters(dLat, dLng, pickupLat, pickupLng)
 	if distM > float64(maxM) {
 		log.Printf("trip_service: pickup_guard_reject op=%s trip_id=%s driver_user_id=%d reason=too_far_from_pickup distance_m=%.1f max_m=%d pickup=(%.6f,%.6f) driver=(%.6f,%.6f)",
-			op, tripID, driverUserID, distM, maxM, pickupLat, pickupLng, lastLat.Float64, lastLng.Float64)
+			op, tripID, driverUserID, distM, maxM, pickupLat, pickupLng, dLat, dLng)
 		return domain.ErrTooFarFromPickup
 	}
 	return nil

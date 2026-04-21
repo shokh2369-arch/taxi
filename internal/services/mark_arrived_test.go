@@ -93,7 +93,11 @@ func setupMarkArrivedTestDB(t *testing.T) *sql.DB {
 		last_lat REAL,
 		last_lng REAL,
 		last_live_location_at TEXT,
-		live_location_active INTEGER NOT NULL DEFAULT 0
+		live_location_active INTEGER NOT NULL DEFAULT 0,
+		app_lat REAL,
+		app_lng REAL,
+		app_last_seen_at TEXT,
+		app_location_active INTEGER NOT NULL DEFAULT 0
 	);`)
 	return db
 }
