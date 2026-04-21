@@ -17,6 +17,7 @@ import (
 	driverbot "taxi-mvp/internal/bot/driver"
 	"taxi-mvp/internal/config"
 	"taxi-mvp/internal/db"
+	"taxi-mvp/internal/db/driverapprepair"
 	"taxi-mvp/internal/db/driverlogincodes"
 	"taxi-mvp/internal/db/ledgerrepair"
 	"taxi-mvp/internal/db/legalfingerrepair"
@@ -46,6 +47,9 @@ func main() {
 	}
 	if err := legalfingerrepair.Ensure(context.Background(), database); err != nil {
 		log.Fatalf("drivers legal fingerprint column repair: %v", err)
+	}
+	if err := driverapprepair.Ensure(context.Background(), database); err != nil {
+		log.Fatalf("drivers app location columns repair: %v", err)
 	}
 	if err := driverlogincodes.Ensure(context.Background(), database); err != nil {
 		log.Fatalf("driver login codes schema: %v", err)

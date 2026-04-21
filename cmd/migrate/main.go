@@ -15,6 +15,7 @@ import (
 
 	"taxi-mvp/internal/db/legalrepair"
 	"taxi-mvp/internal/db/legalfingerrepair"
+	"taxi-mvp/internal/db/driverapprepair"
 	"taxi-mvp/internal/db/ledgerrepair"
 )
 
@@ -72,6 +73,9 @@ func main() {
 		}
 		if err := legalfingerrepair.Ensure(ctx, db); err != nil {
 			log.Fatalf("drivers legal fingerprint column repair: %v", err)
+		}
+		if err := driverapprepair.Ensure(ctx, db); err != nil {
+			log.Fatalf("drivers app location columns repair: %v", err)
 		}
 		log.Println("migrations up: ok")
 	} else {
