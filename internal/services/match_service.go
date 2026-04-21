@@ -54,6 +54,14 @@ func truncateLog(s string, maxChars int) string {
 	return s[:maxChars-3] + "..."
 }
 
+func isMissingColumnErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no such column") || strings.Contains(msg, "has no column")
+}
+
 func sampleInt64(ids []int64, maxItems int) string {
 	if len(ids) == 0 {
 		return "[]"
@@ -205,45 +213,48 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 	for _, g := range gridIDs {
 		args = append(args, g)
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	queryApp := `
 		SELECT d.user_id, u.telegram_id, d.last_lat, d.last_lng,
 		       d.app_lat, d.app_lng, d.app_last_seen_at, COALESCE(d.app_location_active, 0)
 		FROM drivers d JOIN users u ON u.id = d.user_id
-		WHERE 1=1`+balanceCond+`
+		WHERE 1=1` + balanceCond + `
 		  AND (
 				(COALESCE(d.live_location_active, 0) = 1
 				 AND d.last_live_location_at IS NOT NULL AND d.last_live_location_at >= ?2)
 			 OR (COALESCE(d.app_location_active, 0) = 1
 				 AND d.app_last_seen_at IS NOT NULL AND d.app_last_seen_at >= ?1)
-		  )`+`
+		  )` + `
 		  AND d.verification_status = 'approved'
-		  AND `+legal.SQLDriverDispatchLegalOK+`
+		  AND ` + legal.SQLDriverDispatchLegalOK + `
 		  AND ((d.last_lat IS NOT NULL AND d.last_lng IS NOT NULL) OR (d.app_lat IS NOT NULL AND d.app_lng IS NOT NULL))
 		  AND d.phone IS NOT NULL AND d.phone != ''
 		  AND d.car_type IS NOT NULL AND d.car_type != ''
 		  AND d.color IS NOT NULL AND d.color != ''
 		  AND d.plate IS NOT NULL AND d.plate != ''
-		  AND (d.grid_id IN (`+placeholders+`) OR d.grid_id IS NULL)
-		  AND NOT EXISTS (SELECT 1 FROM trips t WHERE t.driver_user_id = d.user_id AND t.status IN ('WAITING','ARRIVED','STARTED'))`,
-		args...)
-	if err != nil {
-		rows, _ = s.db.QueryContext(ctx, `
-			SELECT d.user_id, u.telegram_id, d.last_lat, d.last_lng,
-			       d.app_lat, d.app_lng, d.app_last_seen_at, COALESCE(d.app_location_active, 0)
-			FROM drivers d JOIN users u ON u.id = d.user_id
-			WHERE 1=1`+balanceCond+`
-			  AND (
-					(COALESCE(d.live_location_active, 0) = 1
-					 AND d.last_live_location_at IS NOT NULL AND d.last_live_location_at >= ?2)
-				 OR (COALESCE(d.app_location_active, 0) = 1
-					 AND d.app_last_seen_at IS NOT NULL AND d.app_last_seen_at >= ?1)
-			  )`+`
-			  AND d.verification_status = 'approved'
-			  AND `+legal.SQLDriverDispatchLegalOK+`
-			  AND ((d.last_lat IS NOT NULL AND d.last_lng IS NOT NULL) OR (d.app_lat IS NOT NULL AND d.app_lng IS NOT NULL))
-			  AND (d.grid_id IN (`+placeholders+`) OR d.grid_id IS NULL)
-			  AND NOT EXISTS (SELECT 1 FROM trips t WHERE t.driver_user_id = d.user_id AND t.status IN ('WAITING','ARRIVED','STARTED'))`,
-			args...)
+		  AND (d.grid_id IN (` + placeholders + `) OR d.grid_id IS NULL)
+		  AND NOT EXISTS (SELECT 1 FROM trips t WHERE t.driver_user_id = d.user_id AND t.status IN ('WAITING','ARRIVED','STARTED'))`
+
+	queryTelegramOnly := `
+		SELECT d.user_id, u.telegram_id, d.last_lat, d.last_lng
+		FROM drivers d JOIN users u ON u.id = d.user_id
+		WHERE 1=1` + balanceCond + `
+		  AND COALESCE(d.live_location_active, 0) = 1
+		  AND d.last_live_location_at IS NOT NULL AND d.last_live_location_at >= ?2
+		  AND d.verification_status = 'approved'
+		  AND ` + legal.SQLDriverDispatchLegalOK + `
+		  AND d.last_lat IS NOT NULL AND d.last_lng IS NOT NULL
+		  AND d.phone IS NOT NULL AND d.phone != ''
+		  AND d.car_type IS NOT NULL AND d.car_type != ''
+		  AND d.color IS NOT NULL AND d.color != ''
+		  AND d.plate IS NOT NULL AND d.plate != ''
+		  AND (d.grid_id IN (` + placeholders + `) OR d.grid_id IS NULL)
+		  AND NOT EXISTS (SELECT 1 FROM trips t WHERE t.driver_user_id = d.user_id AND t.status IN ('WAITING','ARRIVED','STARTED'))`
+
+	rows, err := s.db.QueryContext(ctx, queryApp, args...)
+	appColsOK := true
+	if err != nil && isMissingColumnErr(err) {
+		appColsOK = false
+		rows, err = s.db.QueryContext(ctx, queryTelegramOnly, args...)
 	}
 	if err != nil {
 		log.Printf("match_service: dispatch query: %v", truncateLog(err.Error(), logMaxChars))
@@ -258,14 +269,23 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 		var appLat, appLng sql.NullFloat64
 		var appLast sql.NullString
 		var appActive int
-		if err := rows.Scan(&uID, &telegramID, &lat, &lng, &appLat, &appLng, &appLast, &appActive); err != nil {
-			continue
+		if appColsOK {
+			if err := rows.Scan(&uID, &telegramID, &lat, &lng, &appLat, &appLng, &appLast, &appActive); err != nil {
+				continue
+			}
+		} else {
+			if err := rows.Scan(&uID, &telegramID, &lat, &lng); err != nil {
+				continue
+			}
+			appLat, appLng = sql.NullFloat64{}, sql.NullFloat64{}
+			appLast = sql.NullString{}
+			appActive = 0
 		}
 		loc := EffectiveDriverLocation{
 			AppLat:            appLat,
 			AppLng:            appLng,
 			AppLastSeenAt:     appLast,
-			AppLocationActive: sql.NullInt64{Int64: int64(appActive), Valid: true},
+			AppLocationActive: sql.NullInt64{Int64: int64(appActive), Valid: appColsOK},
 			LastLat:           lat,
 			LastLng:           lng,
 		}
@@ -468,14 +488,28 @@ func (s *MatchService) NotifyDriverOfPendingRequests(ctx context.Context, driver
 	if s.cfg != nil && s.cfg.InfiniteDriverBalance {
 		balanceCond = ""
 	}
-	err := s.db.QueryRowContext(ctx, `
+	qApp := `
 		SELECT u.telegram_id, d.last_lat, d.last_lng,
 		       d.app_lat, d.app_lng, d.app_last_seen_at, COALESCE(d.app_location_active, 0),
 		       d.is_active, d.last_seen_at, d.last_live_location_at, COALESCE(d.live_location_active, 0)
 		FROM drivers d JOIN users u ON u.id = d.user_id
-		WHERE d.user_id = ?1 AND d.verification_status = 'approved' AND `+legal.SQLDriverDispatchLegalOK+`
-		  AND ((d.last_lat IS NOT NULL AND d.last_lng IS NOT NULL) OR (d.app_lat IS NOT NULL AND d.app_lng IS NOT NULL))`+balanceCond,
-		driverUserID).Scan(&telegramID, &lat, &lng, &appLat, &appLng, &appLast, &appActive, &isActive, &lastSeenAt, &lastLiveAt, &liveLocationActive)
+		WHERE d.user_id = ?1 AND d.verification_status = 'approved' AND ` + legal.SQLDriverDispatchLegalOK + `
+		  AND ((d.last_lat IS NOT NULL AND d.last_lng IS NOT NULL) OR (d.app_lat IS NOT NULL AND d.app_lng IS NOT NULL))` + balanceCond
+	qTelegramOnly := `
+		SELECT u.telegram_id, d.last_lat, d.last_lng, d.is_active, d.last_seen_at, d.last_live_location_at, COALESCE(d.live_location_active, 0)
+		FROM drivers d JOIN users u ON u.id = d.user_id
+		WHERE d.user_id = ?1 AND d.verification_status = 'approved' AND ` + legal.SQLDriverDispatchLegalOK + `
+		  AND d.last_lat IS NOT NULL AND d.last_lng IS NOT NULL` + balanceCond
+
+	appColsOK := true
+	err := s.db.QueryRowContext(ctx, qApp, driverUserID).Scan(&telegramID, &lat, &lng, &appLat, &appLng, &appLast, &appActive, &isActive, &lastSeenAt, &lastLiveAt, &liveLocationActive)
+	if err != nil && isMissingColumnErr(err) {
+		appColsOK = false
+		err = s.db.QueryRowContext(ctx, qTelegramOnly, driverUserID).Scan(&telegramID, &lat, &lng, &isActive, &lastSeenAt, &lastLiveAt, &liveLocationActive)
+		appLat, appLng = sql.NullFloat64{}, sql.NullFloat64{}
+		appLast = sql.NullString{}
+		appActive = 0
+	}
 	if err != nil {
 		if s.cfg != nil && s.cfg.DispatchDebug {
 			log.Printf("dispatch_debug: driver=%d skipped: not_eligible_or_missing err=%v", driverUserID, truncateLog(err.Error(), logMaxChars))
@@ -486,7 +520,7 @@ func (s *MatchService) NotifyDriverOfPendingRequests(ctx context.Context, driver
 		AppLat:            appLat,
 		AppLng:            appLng,
 		AppLastSeenAt:     appLast,
-		AppLocationActive: sql.NullInt64{Int64: int64(appActive), Valid: true},
+		AppLocationActive: sql.NullInt64{Int64: int64(appActive), Valid: appColsOK},
 		LastLat:           lat,
 		LastLng:           lng,
 	}

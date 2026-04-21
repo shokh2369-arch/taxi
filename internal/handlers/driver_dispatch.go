@@ -65,9 +65,16 @@ func DriverAvailableRequests(db *sql.DB) gin.HandlerFunc {
 		var appLat, appLng sql.NullFloat64
 		var appLast sql.NullString
 		var appActive sql.NullInt64
-		_ = db.QueryRowContext(ctx, `
+		err := db.QueryRowContext(ctx, `
 			SELECT last_lat, last_lng, app_lat, app_lng, app_last_seen_at, COALESCE(app_location_active, 0)
 			FROM drivers WHERE user_id = ?1`, driverID).Scan(&lastLat, &lastLng, &appLat, &appLng, &appLast, &appActive)
+		if err != nil && strings.Contains(strings.ToLower(err.Error()), "no such column") {
+			// Backward compatible: DB not migrated yet; fall back to Telegram-only fields.
+			_ = db.QueryRowContext(ctx, `SELECT last_lat, last_lng FROM drivers WHERE user_id = ?1`, driverID).Scan(&lastLat, &lastLng)
+			appLat, appLng = sql.NullFloat64{}, sql.NullFloat64{}
+			appLast = sql.NullString{}
+			appActive = sql.NullInt64{Int64: 0, Valid: true}
+		}
 		loc := services.EffectiveDriverLocation{
 			AppLat:            appLat,
 			AppLng:            appLng,
