@@ -35,6 +35,14 @@ type AdminService struct {
 	ledger   *repositories.DriverLedgerRepository
 }
 
+func adminIsMissingColumnErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no such column") || strings.Contains(msg, "has no column")
+}
+
 // NewAdminService constructs an AdminService.
 func NewAdminService(
 	db *sql.DB,
@@ -343,10 +351,30 @@ func (s *AdminService) ListActiveDriversForMap(ctx context.Context) ([]AdminMapD
 	if s.db == nil {
 		return nil, nil
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	cutoff := time.Now().UTC().Add(-90 * time.Second).Format("2006-01-02 15:04:05")
+
+	// Prefer effective location (APP fresh wins) but stay backward compatible when DB isn't migrated.
+	queryApp := `
+		SELECT user_id,
+		       last_lat, last_lng,
+		       app_lat, app_lng, app_last_seen_at, COALESCE(app_location_active, 0),
+		       COALESCE(is_active, 0),
+		       COALESCE(live_location_active, 0), COALESCE(last_live_location_at, ''),
+		       COALESCE(last_seen_at, '')
+		FROM drivers
+		WHERE (last_lat IS NOT NULL AND last_lng IS NOT NULL) OR (app_lat IS NOT NULL AND app_lng IS NOT NULL)`
+
+	queryTelegramOnly := `
 		SELECT user_id, last_lat, last_lng, COALESCE(is_active, 0), COALESCE(live_location_active, 0), COALESCE(last_seen_at, '')
 		FROM drivers
-		WHERE last_lat IS NOT NULL AND last_lng IS NOT NULL`)
+		WHERE last_lat IS NOT NULL AND last_lng IS NOT NULL`
+
+	rows, err := s.db.QueryContext(ctx, queryApp)
+	appColsOK := true
+	if err != nil && adminIsMissingColumnErr(err) {
+		appColsOK = false
+		rows, err = s.db.QueryContext(ctx, queryTelegramOnly)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -354,8 +382,54 @@ func (s *AdminService) ListActiveDriversForMap(ctx context.Context) ([]AdminMapD
 	var out []AdminMapDriver
 	for rows.Next() {
 		var d AdminMapDriver
-		if err := rows.Scan(&d.ID, &d.LastLat, &d.LastLng, &d.IsActive, &d.LiveLocationActive, &d.LastLocationAt); err != nil {
-			return nil, err
+		if appColsOK {
+			var (
+				lastLat, lastLng sql.NullFloat64
+				appLat, appLng   sql.NullFloat64
+				appLast          sql.NullString
+				appActive        int
+				liveActive       int
+				lastLiveAt       string
+				lastSeenAt       string
+			)
+			if err := rows.Scan(&d.ID, &lastLat, &lastLng, &appLat, &appLng, &appLast, &appActive, &d.IsActive, &liveActive, &lastLiveAt, &lastSeenAt); err != nil {
+				return nil, err
+			}
+
+			loc := EffectiveDriverLocation{
+				AppLat:            appLat,
+				AppLng:            appLng,
+				AppLastSeenAt:     appLast,
+				AppLocationActive: sql.NullInt64{Int64: int64(appActive), Valid: true},
+				LastLat:           lastLat,
+				LastLng:           lastLng,
+			}
+			eLat, eLng := GetEffectiveDriverLocation(loc)
+			if eLat != 0 || eLng != 0 {
+				d.LastLat, d.LastLng = eLat, eLng
+			} else if lastLat.Valid && lastLng.Valid {
+				d.LastLat, d.LastLng = lastLat.Float64, lastLng.Float64
+			}
+
+			// Mark driver "live" on map if either source is fresh (same 90s window).
+			appFresh := appActive == 1 && appLast.Valid && appLast.String != "" && appLast.String >= cutoff
+			tgFresh := liveActive == 1 && lastLiveAt != "" && lastLiveAt >= cutoff
+			if appFresh || tgFresh {
+				d.LiveLocationActive = 1
+			} else {
+				d.LiveLocationActive = 0
+			}
+
+			// For display only.
+			if appFresh && appLast.Valid {
+				d.LastLocationAt = appLast.String
+			} else {
+				d.LastLocationAt = lastSeenAt
+			}
+		} else {
+			if err := rows.Scan(&d.ID, &d.LastLat, &d.LastLng, &d.IsActive, &d.LiveLocationActive, &d.LastLocationAt); err != nil {
+				return nil, err
+			}
 		}
 		out = append(out, d)
 	}
