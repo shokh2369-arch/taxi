@@ -45,6 +45,14 @@ func tripErrStr(err error) string {
 	return tripTrunc(err.Error(), tripLogErrMaxChars)
 }
 
+func tripIsMissingColumnErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no such column") || strings.Contains(msg, "has no column")
+}
+
 func parseDriverLiveAtUTC(s string) (time.Time, error) {
 	if t, err := time.ParseInLocation("2006-01-02 15:04:05", s, time.UTC); err == nil {
 		return t, nil
@@ -114,6 +122,15 @@ func (s *TripService) ensureDriverNearPickup(ctx context.Context, tripID string,
 		SELECT last_lat, last_lng, last_live_location_at, COALESCE(live_location_active, 0),
 		       app_lat, app_lng, app_last_seen_at, COALESCE(app_location_active, 0)
 		FROM drivers WHERE user_id = ?1`, driverUserID).Scan(&lastLat, &lastLng, &lastLive, &liveActive, &appLat, &appLng, &appLast, &appActive)
+	if err != nil && tripIsMissingColumnErr(err) {
+		// Backward compatible: DB not migrated yet; fall back to Telegram-only fields.
+		appLat, appLng = sql.NullFloat64{}, sql.NullFloat64{}
+		appLast = sql.NullString{}
+		appActive = 0
+		err = s.db.QueryRowContext(ctx, `
+			SELECT last_lat, last_lng, last_live_location_at, COALESCE(live_location_active, 0)
+			FROM drivers WHERE user_id = ?1`, driverUserID).Scan(&lastLat, &lastLng, &lastLive, &liveActive)
+	}
 	if err != nil {
 		if err == sql.ErrNoRows {
 			log.Printf("trip_service: pickup_guard_reject op=%s trip_id=%s driver_user_id=%d reason=driver_row_missing", op, tripID, driverUserID)
