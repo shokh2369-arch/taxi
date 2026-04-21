@@ -230,6 +230,8 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 		       d.app_lat, d.app_lng, d.app_last_seen_at, COALESCE(d.app_location_active, 0)
 		FROM drivers d JOIN users u ON u.id = d.user_id
 		WHERE 1=1` + balanceCond + `
+		  AND COALESCE(d.is_active, 0) = 1
+		  AND COALESCE(d.manual_offline, 0) = 0
 		  AND (
 				(COALESCE(d.live_location_active, 0) = 1
 				 AND d.last_live_location_at IS NOT NULL AND d.last_live_location_at >= ?)
@@ -250,6 +252,8 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 		SELECT d.user_id, u.telegram_id, d.last_lat, d.last_lng
 		FROM drivers d JOIN users u ON u.id = d.user_id
 		WHERE 1=1` + balanceCond + `
+		  AND COALESCE(d.is_active, 0) = 1
+		  AND COALESCE(d.manual_offline, 0) = 0
 		  AND COALESCE(d.live_location_active, 0) = 1
 		  AND d.last_live_location_at IS NOT NULL AND d.last_live_location_at >= ?
 		  AND d.verification_status = 'approved'
@@ -510,21 +514,22 @@ func (s *MatchService) NotifyDriverOfPendingRequests(ctx context.Context, driver
 	qApp := `
 		SELECT u.telegram_id, d.last_lat, d.last_lng,
 		       d.app_lat, d.app_lng, d.app_last_seen_at, COALESCE(d.app_location_active, 0),
-		       d.is_active, d.last_seen_at, d.last_live_location_at, COALESCE(d.live_location_active, 0)
+		       d.is_active, COALESCE(d.manual_offline, 0), d.last_seen_at, d.last_live_location_at, COALESCE(d.live_location_active, 0)
 		FROM drivers d JOIN users u ON u.id = d.user_id
 		WHERE d.user_id = ?1 AND d.verification_status = 'approved' AND ` + legal.SQLDriverDispatchLegalOK + `
 		  AND ((d.last_lat IS NOT NULL AND d.last_lng IS NOT NULL) OR (d.app_lat IS NOT NULL AND d.app_lng IS NOT NULL))` + balanceCond
 	qTelegramOnly := `
-		SELECT u.telegram_id, d.last_lat, d.last_lng, d.is_active, d.last_seen_at, d.last_live_location_at, COALESCE(d.live_location_active, 0)
+		SELECT u.telegram_id, d.last_lat, d.last_lng, d.is_active, COALESCE(d.manual_offline, 0), d.last_seen_at, d.last_live_location_at, COALESCE(d.live_location_active, 0)
 		FROM drivers d JOIN users u ON u.id = d.user_id
 		WHERE d.user_id = ?1 AND d.verification_status = 'approved' AND ` + legal.SQLDriverDispatchLegalOK + `
 		  AND d.last_lat IS NOT NULL AND d.last_lng IS NOT NULL` + balanceCond
 
 	appColsOK := true
-	err := s.db.QueryRowContext(ctx, qApp, driverUserID).Scan(&telegramID, &lat, &lng, &appLat, &appLng, &appLast, &appActive, &isActive, &lastSeenAt, &lastLiveAt, &liveLocationActive)
+	var manualOffline int
+	err := s.db.QueryRowContext(ctx, qApp, driverUserID).Scan(&telegramID, &lat, &lng, &appLat, &appLng, &appLast, &appActive, &isActive, &manualOffline, &lastSeenAt, &lastLiveAt, &liveLocationActive)
 	if err != nil && isMissingColumnErr(err) {
 		appColsOK = false
-		err = s.db.QueryRowContext(ctx, qTelegramOnly, driverUserID).Scan(&telegramID, &lat, &lng, &isActive, &lastSeenAt, &lastLiveAt, &liveLocationActive)
+		err = s.db.QueryRowContext(ctx, qTelegramOnly, driverUserID).Scan(&telegramID, &lat, &lng, &isActive, &manualOffline, &lastSeenAt, &lastLiveAt, &liveLocationActive)
 		appLat, appLng = sql.NullFloat64{}, sql.NullFloat64{}
 		appLast = sql.NullString{}
 		appActive = 0
@@ -554,6 +559,12 @@ func (s *MatchService) NotifyDriverOfPendingRequests(ctx context.Context, driver
 	if isActive != 1 {
 		if s.cfg != nil && s.cfg.DispatchDebug {
 			log.Printf("dispatch_debug: driver=%d skipped: is_active=%d", driverUserID, isActive)
+		}
+		return
+	}
+	if manualOffline == 1 {
+		if s.cfg != nil && s.cfg.DispatchDebug {
+			log.Printf("dispatch_debug: driver=%d skipped: manual_offline=1", driverUserID)
 		}
 		return
 	}

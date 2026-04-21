@@ -27,7 +27,7 @@ func DriverManualOffline(db *sql.DB) gin.HandlerFunc {
 		ctx := c.Request.Context()
 		_, err := db.ExecContext(ctx, `
 			UPDATE drivers
-			SET is_active = 0, manual_offline = 0,
+			SET is_active = 0, manual_offline = 1,
 			    live_location_active = 0, last_live_location_at = NULL,
 			    app_location_active = 0
 			WHERE user_id = ?1`, u.UserID)
@@ -35,7 +35,7 @@ func DriverManualOffline(db *sql.DB) gin.HandlerFunc {
 			// Backward compatible for tests / unmigrated DB: app_location_active may not exist yet.
 			_, err = db.ExecContext(ctx, `
 				UPDATE drivers
-				SET is_active = 0, manual_offline = 0,
+				SET is_active = 0, manual_offline = 1,
 				    live_location_active = 0, last_live_location_at = NULL
 				WHERE user_id = ?1`, u.UserID)
 		}

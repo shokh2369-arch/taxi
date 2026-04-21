@@ -49,7 +49,9 @@ func TestDriverManualOffline_clearsLiveFlags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if isAct != 0 || liveAct != 0 || lastLive.Valid {
-		t.Fatalf("want offline cleared, got is_active=%d live_active=%d last_live=%v", isAct, liveAct, lastLive)
+	var manualOffline int
+	_ = db.QueryRow(`SELECT COALESCE(manual_offline,0) FROM drivers WHERE user_id = 7`).Scan(&manualOffline)
+	if isAct != 0 || liveAct != 0 || lastLive.Valid || manualOffline != 1 {
+		t.Fatalf("want offline cleared, got is_active=%d live_active=%d last_live=%v manual_offline=%d", isAct, liveAct, lastLive, manualOffline)
 	}
 }
