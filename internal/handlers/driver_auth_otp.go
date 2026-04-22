@@ -90,6 +90,11 @@ func lookupDriverByPhoneDigits(ctx context.Context, db *sql.DB, digits string) (
 			replace(replace(replace(coalesce(u.phone, ''), '+', ''), ' ', ''), '-', '') = ?1
 			OR replace(replace(replace(coalesce(d.phone, ''), '+', ''), ' ', ''), '-', '') = ?1
 		)
+		ORDER BY
+			CASE WHEN lower(trim(u.role)) = 'driver' THEN 1 ELSE 0 END DESC,
+			CASE WHEN d.user_id IS NOT NULL THEN 1 ELSE 0 END DESC,
+			CASE WHEN lower(trim(d.verification_status)) = 'approved' THEN 1 ELSE 0 END DESC,
+			u.id DESC
 		LIMIT 1`,
 		digits).Scan(&out.UserID, &out.TelegramID, &out.UserRole, &ver, &driverUserID)
 	if err != nil {
@@ -104,7 +109,7 @@ func isApprovedDriver(l *driverLookup) bool {
 	if l == nil {
 		return false
 	}
-	if l.UserID == 0 || !l.HasDriverRow || l.UserRole != "driver" {
+	if l.UserID == 0 || !l.HasDriverRow || !strings.EqualFold(strings.TrimSpace(l.UserRole), "driver") {
 		return false
 	}
 	return strings.EqualFold(strings.TrimSpace(l.VerificationStatus.String), "approved")

@@ -136,6 +136,40 @@ func TestDriverAuthRequestCode_ApprovedDriverIs200(t *testing.T) {
 	}
 }
 
+func TestDriverAuthRequestCode_PrefersDriverWhenPhoneShared(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupOTPTestDB(t)
+	defer db.Close()
+
+	// Rider user with the same phone (should not block driver OTP).
+	_, err := db.Exec(`INSERT INTO users (id, role, telegram_id, phone) VALUES (10, 'rider', 111, '998990708446')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Approved driver user with the same phone.
+	_, err = db.Exec(`INSERT INTO users (id, role, telegram_id, phone) VALUES (11, 'driver', 222, '998990708446')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO drivers (user_id, verification_status, phone) VALUES (11, 'approved', '998990708446')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bot := &fakeTelegramSender{}
+	r := gin.New()
+	r.POST("/auth/request-code", DriverAuthRequestCode(db, bot))
+
+	rr := performJSONRequest(r, "POST", "/auth/request-code", map[string]string{"phone": "998990708446"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if bot.sent != 1 {
+		t.Fatalf("telegram sends=%d want 1", bot.sent)
+	}
+}
+
 func TestDriverAuthVerifyCode_NotRegisteredIs403WithCode(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := setupOTPTestDB(t)
