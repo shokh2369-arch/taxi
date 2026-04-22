@@ -80,28 +80,26 @@ func lookupDriverByPhoneDigits(ctx context.Context, db *sql.DB, digits string) (
 	}
 	var out driverLookup
 	var ver sql.NullString
-	var driverUserID sql.NullInt64
+	// Drivers-first lookup: if a phone exists for both rider+driver, always select the driver row.
+	// Also avoids false positives from users rows that have no drivers row.
 	err := db.QueryRowContext(ctx, `
-		SELECT u.id, u.telegram_id, u.role,
-		       d.verification_status, d.user_id
-		FROM users u
-		LEFT JOIN drivers d ON d.user_id = u.id
+		SELECT u.id, u.telegram_id, u.role, d.verification_status
+		FROM drivers d
+		INNER JOIN users u ON u.id = d.user_id
 		WHERE (
 			replace(replace(replace(coalesce(u.phone, ''), '+', ''), ' ', ''), '-', '') = ?1
 			OR replace(replace(replace(coalesce(d.phone, ''), '+', ''), ' ', ''), '-', '') = ?1
 		)
 		ORDER BY
-			CASE WHEN lower(trim(u.role)) = 'driver' THEN 1 ELSE 0 END DESC,
-			CASE WHEN d.user_id IS NOT NULL THEN 1 ELSE 0 END DESC,
 			CASE WHEN lower(trim(d.verification_status)) = 'approved' THEN 1 ELSE 0 END DESC,
 			u.id DESC
 		LIMIT 1`,
-		digits).Scan(&out.UserID, &out.TelegramID, &out.UserRole, &ver, &driverUserID)
+		digits).Scan(&out.UserID, &out.TelegramID, &out.UserRole, &ver)
 	if err != nil {
 		return nil, err
 	}
 	out.VerificationStatus = ver
-	out.HasDriverRow = driverUserID.Valid && driverUserID.Int64 != 0
+	out.HasDriverRow = true
 	return &out, nil
 }
 
@@ -146,8 +144,20 @@ func DriverAuthRequestCode(db *sql.DB, driverBot telegramSender) gin.HandlerFunc
 		lookup, err := lookupDriverByPhoneDigits(ctx, db, digits)
 		if err == sql.ErrNoRows || !isApprovedDriver(lookup) {
 			// One structured reject log line (no OTP/code values).
-			log.Printf("driver_auth_request_code_reject phone=%s user_found=%v driver_approved=%v status=%d code=%s",
-				digits, err != sql.ErrNoRows, isApprovedDriver(lookup), http.StatusForbidden, errDriverAuthNotRegistered)
+			role := ""
+			verStr := ""
+			hasDriver := false
+			uid := int64(0)
+			if lookup != nil {
+				role = strings.TrimSpace(lookup.UserRole)
+				if lookup.VerificationStatus.Valid {
+					verStr = strings.TrimSpace(lookup.VerificationStatus.String)
+				}
+				hasDriver = lookup.HasDriverRow
+				uid = lookup.UserID
+			}
+			log.Printf("driver_auth_request_code_reject phone=%s user_found=%v selected_user_id=%d role=%s has_driver_row=%v verification_status=%s driver_approved=%v status=%d code=%s",
+				digits, err != sql.ErrNoRows, uid, role, hasDriver, verStr, isApprovedDriver(lookup), http.StatusForbidden, errDriverAuthNotRegistered)
 			writeAPIError(c, http.StatusForbidden, errDriverAuthNotRegistered, "driver not registered or not approved")
 			return
 		}

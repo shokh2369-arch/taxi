@@ -88,6 +88,32 @@ func TestDriverAuthRequestCode_NotRegisteredIs403WithCode(t *testing.T) {
 	}
 }
 
+func TestDriverAuthRequestCode_RiderOnlyPhoneIs403WithCode(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupOTPTestDB(t)
+	defer db.Close()
+
+	// Rider exists with phone, but no drivers row.
+	_, err := db.Exec(`INSERT INTO users (id, role, telegram_id, phone) VALUES (10, 'rider', 111, '998990708446')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bot := &fakeTelegramSender{}
+	r := gin.New()
+	r.POST("/auth/request-code", DriverAuthRequestCode(db, bot))
+
+	rr := performJSONRequest(r, "POST", "/auth/request-code", map[string]string{"phone": "998990708446"})
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var out map[string]any
+	_ = json.Unmarshal(rr.Body.Bytes(), &out)
+	if out["code"] != errDriverAuthNotRegistered {
+		t.Fatalf("code=%v want %v body=%s", out["code"], errDriverAuthNotRegistered, rr.Body.String())
+	}
+}
+
 func TestDriverAuthRequestCode_InvalidPhoneIs400WithCode(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := setupOTPTestDB(t)
