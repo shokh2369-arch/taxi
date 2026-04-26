@@ -99,15 +99,9 @@ func RiderSetDestination(db *sql.DB, cfg *config.Config, riderBot *tgbotapi.BotA
 			c.JSON(http.StatusConflict, gin.H{"ok": false, "error": "request not pending"})
 			return
 		}
-		// Expiry gate (same semantics as dispatch).
-		var still int
-		_ = db.QueryRowContext(ctx, `
-			SELECT 1 FROM ride_requests WHERE id = ?1 AND status = ?2 AND expires_at > datetime('now')`,
-			body.RequestID, domain.RequestStatusPending).Scan(&still)
-		if still != 1 {
-			c.JSON(http.StatusConflict, gin.H{"ok": false, "error": "request expired"})
-			return
-		}
+		// NOTE: We intentionally do NOT block destination selection when expires_at has passed.
+		// Render free instances can sleep and the Mini App can open late; once the rider confirms destination,
+		// we refresh expires_at from "now" so dispatch/confirm remains race-safe.
 		if dropLat.Valid && dropLng.Valid {
 			c.JSON(http.StatusConflict, gin.H{"ok": false, "error": "destination already set"})
 			return
@@ -135,7 +129,7 @@ func RiderSetDestination(db *sql.DB, cfg *config.Config, riderBot *tgbotapi.BotA
 		_, err = db.ExecContext(ctx, `
 			UPDATE ride_requests
 			SET drop_lat = ?1, drop_lng = ?2, drop_name = ?3, estimated_price = ?4, expires_at = datetime('now', ?5)
-			WHERE id = ?6 AND rider_user_id = ?7 AND status = ?8 AND expires_at > datetime('now')
+			WHERE id = ?6 AND rider_user_id = ?7 AND status = ?8
 			  AND (drop_lat IS NULL OR drop_lng IS NULL)`,
 			body.Lat, body.Lng, body.Name, est, ttl, body.RequestID, riderUserID, domain.RequestStatusPending)
 		if err != nil {
