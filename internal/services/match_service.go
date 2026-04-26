@@ -103,11 +103,15 @@ func sampleString(ss []string, maxItems int) string {
 	return truncateLog(base, logMaxChars)
 }
 
-// formatOrderMessageToDriver builds the text sent to the driver for a new order (distance + client phone if available).
-func formatOrderMessageToDriver(distKm float64, riderPhone string) string {
+// formatOrderMessageToDriver builds the text sent to the driver for a new order.
+// IMPORTANT: destination details must never be included here; only pickup context and estimate.
+func formatOrderMessageToDriver(distKm float64, riderPhone string, estimatedPrice int64) string {
 	text := fmt.Sprintf("Янги сўров (%.1f км узоқда).", distKm)
 	if riderPhone != "" {
 		text += "\n📞 Мижоз: " + riderPhone
+	}
+	if estimatedPrice > 0 {
+		text += fmt.Sprintf("\n💰 Тахминий нарх: %d", estimatedPrice)
 	}
 	text += "\nҚабул қиласизми?"
 	return text
@@ -194,6 +198,8 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 	if err != nil || status != domain.RequestStatusPending {
 		return
 	}
+	var estPrice int64
+	_ = s.db.QueryRowContext(ctx, `SELECT COALESCE(estimated_price, 0) FROM ride_requests WHERE id = ?1`, requestID).Scan(&estPrice)
 	var riderPhone string
 	_ = s.db.QueryRowContext(ctx, `SELECT COALESCE(u.phone,'') FROM ride_requests r JOIN users u ON u.id = r.rider_user_id WHERE r.id = ?1`, requestID).Scan(&riderPhone)
 	riderPhone = strings.TrimSpace(riderPhone)
@@ -389,7 +395,7 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 			if s.cfg != nil && s.cfg.DispatchDebug {
 				log.Printf("dispatch_debug: request=%s try_driver=%d dist_km=%.3f", requestID, c.UserID, c.DistKm)
 			}
-			text := formatOrderMessageToDriver(c.DistKm, riderPhone)
+			text := formatOrderMessageToDriver(c.DistKm, riderPhone, estPrice)
 			if !s.isDriverSharingLiveLocation(ctx, c.UserID) {
 				text += liveLocationOrderHint
 			}
@@ -685,7 +691,9 @@ func (s *MatchService) NotifyDriverOfPendingRequests(ctx context.Context, driver
 		var riderPhone string
 		_ = s.db.QueryRowContext(ctx, `SELECT COALESCE(u.phone,'') FROM ride_requests r JOIN users u ON u.id = r.rider_user_id WHERE r.id = ?1`, item.requestID).Scan(&riderPhone)
 		riderPhone = strings.TrimSpace(riderPhone)
-		text := formatOrderMessageToDriver(item.distKm, riderPhone)
+		var estPrice int64
+		_ = s.db.QueryRowContext(ctx, `SELECT COALESCE(estimated_price, 0) FROM ride_requests WHERE id = ?1`, item.requestID).Scan(&estPrice)
+		text := formatOrderMessageToDriver(item.distKm, riderPhone, estPrice)
 		if !s.isDriverSharingLiveLocation(ctx, driverUserID) {
 			text += liveLocationOrderHint
 		}
@@ -889,8 +897,10 @@ func (s *MatchService) AdminSendOfferToDriver(ctx context.Context, requestID str
 	var riderPhone string
 	_ = s.db.QueryRowContext(ctx, `SELECT COALESCE(u.phone,'') FROM ride_requests r JOIN users u ON u.id = r.rider_user_id WHERE r.id = ?1`, requestID).Scan(&riderPhone)
 	riderPhone = strings.TrimSpace(riderPhone)
+	var estPrice int64
+	_ = s.db.QueryRowContext(ctx, `SELECT COALESCE(estimated_price, 0) FROM ride_requests WHERE id = ?1`, requestID).Scan(&estPrice)
 
-	text := formatOrderMessageToDriver(distKm, riderPhone)
+	text := formatOrderMessageToDriver(distKm, riderPhone, estPrice)
 	if !s.isDriverSharingLiveLocation(ctx, driverUserID) {
 		text += liveLocationOrderHint
 	}

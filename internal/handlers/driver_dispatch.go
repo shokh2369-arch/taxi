@@ -43,6 +43,7 @@ type DriverAvailableOffer struct {
 	PickupLng  float64 `json:"pickup_lng"`
 	DistanceKm float64 `json:"distance_km"`
 	RadiusKm   float64 `json:"radius_km"`
+	EstimatedPrice int64 `json:"estimated_price"`
 	ExpiresAt  string  `json:"expires_at,omitempty"`
 }
 
@@ -101,13 +102,24 @@ func DriverAvailableRequests(db *sql.DB) gin.HandlerFunc {
 		}
 
 		queryOffers := func() ([]DriverAvailableOffer, error) {
-			rows, err := db.QueryContext(ctx, `
+			qNew := `
+				SELECT r.id, r.pickup_lat, r.pickup_lng, r.radius_km, COALESCE(r.estimated_price, 0), COALESCE(r.expires_at,'')
+				FROM request_notifications n
+				JOIN ride_requests r ON r.id = n.request_id
+				WHERE n.driver_user_id = ?1 AND n.status = ?2
+				  AND r.status = ?3 AND r.expires_at > datetime('now')`
+			qLegacy := `
 				SELECT r.id, r.pickup_lat, r.pickup_lng, r.radius_km, COALESCE(r.expires_at,'')
 				FROM request_notifications n
 				JOIN ride_requests r ON r.id = n.request_id
 				WHERE n.driver_user_id = ?1 AND n.status = ?2
-				  AND r.status = ?3 AND r.expires_at > datetime('now')`,
-				driverID, domain.NotificationStatusSent, domain.RequestStatusPending)
+				  AND r.status = ?3 AND r.expires_at > datetime('now')`
+			rows, err := db.QueryContext(ctx, qNew, driverID, domain.NotificationStatusSent, domain.RequestStatusPending)
+			newColsOK := true
+			if err != nil && strings.Contains(strings.ToLower(err.Error()), "no such column") {
+				newColsOK = false
+				rows, err = db.QueryContext(ctx, qLegacy, driverID, domain.NotificationStatusSent, domain.RequestStatusPending)
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -116,8 +128,15 @@ func DriverAvailableRequests(db *sql.DB) gin.HandlerFunc {
 			var offers []DriverAvailableOffer
 			for rows.Next() {
 				var o DriverAvailableOffer
-				if err := rows.Scan(&o.RequestID, &o.PickupLat, &o.PickupLng, &o.RadiusKm, &o.ExpiresAt); err != nil {
-					continue
+				if newColsOK {
+					if err := rows.Scan(&o.RequestID, &o.PickupLat, &o.PickupLng, &o.RadiusKm, &o.EstimatedPrice, &o.ExpiresAt); err != nil {
+						continue
+					}
+				} else {
+					if err := rows.Scan(&o.RequestID, &o.PickupLat, &o.PickupLng, &o.RadiusKm, &o.ExpiresAt); err != nil {
+						continue
+					}
+					o.EstimatedPrice = 0
 				}
 				if eLat != 0 || eLng != 0 {
 					o.DistanceKm = utils.HaversineMeters(eLat, eLng, o.PickupLat, o.PickupLng) / 1000

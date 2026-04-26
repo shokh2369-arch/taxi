@@ -3,8 +3,11 @@ package rider
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
+	"math"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +19,7 @@ import (
 	"taxi-mvp/internal/config"
 	"taxi-mvp/internal/domain"
 	"taxi-mvp/internal/legal"
+	"taxi-mvp/internal/repositories"
 	"taxi-mvp/internal/services"
 	"taxi-mvp/internal/utils"
 )
@@ -33,7 +37,16 @@ const (
 	resumeRiderTaxi        = "rider_taxi"
 	resumeRiderSearchAgain = "rider_search_again"
 	resumeRiderTrack       = "rider_track"
+
+	cbDestPage   = "dest_page:"
+	cbDestPlace  = "dest_place:"
 )
+
+type destinationWebAppPayload struct {
+	Lat  float64 `json:"lat"`
+	Lng  float64 `json:"lng"`
+	Name string  `json:"name"`
+}
 
 // Run starts the rider bot and blocks until ctx is cancelled.
 // bot is the rider Telegram bot API; matchService broadcasts new requests (may be nil); tripService is used to cancel trips (may be nil).
@@ -148,6 +161,16 @@ func handleUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 
 	if msg.Contact != nil {
 		handlePhoneContact(bot, db, chatID, telegramID, msg.Contact.PhoneNumber)
+		return
+	}
+
+	// Telegram Mini App web_app_data (custom destination picker).
+	if msg.WebAppData != nil && strings.TrimSpace(msg.WebAppData.Data) != "" {
+		if riderUserID == 0 {
+			send(bot, chatID, "Аввал /start босинг.")
+			return
+		}
+		handleDestinationWebAppData(bot, db, cfg, matchService, chatID, riderUserID, msg.WebAppData.Data)
 		return
 	}
 
@@ -308,6 +331,14 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 			return
 		}
 		sendLocationPrompt(bot, q.Message.Chat.ID)
+		return
+	}
+	if strings.HasPrefix(q.Data, cbDestPage) {
+		handleDestinationPageCallback(bot, db, cfg, q, matchService)
+		return
+	}
+	if strings.HasPrefix(q.Data, cbDestPlace) {
+		handleDestinationPlaceCallback(bot, db, cfg, q, matchService)
 		return
 	}
 	_ = cfg
@@ -604,14 +635,121 @@ func handleLocation(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 		return
 	}
 
+	// New flow: rider must choose destination before dispatch.
+	send(bot, chatID, "Манзилни танланг:")
+	sendDestinationPage(bot, db, cfg, chatID, userID, requestID.String(), 1)
+}
+
+func handleDestinationPageCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, q *tgbotapi.CallbackQuery, matchService *services.MatchService) {
+	parts := strings.Split(strings.TrimPrefix(q.Data, cbDestPage), ":")
+	if len(parts) != 2 {
+		return
+	}
+	requestID := strings.TrimSpace(parts[0])
+	page, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if page <= 0 {
+		page = 1
+	}
+	var riderUserID int64
+	_ = db.QueryRowContext(context.Background(), `SELECT id FROM users WHERE telegram_id = ?1`, q.From.ID).Scan(&riderUserID)
+	if riderUserID == 0 {
+		return
+	}
+	sendDestinationPage(bot, db, cfg, q.Message.Chat.ID, riderUserID, requestID, page)
+	_ = matchService
+}
+
+func handleDestinationPlaceCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, q *tgbotapi.CallbackQuery, matchService *services.MatchService) {
+	// dest_place:<request_id>:<place_id>
+	parts := strings.Split(strings.TrimPrefix(q.Data, cbDestPlace), ":")
+	if len(parts) != 2 {
+		return
+	}
+	requestID := strings.TrimSpace(parts[0])
+	placeID, _ := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
+	if requestID == "" || placeID <= 0 {
+		return
+	}
+	var riderUserID int64
+	_ = db.QueryRowContext(context.Background(), `SELECT id FROM users WHERE telegram_id = ?1`, q.From.ID).Scan(&riderUserID)
+	if riderUserID == 0 {
+		return
+	}
+	// Load pickup and place coordinates.
+	var pickupLat, pickupLng float64
+	var st string
+	if err := db.QueryRowContext(context.Background(), `SELECT pickup_lat, pickup_lng, status FROM ride_requests WHERE id = ?1 AND rider_user_id = ?2`, requestID, riderUserID).
+		Scan(&pickupLat, &pickupLng, &st); err != nil || st != domain.RequestStatusPending {
+		return
+	}
+	var name string
+	var dropLat, dropLng float64
+	if err := db.QueryRowContext(context.Background(), `SELECT name, lat, lng FROM places WHERE id = ?1`, placeID).Scan(&name, &dropLat, &dropLng); err != nil {
+		send(bot, q.Message.Chat.ID, "Хатолик.")
+		return
+	}
+	estPrice := estimatePrice(context.Background(), db, cfg, pickupLat, pickupLng, dropLat, dropLng)
+	_, _ = db.ExecContext(context.Background(), `
+		UPDATE ride_requests
+		SET drop_lat = ?1, drop_lng = ?2, drop_name = ?3, estimated_price = ?4
+		WHERE id = ?5 AND rider_user_id = ?6 AND status = ?7`,
+		dropLat, dropLng, strings.TrimSpace(name), estPrice, requestID, riderUserID, domain.RequestStatusPending)
+
 	if matchService != nil {
-		if err := matchService.BroadcastRequest(context.Background(), requestID.String()); err != nil {
+		if err := matchService.BroadcastRequest(context.Background(), requestID); err != nil {
 			log.Printf("rider: broadcast request: %v", err)
 		}
 	}
+	send(bot, q.Message.Chat.ID, fmt.Sprintf("✅ Сўров кетди.\n💰 Тахминий нарх: %d", estPrice))
+	sendCancelKeyboard(bot, q.Message.Chat.ID)
+}
 
-	send(bot, chatID, "Сўров кетди. Ҳозир яқин ҳайдовчиларга юбордим.")
+func handleDestinationWebAppData(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchService *services.MatchService, chatID int64, riderUserID int64, raw string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		send(bot, chatID, "Хатолик.")
+		return
+	}
+	var p destinationWebAppPayload
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		send(bot, chatID, "Хатолик. Манзил ўқилмади.")
+		return
+	}
+	if math.IsNaN(p.Lat) || math.IsNaN(p.Lng) || p.Lat == 0 || p.Lng == 0 {
+		send(bot, chatID, "Хатолик. Манзил нотўғри.")
+		return
+	}
+	// Update the latest pending request that doesn't have a destination yet.
+	var requestID string
+	var pickupLat, pickupLng float64
+	err := db.QueryRowContext(context.Background(), `
+		SELECT id, pickup_lat, pickup_lng
+		FROM ride_requests
+		WHERE rider_user_id = ?1 AND status = ?2 AND (drop_lat IS NULL OR drop_lng IS NULL)
+		ORDER BY created_at DESC LIMIT 1`,
+		riderUserID, domain.RequestStatusPending).Scan(&requestID, &pickupLat, &pickupLng)
+	if err != nil || requestID == "" {
+		send(bot, chatID, "Фаол сўров топилмади.")
+		return
+	}
+	estPrice := estimatePrice(context.Background(), db, cfg, pickupLat, pickupLng, p.Lat, p.Lng)
+	name := strings.TrimSpace(p.Name)
+	_, _ = db.ExecContext(context.Background(), `
+		UPDATE ride_requests
+		SET drop_lat = ?1, drop_lng = ?2, drop_name = ?3, estimated_price = ?4
+		WHERE id = ?5 AND rider_user_id = ?6 AND status = ?7`,
+		p.Lat, p.Lng, name, estPrice, requestID, riderUserID, domain.RequestStatusPending)
 
+	if matchService != nil {
+		if err := matchService.BroadcastRequest(context.Background(), requestID); err != nil {
+			log.Printf("rider: broadcast request: %v", err)
+		}
+	}
+	send(bot, chatID, fmt.Sprintf("✅ Сўров кетди.\n💰 Тахминий нарх: %d", estPrice))
+	sendCancelKeyboard(bot, chatID)
+}
+
+func sendCancelKeyboard(bot *tgbotapi.BotAPI, chatID int64) {
 	keyboard := tgbotapi.NewReplyKeyboard(
 		tgbotapi.NewKeyboardButtonRow(
 			tgbotapi.NewKeyboardButton(btnCancel),
@@ -623,6 +761,126 @@ func handleLocation(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 	if _, err := bot.Send(m); err != nil {
 		log.Printf("rider: send: %v", err)
 	}
+}
+
+// destinationKbd is used to include WebApp buttons (tgbotapi lacks web_app in this version).
+type destinationKbd struct {
+	InlineKeyboard [][]destinationBtn `json:"inline_keyboard"`
+}
+type destinationBtn struct {
+	Text         string               `json:"text"`
+	CallbackData string               `json:"callback_data,omitempty"`
+	WebApp       *destinationWebApp   `json:"web_app,omitempty"`
+}
+type destinationWebApp struct {
+	URL string `json:"url"`
+}
+
+func sendDestinationPage(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, chatID int64, riderUserID int64, requestID string, page int) {
+	const (
+		radiusKm   = 10.0
+		perPage    = 5
+	)
+	if page <= 0 {
+		page = 1
+	}
+	var pickupLat, pickupLng float64
+	var st string
+	if err := db.QueryRowContext(context.Background(), `SELECT pickup_lat, pickup_lng, status FROM ride_requests WHERE id = ?1 AND rider_user_id = ?2`, requestID, riderUserID).
+		Scan(&pickupLat, &pickupLng, &st); err != nil || st != domain.RequestStatusPending {
+		send(bot, chatID, "Хатолик.")
+		return
+	}
+	placeSvc := services.NewPlaceService(repositories.NewPlaceRepo(db))
+	nearest, err := placeSvc.NearestWithin(context.Background(), pickupLat, pickupLng, radiusKm)
+	if err != nil {
+		log.Printf("rider: nearest places: %v", err)
+		nearest = nil
+	}
+	// Pagination over nearest slice.
+	total := len(nearest)
+	maxPage := int(math.Ceil(float64(total) / float64(perPage)))
+	if maxPage <= 0 {
+		maxPage = 1
+	}
+	if page > maxPage {
+		page = maxPage
+	}
+	start := (page - 1) * perPage
+	end := start + perPage
+	if start > total {
+		start = total
+	}
+	if end > total {
+		end = total
+	}
+	var rows [][]destinationBtn
+	for _, it := range nearest[start:end] {
+		rows = append(rows, []destinationBtn{{
+			Text:         it.Place.Name,
+			CallbackData: cbDestPlace + requestID + ":" + strconv.FormatInt(it.Place.ID, 10),
+		}})
+	}
+	// Bottom controls: always show Prev/Next and Custom Location.
+	prevPage := page - 1
+	nextPage := page + 1
+	if prevPage < 1 {
+		prevPage = 1
+	}
+	if nextPage > maxPage {
+		nextPage = maxPage
+	}
+	rows = append(rows, []destinationBtn{
+		{Text: "Prev", CallbackData: cbDestPage + requestID + ":" + strconv.Itoa(prevPage)},
+		{Text: "Next", CallbackData: cbDestPage + requestID + ":" + strconv.Itoa(nextPage)},
+	})
+	rows = append(rows, []destinationBtn{
+		{Text: "Custom Location", WebApp: &destinationWebApp{URL: buildPickerURL(cfg, pickupLat, pickupLng)}},
+	})
+	kb := destinationKbd{InlineKeyboard: rows}
+	text := "Манзилни танланг"
+	m := tgbotapi.NewMessage(chatID, text)
+	m.ReplyMarkup = kb
+	if _, err := bot.Send(m); err != nil {
+		log.Printf("rider: send destination page: %v", err)
+	}
+}
+
+func buildPickerURL(cfg *config.Config, pickupLat, pickupLng float64) string {
+	base := strings.TrimSuffix(strings.TrimSpace(os.Getenv("RIDER_PICKER_WEBAPP_URL")), "/")
+	if base == "" {
+		base = strings.TrimSuffix(strings.TrimSpace(os.Getenv("CUSTOM_LOCATION_WEBAPP_URL")), "/")
+	}
+	if base == "" && cfg != nil {
+		base = strings.TrimSuffix(cfg.WebAppURL, "/")
+	}
+	// Do NOT break existing WEBAPP_URL behavior; this is only a best-effort fallback.
+	if base == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s/pick-location.html?mode=drop&pickup_lat=%f&pickup_lng=%f", base, pickupLat, pickupLng)
+}
+
+func estimatePrice(ctx context.Context, db *sql.DB, cfg *config.Config, pickupLat, pickupLng, dropLat, dropLng float64) int64 {
+	distanceKm := utils.HaversineMeters(pickupLat, pickupLng, dropLat, dropLng) / 1000
+	if distanceKm < 0 {
+		distanceKm = 0
+	}
+	// Prefer existing FareService tiered settings when possible (no new pricing system).
+	fareSvc := services.NewFareService(db, cfg)
+	if fareSvc != nil {
+		if v, err := fareSvc.CalculateFare(ctx, distanceKm); err == nil && v > 0 {
+			return v
+		}
+	}
+	// Fallback to config/env defaults (legacy).
+	startingFee := 4000
+	pricePerKm := 1500
+	if cfg != nil {
+		startingFee = cfg.StartingFee
+		pricePerKm = cfg.PricePerKm
+	}
+	return utils.CalculateFareRounded(float64(startingFee), float64(pricePerKm), distanceKm)
 }
 
 func handleCancel(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, tripService *services.TripService, chatID, telegramID int64) {

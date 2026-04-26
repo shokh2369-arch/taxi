@@ -12,6 +12,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"taxi-mvp/internal/accounting"
 	"taxi-mvp/internal/config"
+	"taxi-mvp/internal/repositories"
 	"taxi-mvp/internal/services"
 )
 
@@ -25,6 +26,55 @@ const (
 	btnViewTariff     = "📄 Жорий тарифни кўриш"
 	btnBack           = "◀️ Орқага"
 )
+
+type placeAddState struct {
+	mu        sync.Mutex
+	step      map[int64]string // telegram user id -> "name" | "location"
+	tempName  map[int64]string
+}
+
+func (s *placeAddState) setStep(telegramID int64, step string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.step == nil {
+		s.step = make(map[int64]string)
+	}
+	s.step[telegramID] = step
+}
+
+func (s *placeAddState) getStep(telegramID int64) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st, ok := s.step[telegramID]
+	return st, ok
+}
+
+func (s *placeAddState) setName(telegramID int64, name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.tempName == nil {
+		s.tempName = make(map[int64]string)
+	}
+	s.tempName[telegramID] = name
+}
+
+func (s *placeAddState) getName(telegramID int64) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n, ok := s.tempName[telegramID]
+	return n, ok
+}
+
+func (s *placeAddState) clear(telegramID int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.step != nil {
+		delete(s.step, telegramID)
+	}
+	if s.tempName != nil {
+		delete(s.tempName, telegramID)
+	}
+}
 
 // pendingEdit indicates which fare field the admin is editing (value is the field key).
 type fareEditState struct {
@@ -61,6 +111,8 @@ func Run(ctx context.Context, cfg *config.Config, db *sql.DB, bot *tgbotapi.BotA
 	}
 	log.Printf("admin bot: started @%s (admin_id=%d)", bot.Self.UserName, cfg.AdminID)
 	state := &fareEditState{}
+	placeState := &placeAddState{}
+	placeRepo := repositories.NewPlaceRepo(db)
 	updates := bot.GetUpdatesChan(tgbotapi.NewUpdate(0))
 	for {
 		select {
@@ -70,15 +122,15 @@ func Run(ctx context.Context, cfg *config.Config, db *sql.DB, bot *tgbotapi.BotA
 			if !ok {
 				return nil
 			}
-			handleUpdate(bot, cfg, db, fareSvc, driverBot, state, update)
+			handleUpdate(bot, cfg, db, fareSvc, driverBot, state, placeState, placeRepo, update)
 		}
 	}
 }
 
-func handleUpdate(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB, fareSvc *services.FareService, driverBot *tgbotapi.BotAPI, state *fareEditState, update tgbotapi.Update) {
-	// Handle callback queries (approve/reject driver verification) first.
+func handleUpdate(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB, fareSvc *services.FareService, driverBot *tgbotapi.BotAPI, state *fareEditState, placeState *placeAddState, placeRepo *repositories.PlaceRepo, update tgbotapi.Update) {
+	// Handle callback queries (approve/reject driver verification, delete place) first.
 	if update.CallbackQuery != nil {
-		handleApprovalCallback(bot, cfg, db, driverBot, update.CallbackQuery)
+		handleCallback(bot, cfg, db, driverBot, update.CallbackQuery, placeRepo)
 		return
 	}
 	var chatID int64
@@ -97,6 +149,33 @@ func handleUpdate(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB, fareSvc 
 		return
 	}
 
+	// Place add flow: location step.
+	if update.Message != nil && update.Message.Location != nil {
+		if st, ok := placeState.getStep(fromID); ok && st == "location" {
+			name, _ := placeState.getName(fromID)
+			name = strings.TrimSpace(name)
+			if name == "" {
+				placeState.clear(fromID)
+				sendMessage(bot, chatID, "Хатолик. /add_place ни қайта ишга туширинг.")
+				return
+			}
+			loc := update.Message.Location
+			if loc == nil {
+				return
+			}
+			if _, err := placeRepo.Create(context.Background(), name, loc.Latitude, loc.Longitude); err != nil {
+				log.Printf("admin bot: create place: %v", err)
+				placeState.clear(fromID)
+				sendMessage(bot, chatID, "Хатолик. Сақланмади.")
+				return
+			}
+			placeState.clear(fromID)
+			sendMessage(bot, chatID, "✅ Сақланди.")
+			sendMainMenu(bot, chatID)
+			return
+		}
+	}
+
 	// Check if we are waiting for a numeric value for a field
 	if update.Message != nil && update.Message.Text != "" {
 		if field, ok := state.get(fromID); ok {
@@ -110,8 +189,22 @@ func handleUpdate(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB, fareSvc 
 	}
 	text := strings.TrimSpace(update.Message.Text)
 
+	// Place add flow: name step.
+	if st, ok := placeState.getStep(fromID); ok && st == "name" {
+		name := strings.TrimSpace(text)
+		if name == "" {
+			sendMessage(bot, chatID, "Илтимос, жой номини киритинг.")
+			return
+		}
+		placeState.setName(fromID, name)
+		placeState.setStep(fromID, "location")
+		sendMessage(bot, chatID, "Энди локацияни юборинг (📍 Location).")
+		return
+	}
+
 	switch text {
 	case "/start":
+		placeState.clear(fromID)
 		sendMainMenu(bot, chatID)
 	case btnFareMenu:
 		sendFareSubmenu(bot, chatID)
@@ -135,11 +228,32 @@ func handleUpdate(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB, fareSvc 
 	case btnBack:
 		state.clear(fromID)
 		sendMainMenu(bot, chatID)
+	case "/add_place":
+		state.clear(fromID)
+		placeState.clear(fromID)
+		placeState.setStep(fromID, "name")
+		sendMessage(bot, chatID, "Жой номини киритинг:")
+	case "/delete_place":
+		state.clear(fromID)
+		placeState.clear(fromID)
+		sendPlaceDeleteMenu(bot, chatID, placeRepo)
 	default:
 		// If not in edit state, show main menu
 		state.clear(fromID)
+		placeState.clear(fromID)
 		sendMainMenu(bot, chatID)
 	}
+}
+
+func handleCallback(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB, driverBot *tgbotapi.BotAPI, q *tgbotapi.CallbackQuery, placeRepo *repositories.PlaceRepo) {
+	if q == nil {
+		return
+	}
+	if strings.HasPrefix(q.Data, "place_del:") {
+		handlePlaceDeleteCallback(bot, cfg, q, placeRepo)
+		return
+	}
+	handleApprovalCallback(bot, cfg, db, driverBot, q)
 }
 
 func handleApprovalCallback(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB, driverBot *tgbotapi.BotAPI, q *tgbotapi.CallbackQuery) {
@@ -244,6 +358,57 @@ func handleApprovalCallback(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB
 		clearMarkup := tgbotapi.NewEditMessageReplyMarkup(q.Message.Chat.ID, q.Message.MessageID, tgbotapi.InlineKeyboardMarkup{})
 		_, _ = bot.Request(clearMarkup)
 	}
+}
+
+func sendPlaceDeleteMenu(bot *tgbotapi.BotAPI, chatID int64, placeRepo *repositories.PlaceRepo) {
+	if bot == nil || placeRepo == nil {
+		return
+	}
+	ps, err := placeRepo.List(context.Background())
+	if err != nil {
+		sendMessage(bot, chatID, "Хатолик.")
+		return
+	}
+	if len(ps) == 0 {
+		sendMessage(bot, chatID, "Жойлар рўйхати бўш.")
+		return
+	}
+	var rows [][]tgbotapi.InlineKeyboardButton
+	for _, p := range ps {
+		idStr := strconv.FormatInt(p.ID, 10)
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(p.Name, "place_del:"+idStr),
+		))
+	}
+	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	m := tgbotapi.NewMessage(chatID, "Ўчириш учун жойни танланг:")
+	m.ReplyMarkup = kb
+	if _, err := bot.Send(m); err != nil {
+		log.Printf("admin bot: send delete place menu: %v", err)
+	}
+}
+
+func handlePlaceDeleteCallback(bot *tgbotapi.BotAPI, cfg *config.Config, q *tgbotapi.CallbackQuery, placeRepo *repositories.PlaceRepo) {
+	// ACK quickly.
+	if bot != nil && q != nil && q.ID != "" {
+		_, _ = bot.Request(tgbotapi.NewCallback(q.ID, ""))
+	}
+	if q == nil || q.From == nil || cfg == nil || q.From.ID != cfg.AdminID || placeRepo == nil {
+		return
+	}
+	idStr := strings.TrimPrefix(q.Data, "place_del:")
+	id, err := strconv.ParseInt(strings.TrimSpace(idStr), 10, 64)
+	if err != nil || id <= 0 {
+		return
+	}
+	if err := placeRepo.Delete(context.Background(), id); err != nil {
+		log.Printf("admin bot: delete place id=%d: %v", id, err)
+		sendMessage(bot, q.Message.Chat.ID, "Хатолик. Ўчирилмади.")
+		return
+	}
+	sendMessage(bot, q.Message.Chat.ID, "✅ Ўчирилди.")
+	// Refresh list (still safe even if message was deleted).
+	sendPlaceDeleteMenu(bot, q.Message.Chat.ID, placeRepo)
 }
 
 func handleNumericInput(bot *tgbotapi.BotAPI, cfg *config.Config, fareSvc *services.FareService, state *fareEditState, chatID, adminTelegramID int64, text, field string) {
