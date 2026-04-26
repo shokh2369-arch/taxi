@@ -929,7 +929,7 @@ func sendDestinationPage(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, c
 		{Text: "Next", CallbackData: cbDestPage + requestID + ":" + strconv.Itoa(nextPage)},
 	})
 	rows = append(rows, []destinationBtn{
-		{Text: "Custom Location", WebApp: &destinationWebApp{URL: buildPickerURL(cfg, pickupLat, pickupLng)}},
+		{Text: "Custom Location", WebApp: &destinationWebApp{URL: buildDestinationPickerURL(cfg, pickupLat, pickupLng, requestID)}},
 	})
 	kb := destinationKbd{InlineKeyboard: rows}
 	text := "Манзилни танланг"
@@ -940,7 +940,7 @@ func sendDestinationPage(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, c
 	}
 }
 
-func buildPickerURL(cfg *config.Config, pickupLat, pickupLng float64) string {
+func buildDestinationPickerURL(cfg *config.Config, pickupLat, pickupLng float64, requestID string) string {
 	base := strings.TrimSuffix(strings.TrimSpace(os.Getenv("RIDER_PICKER_WEBAPP_URL")), "/")
 	if base == "" {
 		base = strings.TrimSuffix(strings.TrimSpace(os.Getenv("CUSTOM_LOCATION_WEBAPP_URL")), "/")
@@ -952,7 +952,7 @@ func buildPickerURL(cfg *config.Config, pickupLat, pickupLng float64) string {
 	if base == "" {
 		return ""
 	}
-	return fmt.Sprintf("%s/pick-location.html?mode=drop&pickup_lat=%f&pickup_lng=%f", base, pickupLat, pickupLng)
+	return fmt.Sprintf("%s/pick-destination.html?mode=drop&request_id=%s&pickup_lat=%f&pickup_lng=%f", base, requestID, pickupLat, pickupLng)
 }
 
 func estimatePrice(ctx context.Context, db *sql.DB, cfg *config.Config, pickupLat, pickupLng, dropLat, dropLng float64) int64 {
