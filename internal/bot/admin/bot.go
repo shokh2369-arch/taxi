@@ -25,6 +25,7 @@ const (
 	btnCommissionPct  = "📊 Комиссия %"
 	btnViewTariff     = "📄 Жорий тарифни кўриш"
 	btnBack           = "◀️ Орқага"
+	btnAddPlace       = "📍 Lokatsiya qoshish"
 )
 
 type placeAddState struct {
@@ -208,6 +209,11 @@ func handleUpdate(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB, fareSvc 
 		sendMainMenu(bot, chatID)
 	case btnFareMenu:
 		sendFareSubmenu(bot, chatID)
+	case btnAddPlace:
+		state.clear(fromID)
+		placeState.clear(fromID)
+		placeState.setStep(fromID, "name")
+		sendMessage(bot, chatID, "Жой номини киритинг:")
 	case btnBaseFare:
 		state.set(fromID, "base_fare")
 		sendMessage(bot, chatID, "Янги старт нархини киритинг (сўм):")
@@ -456,7 +462,10 @@ func handleNumericInput(bot *tgbotapi.BotAPI, cfg *config.Config, fareSvc *servi
 
 func sendMainMenu(bot *tgbotapi.BotAPI, chatID int64) {
 	kb := tgbotapi.NewReplyKeyboard(
-		tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton(btnFareMenu)),
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton(btnFareMenu),
+			tgbotapi.NewKeyboardButton(btnAddPlace),
+		),
 	)
 	kb.ResizeKeyboard = true
 	msg := tgbotapi.NewMessage(chatID, "Админ панели. Қуйидаги тугмалардан фойдаланинг:")
