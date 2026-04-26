@@ -808,6 +808,12 @@ func handleRequestChangeCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.C
 	if riderUserID == 0 || requestID == "" {
 		return
 	}
+	// Allow changing destination only until confirmed: clear previous destination + estimate.
+	_, _ = db.ExecContext(context.Background(), `
+		UPDATE ride_requests
+		SET drop_lat = NULL, drop_lng = NULL, drop_name = NULL, estimated_price = 0, destination_confirmed = 0
+		WHERE id = ?1 AND rider_user_id = ?2 AND status = ?3`,
+		requestID, riderUserID, domain.RequestStatusPending)
 	sendDestinationPage(bot, db, cfg, q.Message.Chat.ID, riderUserID, requestID, 1)
 	_ = matchService
 }
@@ -834,6 +840,11 @@ func handleRequestConfirmCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.
 		send(bot, q.Message.Chat.ID, "Хатолик. Қайта уриниб кўринг.")
 		return
 	}
+	// Lock destination so it cannot be changed after confirmation.
+	_, _ = db.ExecContext(context.Background(), `
+		UPDATE ride_requests SET destination_confirmed = 1
+		WHERE id = ?1 AND rider_user_id = ?2 AND status = ?3`,
+		requestID, riderUserID, domain.RequestStatusPending)
 	if matchService != nil {
 		if err := matchService.BroadcastRequest(context.Background(), requestID); err != nil {
 			log.Printf("rider: broadcast request: %v", err)

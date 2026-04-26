@@ -102,8 +102,14 @@ func RiderSetDestination(db *sql.DB, cfg *config.Config, riderBot *tgbotapi.BotA
 		// NOTE: We intentionally do NOT block destination selection when expires_at has passed.
 		// Render free instances can sleep and the Mini App can open late; once the rider confirms destination,
 		// we refresh expires_at from "now" so dispatch/confirm remains race-safe.
-		if dropLat.Valid && dropLng.Valid {
-			c.JSON(http.StatusConflict, gin.H{"ok": false, "error": "destination already set"})
+		// Allow overwriting destination until rider confirms the estimate.
+		var confirmed int
+		if err := db.QueryRowContext(ctx, `SELECT COALESCE(destination_confirmed, 0) FROM ride_requests WHERE id = ?1`, body.RequestID).Scan(&confirmed); err != nil {
+			// Backward compatible: column may not exist yet.
+			confirmed = 0
+		}
+		if confirmed == 1 {
+			c.JSON(http.StatusConflict, gin.H{"ok": false, "error": "destination already confirmed"})
 			return
 		}
 
@@ -126,12 +132,21 @@ func RiderSetDestination(db *sql.DB, cfg *config.Config, riderBot *tgbotapi.BotA
 		}
 
 		// Persist destination and estimate. If schema is not migrated yet, fail fast with a clear error.
+		// Prefer update with destination_confirmed reset; fall back if column missing.
 		_, err = db.ExecContext(ctx, `
 			UPDATE ride_requests
-			SET drop_lat = ?1, drop_lng = ?2, drop_name = ?3, estimated_price = ?4, expires_at = datetime('now', ?5)
+			SET drop_lat = ?1, drop_lng = ?2, drop_name = ?3, estimated_price = ?4, expires_at = datetime('now', ?5),
+			    destination_confirmed = 0
 			WHERE id = ?6 AND rider_user_id = ?7 AND status = ?8
-			  AND (drop_lat IS NULL OR drop_lng IS NULL)`,
+			  AND COALESCE(destination_confirmed, 0) = 0`,
 			body.Lat, body.Lng, body.Name, est, ttl, body.RequestID, riderUserID, domain.RequestStatusPending)
+		if err != nil && isMissingColumnErr(err) {
+			_, err = db.ExecContext(ctx, `
+				UPDATE ride_requests
+				SET drop_lat = ?1, drop_lng = ?2, drop_name = ?3, estimated_price = ?4, expires_at = datetime('now', ?5)
+				WHERE id = ?6 AND rider_user_id = ?7 AND status = ?8`,
+				body.Lat, body.Lng, body.Name, est, ttl, body.RequestID, riderUserID, domain.RequestStatusPending)
+		}
 		if err != nil {
 			if isMissingColumnErr(err) {
 				c.JSON(http.StatusServiceUnavailable, gin.H{"ok": false, "error": "db migration required"})
