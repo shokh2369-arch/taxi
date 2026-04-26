@@ -56,6 +56,8 @@ func Run(ctx context.Context, cfg *config.Config, db *sql.DB, bot *tgbotapi.BotA
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
+	// Be explicit: WebAppData arrives as a Message update.
+	u.AllowedUpdates = []string{"message", "callback_query"}
 	updates := bot.GetUpdatesChan(u)
 
 	notified := &notifiedState{}
@@ -131,6 +133,12 @@ func handleUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 	msg := update.Message
 	chatID := msg.Chat.ID
 	telegramID := msg.From.ID
+
+	// Debug (low-noise): WebApp confirm sends a "service-like" message with empty text.
+	// Log only when text is empty and there's no other common payload, so we can confirm what's arriving.
+	if strings.TrimSpace(msg.Text) == "" && msg.Location == nil && msg.Contact == nil && msg.WebAppData == nil {
+		log.Printf("rider: empty_message chat_id=%d from_id=%d msg_id=%d", chatID, telegramID, msg.MessageID)
+	}
 
 	if msg.Command() == "start" {
 		var referredBy *string
