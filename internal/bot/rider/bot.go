@@ -165,12 +165,22 @@ func handleUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 	}
 
 	// Telegram Mini App web_app_data (custom destination picker).
-	if msg.WebAppData != nil && strings.TrimSpace(msg.WebAppData.Data) != "" {
+	if msg.WebAppData != nil {
+		raw := ""
+		if msg.WebAppData != nil {
+			raw = strings.TrimSpace(msg.WebAppData.Data)
+		}
+		log.Printf("rider: web_app_data chat_id=%d from_id=%d data_len=%d", chatID, telegramID, len(raw))
+		if raw == "" {
+			// Still return early so WebAppData messages don't fall through into other flows.
+			send(bot, chatID, "Хатолик. Манзил маълумоти келмади.")
+			return
+		}
 		if riderUserID == 0 {
 			send(bot, chatID, "Аввал /start босинг.")
 			return
 		}
-		handleDestinationWebAppData(bot, db, cfg, matchService, chatID, riderUserID, msg.WebAppData.Data)
+		handleDestinationWebAppData(bot, db, cfg, matchService, chatID, riderUserID, raw)
 		return
 	}
 
