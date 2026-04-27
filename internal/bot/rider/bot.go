@@ -737,7 +737,7 @@ func handleDestinationPlaceCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *confi
 	_, _ = db.ExecContext(context.Background(), `
 		UPDATE ride_requests
 		SET drop_lat = ?1, drop_lng = ?2, drop_name = ?3, estimated_price = ?4, expires_at = datetime('now', ?5)
-		WHERE id = ?5 AND rider_user_id = ?6 AND status = ?7`,
+		WHERE id = ?6 AND rider_user_id = ?7 AND status = ?8`,
 		dropLat, dropLng, strings.TrimSpace(name), estPrice, ttl, requestID, riderUserID, domain.RequestStatusPending)
 
 	sendRiderEstimateConfirm(bot, q.Message.Chat.ID, requestID, estPrice)
@@ -780,7 +780,7 @@ func handleDestinationWebAppData(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.C
 	_, _ = db.ExecContext(context.Background(), `
 		UPDATE ride_requests
 		SET drop_lat = ?1, drop_lng = ?2, drop_name = ?3, estimated_price = ?4, expires_at = datetime('now', ?5)
-		WHERE id = ?5 AND rider_user_id = ?6 AND status = ?7`,
+		WHERE id = ?6 AND rider_user_id = ?7 AND status = ?8`,
 		p.Lat, p.Lng, name, estPrice, ttl, requestID, riderUserID, domain.RequestStatusPending)
 
 	sendRiderEstimateConfirm(bot, chatID, requestID, estPrice)
