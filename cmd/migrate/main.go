@@ -13,6 +13,7 @@ import (
 	_ "github.com/tursodatabase/libsql-client-go/libsql"
 	"github.com/pressly/goose/v3"
 
+	_ "taxi-mvp/db/migrations"
 	"taxi-mvp/internal/db/legalrepair"
 	"taxi-mvp/internal/db/legalfingerrepair"
 	"taxi-mvp/internal/db/driverapprepair"
