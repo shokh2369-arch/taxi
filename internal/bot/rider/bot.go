@@ -680,7 +680,7 @@ func handleLocation(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 	}
 
 	// New flow: rider must choose destination before dispatch.
-	sendDestinationPage(bot, db, cfg, chatID, userID, requestID.String(), 1)
+	sendDestinationPage(bot, db, cfg, chatID, userID, requestID.String(), 1, 0)
 }
 
 func handleDestinationPageCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, q *tgbotapi.CallbackQuery, matchService *services.MatchService) {
@@ -698,7 +698,10 @@ func handleDestinationPageCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config
 	if riderUserID == 0 {
 		return
 	}
-	sendDestinationPage(bot, db, cfg, q.Message.Chat.ID, riderUserID, requestID, page)
+	if q.Message == nil {
+		return
+	}
+	sendDestinationPage(bot, db, cfg, q.Message.Chat.ID, riderUserID, requestID, page, q.Message.MessageID)
 	_ = matchService
 }
 
@@ -817,7 +820,7 @@ func handleRequestChangeCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.C
 		SET drop_lat = NULL, drop_lng = NULL, drop_name = NULL, estimated_price = 0, destination_confirmed = 0
 		WHERE id = ?1 AND rider_user_id = ?2 AND status = ?3`,
 		requestID, riderUserID, domain.RequestStatusPending)
-	sendDestinationPage(bot, db, cfg, q.Message.Chat.ID, riderUserID, requestID, 1)
+	sendDestinationPage(bot, db, cfg, q.Message.Chat.ID, riderUserID, requestID, 1, 0)
 	_ = matchService
 }
 
@@ -884,10 +887,13 @@ type destinationWebApp struct {
 	URL string `json:"url"`
 }
 
-func sendDestinationPage(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, chatID int64, riderUserID int64, requestID string, page int) {
+// sendDestinationPage shows the destination picker. When editMessageID > 0 the
+// existing inline-keyboard message is updated (Prev/Next pagination) instead of
+// sending a new chat message.
+func sendDestinationPage(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, chatID int64, riderUserID int64, requestID string, page int, editMessageID int) {
 	const (
-		radiusKm   = 10.0
-		perPage    = 5
+		radiusKm = 10.0
+		perPage  = 5
 	)
 	if page <= 0 {
 		page = 1
@@ -947,11 +953,39 @@ func sendDestinationPage(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, c
 	})
 	kb := destinationKbd{InlineKeyboard: rows}
 	text := "Манзилни танланг:"
+	if editMessageID > 0 {
+		if err := editDestinationMessage(bot, chatID, editMessageID, text, kb); err != nil && !isMessageNotModifiedErr(err) {
+			log.Printf("rider: edit destination page: %v", err)
+		}
+		return
+	}
 	m := tgbotapi.NewMessage(chatID, text)
 	m.ReplyMarkup = kb
 	if _, err := bot.Send(m); err != nil {
 		log.Printf("rider: send destination page: %v", err)
 	}
+}
+
+func editDestinationMessage(bot *tgbotapi.BotAPI, chatID int64, messageID int, text string, kb destinationKbd) error {
+	kbJSON, err := json.Marshal(kb)
+	if err != nil {
+		return err
+	}
+	params := tgbotapi.Params{}
+	params.AddNonZero64("chat_id", chatID)
+	params.AddNonZero("message_id", messageID)
+	params.AddNonEmpty("text", text)
+	params.AddNonEmpty("reply_markup", string(kbJSON))
+	_, err = bot.MakeRequest("editMessageText", params)
+	return err
+}
+
+func isMessageNotModifiedErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "message is not modified")
 }
 
 func buildDestinationPickerURL(cfg *config.Config, pickupLat, pickupLng float64, requestID string) string {
