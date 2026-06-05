@@ -76,7 +76,13 @@ func RunBroadcastFanoutWorker(ctx context.Context, db *sql.DB, riderBot *tgbotap
 					log.Printf("broadcast fanout: 429 retry_after=%ds broadcast_id=%s chat_id=%d", retryAfter, chosen.BroadcastID, chosen.ChatID)
 					continue
 				}
-				// Non-429: backoff this chat briefly (blocked bot, deactivated user, etc.).
+				if isTelegramDeliveryPermanentErr(err) {
+					markBroadcastDeliverySkipped(ctx, db, chosen.BroadcastID, chosen.ChatID)
+					markUserTelegramBlocked(ctx, db, chosen.ChatID)
+					log.Printf("broadcast fanout: skip unreachable chat_id=%d broadcast_id=%s: %v", chosen.ChatID, chosen.BroadcastID, err)
+					continue
+				}
+				// Transient errors: backoff this chat briefly and retry later.
 				perChatNext[chosen.ChatID] = time.Now().Add(10 * time.Second)
 				log.Printf("broadcast fanout: send broadcast_id=%s chat_id=%d: %v", chosen.BroadcastID, chosen.ChatID, err)
 				continue
@@ -111,6 +117,7 @@ func pickBroadcastCandidates(ctx context.Context, db *sql.DB, limit int) ([]broa
 			SELECT b.id AS broadcast_id, u.telegram_id AS chat_id
 			FROM broadcast_posts b
 			JOIN users u ON u.role = 'rider' AND u.telegram_id != 0
+			       AND COALESCE(u.telegram_bot_blocked, 0) = 0
 			LEFT JOIN broadcast_telegram_deliveries d
 			       ON d.broadcast_id = b.id AND d.chat_id = u.telegram_id
 			WHERE b.status = 'published'
@@ -183,6 +190,40 @@ func sendBroadcastCandidate(bot *tgbotapi.BotAPI, c broadcastCandidate) error {
 }
 
 var retryAfterRe = regexp.MustCompile(`(?i)\bretry after (\d+)\b`)
+
+func markBroadcastDeliverySkipped(ctx context.Context, db *sql.DB, broadcastID string, chatID int64) {
+	if db == nil || strings.TrimSpace(broadcastID) == "" || chatID == 0 {
+		return
+	}
+	_, _ = db.ExecContext(ctx, `
+		INSERT OR IGNORE INTO broadcast_telegram_deliveries (broadcast_id, chat_id, delivered_at)
+		VALUES (?1, ?2, datetime('now'))`, broadcastID, chatID)
+}
+
+func markUserTelegramBlocked(ctx context.Context, db *sql.DB, chatID int64) {
+	if db == nil || chatID == 0 {
+		return
+	}
+	_, _ = db.ExecContext(ctx, `
+		UPDATE users SET telegram_bot_blocked = 1 WHERE telegram_id = ?1`, chatID)
+}
+
+// isTelegramDeliveryPermanentErr reports Telegram send failures that will not
+// succeed on retry (blocked bot, deactivated account, missing chat).
+func isTelegramDeliveryPermanentErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	var tgErr tgbotapi.Error
+	if errors.As(err, &tgErr) && tgErr.Code == 403 {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "bot was blocked by the user") ||
+		strings.Contains(msg, "user is deactivated") ||
+		strings.Contains(msg, "chat not found") ||
+		strings.Contains(msg, "forbidden")
+}
 
 func telegramRetryAfterSeconds(err error) int {
 	if err == nil {

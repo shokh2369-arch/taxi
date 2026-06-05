@@ -410,6 +410,8 @@ func handleStart(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64, telegramID int6
 		send(bot, chatID, "Хатолик. Қайта уриниб кўринг.")
 		return
 	}
+	// User unblocked the bot and returned; allow future Telegram broadcasts again.
+	_, _ = db.ExecContext(ctx, `UPDATE users SET telegram_bot_blocked = 0 WHERE telegram_id = ?1`, telegramID)
 
 	if ensureRiderPhone(bot, db, chatID, telegramID) {
 		return
