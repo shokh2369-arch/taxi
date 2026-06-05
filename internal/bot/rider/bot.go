@@ -42,6 +42,10 @@ const (
 	cbDestPlace  = "dest_place:"
 	cbReqConfirm = "req_confirm:"
 	cbReqChange  = "req_change:"
+
+	btnDestPrev   = "◀️ Аввалги"
+	btnDestNext   = "Кейинги ▶️"
+	btnDestCustom = "📍 Бошқа манзил"
 )
 
 type destinationWebAppPayload struct {
@@ -676,7 +680,6 @@ func handleLocation(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 	}
 
 	// New flow: rider must choose destination before dispatch.
-	send(bot, chatID, "Манзилни танланг:")
 	sendDestinationPage(bot, db, cfg, chatID, userID, requestID.String(), 1)
 }
 
@@ -936,14 +939,14 @@ func sendDestinationPage(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, c
 		nextPage = maxPage
 	}
 	rows = append(rows, []destinationBtn{
-		{Text: "Prev", CallbackData: cbDestPage + requestID + ":" + strconv.Itoa(prevPage)},
-		{Text: "Next", CallbackData: cbDestPage + requestID + ":" + strconv.Itoa(nextPage)},
+		{Text: btnDestPrev, CallbackData: cbDestPage + requestID + ":" + strconv.Itoa(prevPage)},
+		{Text: btnDestNext, CallbackData: cbDestPage + requestID + ":" + strconv.Itoa(nextPage)},
 	})
 	rows = append(rows, []destinationBtn{
-		{Text: "Custom Location", WebApp: &destinationWebApp{URL: buildDestinationPickerURL(cfg, pickupLat, pickupLng, requestID)}},
+		{Text: btnDestCustom, WebApp: &destinationWebApp{URL: buildDestinationPickerURL(cfg, pickupLat, pickupLng, requestID)}},
 	})
 	kb := destinationKbd{InlineKeyboard: rows}
-	text := "Манзилни танланг"
+	text := "Манзилни танланг:"
 	m := tgbotapi.NewMessage(chatID, text)
 	m.ReplyMarkup = kb
 	if _, err := bot.Send(m); err != nil {
