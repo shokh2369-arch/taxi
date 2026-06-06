@@ -57,7 +57,12 @@ func RunBroadcastFanoutWorker(ctx context.Context, db *sql.DB, riderBot *tgbotap
 				if next, ok := perChatNext[ch]; ok && next.After(now) {
 					continue
 				}
-				if strings.TrimSpace(cands[i].Body) == "" || strings.TrimSpace(cands[i].BroadcastID) == "" {
+				if strings.TrimSpace(cands[i].BroadcastID) == "" {
+					continue
+				}
+				hasBody := strings.TrimSpace(cands[i].Body) != ""
+				hasMedia := cands[i].MediaURL.Valid && strings.TrimSpace(cands[i].MediaURL.String) != ""
+				if !hasBody && !hasMedia {
 					continue
 				}
 				chosen = &cands[i]
@@ -121,7 +126,10 @@ func pickBroadcastCandidates(ctx context.Context, db *sql.DB, limit int) ([]broa
 			LEFT JOIN broadcast_telegram_deliveries d
 			       ON d.broadcast_id = b.id AND d.chat_id = u.telegram_id
 			WHERE b.status = 'published'
-			  AND COALESCE(TRIM(b.body), '') != ''
+			  AND (
+			    COALESCE(TRIM(b.body), '') != ''
+			    OR COALESCE(TRIM(b.cloudinary_secure_url), '') != ''
+			  )
 			  AND COALESCE(b.audience, 'all_riders') = 'all_riders'
 			  AND d.broadcast_id IS NULL
 			ORDER BY datetime(b.created_at) DESC, b.id DESC, u.id ASC
@@ -160,7 +168,11 @@ func sendBroadcastCandidate(bot *tgbotapi.BotAPI, c broadcastCandidate) error {
 		return nil
 	}
 	body := strings.TrimSpace(c.Body)
-	if body == "" || strings.TrimSpace(c.BroadcastID) == "" {
+	if strings.TrimSpace(c.BroadcastID) == "" {
+		return nil
+	}
+	hasMedia := c.MediaURL.Valid && strings.TrimSpace(c.MediaURL.String) != ""
+	if body == "" && !hasMedia {
 		return nil
 	}
 
@@ -169,15 +181,19 @@ func sendBroadcastCandidate(bot *tgbotapi.BotAPI, c broadcastCandidate) error {
 	caption := truncateRunes(body, captionMaxRunes)
 
 	mt := strings.ToLower(strings.TrimSpace(c.MediaType.String))
-	if c.MediaURL.Valid && strings.TrimSpace(c.MediaURL.String) != "" && mt == "image" {
+	if hasMedia && mt == "image" {
 		msg := tgbotapi.NewPhoto(c.ChatID, tgbotapi.FileURL(strings.TrimSpace(c.MediaURL.String)))
-		msg.Caption = caption
+		if caption != "" {
+			msg.Caption = caption
+		}
 		_, err := bot.Send(msg)
 		return err
 	}
-	if c.MediaURL.Valid && strings.TrimSpace(c.MediaURL.String) != "" && mt == "video" {
+	if hasMedia && mt == "video" {
 		msg := tgbotapi.NewVideo(c.ChatID, tgbotapi.FileURL(strings.TrimSpace(c.MediaURL.String)))
-		msg.Caption = caption
+		if caption != "" {
+			msg.Caption = caption
+		}
 		_, err := bot.Send(msg)
 		return err
 	}

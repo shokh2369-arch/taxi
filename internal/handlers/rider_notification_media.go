@@ -64,12 +64,14 @@ func riderNotificationItemJSON(id, title, body, createdAt string, media *riderNo
 	contentType := riderNotificationContentType(media)
 	out := map[string]any{
 		"id":           id,
-		"body":         body,
 		"type":         contentType,
 		"content_type": contentType,
 		"contentType":  contentType,
 		"created_at":   createdAt,
 		"createdAt":    createdAt,
+	}
+	if strings.TrimSpace(body) != "" {
+		out["body"] = body
 	}
 	if title != "" {
 		out["title"] = title

@@ -28,7 +28,8 @@ func CreateBroadcastPost(ctx context.Context, db *sql.DB, in BroadcastCreateInpu
 		return "", fmt.Errorf("broadcast: nil db")
 	}
 	body := strings.TrimSpace(in.Body)
-	if body == "" {
+	hasMedia := strings.TrimSpace(in.CloudinarySecureURL) != ""
+	if body == "" && !hasMedia {
 		return "", fmt.Errorf("broadcast: empty body")
 	}
 	id := strings.TrimSpace(in.ID)

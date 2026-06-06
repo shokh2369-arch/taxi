@@ -333,7 +333,7 @@ func handlePublishMessage(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB, 
 
 	// Determine content + optional media file_id.
 	body := strings.TrimSpace(msg.Text)
-	fileID, cloudResourceType, uploadFilename, defaultBody := detectPublishMedia(msg)
+	fileID, cloudResourceType, uploadFilename := detectPublishMedia(msg)
 	if msg.Document != nil && strings.TrimSpace(msg.Document.FileID) != "" && fileID == "" {
 		sendMessage(bot, chatID, "Фақат расм ёки видео қабул қилинади.")
 		return false
@@ -344,14 +344,9 @@ func handlePublishMessage(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB, 
 		body = strings.TrimSpace(msg.Caption)
 	}
 
-	if strings.TrimSpace(body) == "" {
-		if fileID != "" {
-			// Backward-compat requirement: body always present.
-			body = defaultBody
-		} else {
-			sendMessage(bot, chatID, "Илтимос, матн юборинг.")
-			return false
-		}
+	if strings.TrimSpace(body) == "" && fileID == "" {
+		sendMessage(bot, chatID, "Илтимос, матн юборинг.")
+		return false
 	}
 
 	var (
@@ -665,15 +660,15 @@ func sendMainMenu(bot *tgbotapi.BotAPI, chatID int64) {
 }
 
 // detectPublishMedia returns Telegram file_id and Cloudinary upload hints for photo/video posts.
-func detectPublishMedia(msg *tgbotapi.Message) (fileID, resourceType, uploadFilename, defaultBody string) {
+func detectPublishMedia(msg *tgbotapi.Message) (fileID, resourceType, uploadFilename string) {
 	if msg == nil {
-		return "", "", "", ""
+		return "", "", ""
 	}
 	if len(msg.Photo) > 0 {
-		return msg.Photo[len(msg.Photo)-1].FileID, "image", "upload.jpg", "Фото"
+		return msg.Photo[len(msg.Photo)-1].FileID, "image", "upload.jpg"
 	}
 	if msg.Video != nil && strings.TrimSpace(msg.Video.FileID) != "" {
-		return msg.Video.FileID, "video", "upload.mp4", "Видео"
+		return msg.Video.FileID, "video", "upload.mp4"
 	}
 	if msg.Document != nil && strings.TrimSpace(msg.Document.FileID) != "" {
 		mime := strings.ToLower(strings.TrimSpace(msg.Document.MimeType))
@@ -683,15 +678,15 @@ func detectPublishMedia(msg *tgbotapi.Message) (fileID, resourceType, uploadFile
 			if fn == "" {
 				fn = "upload.jpg"
 			}
-			return msg.Document.FileID, "image", fn, "Фото"
+			return msg.Document.FileID, "image", fn
 		case strings.HasPrefix(mime, "video/"):
 			if fn == "" {
 				fn = "upload.mp4"
 			}
-			return msg.Document.FileID, "video", fn, "Видео"
+			return msg.Document.FileID, "video", fn
 		}
 	}
-	return "", "", "", ""
+	return "", "", ""
 }
 
 func sendPublishPrompt(bot *tgbotapi.BotAPI, chatID int64) {

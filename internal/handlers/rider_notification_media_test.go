@@ -15,6 +15,19 @@ func TestRiderNotificationItemJSON_Text(t *testing.T) {
 	}
 }
 
+func TestRiderNotificationItemJSON_ImageWithoutBody(t *testing.T) {
+	out := riderNotificationItemJSON("b1", "", "", "2026-05-10T12:00:00Z", &riderNotificationMedia{
+		Type: "image",
+		URL:  "https://res.cloudinary.com/demo/image.jpg",
+	})
+	if _, ok := out["body"]; ok {
+		t.Fatalf("body should be omitted when empty: %#v", out)
+	}
+	if out["type"] != BroadcastContentImage {
+		t.Fatalf("type=%v", out["type"])
+	}
+}
+
 func TestRiderNotificationItemJSON_Image(t *testing.T) {
 	out := riderNotificationItemJSON("b1", "Title", "Hello", "2026-05-10T12:00:00Z", &riderNotificationMedia{
 		Type: "image",

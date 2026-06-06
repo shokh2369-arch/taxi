@@ -88,7 +88,10 @@ func riderAppListNotifications(deps RiderNotificationDeps) gin.HandlerFunc {
 				FROM broadcast_posts b
 				WHERE b.status = 'published'
 				  AND COALESCE(b.audience, 'all_riders') = 'all_riders'
-				  AND TRIM(b.body) != ''
+				  AND (
+				    TRIM(b.body) != ''
+				    OR COALESCE(TRIM(b.cloudinary_secure_url), '') != ''
+				  )
 			)
 			ORDER BY datetime(created_at) DESC, id DESC
 			LIMIT ?2`, uid, limit)
@@ -109,9 +112,6 @@ func riderAppListNotifications(deps RiderNotificationDeps) gin.HandlerFunc {
 				return
 			}
 			body = strings.TrimSpace(body)
-			if body == "" {
-				continue
-			}
 			itemTitle := ""
 			if title.Valid {
 				itemTitle = strings.TrimSpace(title.String)
@@ -132,6 +132,9 @@ func riderAppListNotifications(deps RiderNotificationDeps) gin.HandlerFunc {
 					format.String,
 					w, h,
 				)
+			}
+			if body == "" && media == nil {
+				continue
 			}
 			list = append(list, riderNotificationItemJSON(
 				strings.TrimSpace(id),

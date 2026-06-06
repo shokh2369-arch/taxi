@@ -209,7 +209,9 @@ func TestRiderNotifications_BroadcastMedia(t *testing.T) {
 		('vid-post', '', 'Video body', '2026-05-12 12:00:00', 'published', 'all_riders',
 		 'https://res.cloudinary.com/demo/video.mp4', 'demo/video', 'video', 1280, 720, 'mp4'),
 		('txt-post', '', 'Text only', '2026-05-13 12:00:00', 'published', 'all_riders',
-		 NULL, NULL, 'text', NULL, NULL, NULL)`)
+		 NULL, NULL, 'text', NULL, NULL, NULL),
+		('img-only', '', '', '2026-05-14 12:00:00', 'published', 'all_riders',
+		 'https://res.cloudinary.com/demo/only.jpg', 'demo/only', 'image', 400, 300, 'jpg')`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,10 +231,18 @@ func TestRiderNotifications_BroadcastMedia(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
 		t.Fatal(err)
 	}
-	if len(out.Notifications) != 3 {
-		t.Fatalf("expected 3 notifications, got %d: %s", len(out.Notifications), rr.Body.String())
+	if len(out.Notifications) != 4 {
+		t.Fatalf("expected 4 notifications, got %d: %s", len(out.Notifications), rr.Body.String())
 	}
-	txt := out.Notifications[0]
+	imgOnly := out.Notifications[0]
+	if imgOnly["id"] != "img-only" || imgOnly["type"] != "image" {
+		t.Fatalf("img-only=%#v", imgOnly)
+	}
+	if _, ok := imgOnly["body"]; ok {
+		t.Fatalf("img-only should not include body: %#v", imgOnly)
+	}
+
+	txt := out.Notifications[1]
 	if txt["id"] != "txt-post" || txt["type"] != "text" {
 		t.Fatalf("text=%#v", txt)
 	}
@@ -240,7 +250,7 @@ func TestRiderNotifications_BroadcastMedia(t *testing.T) {
 		t.Fatalf("text item should not have image_url: %#v", txt)
 	}
 
-	vid := out.Notifications[1]
+	vid := out.Notifications[2]
 	if vid["id"] != "vid-post" || vid["type"] != "video" {
 		t.Fatalf("video=%#v", vid)
 	}
@@ -251,7 +261,7 @@ func TestRiderNotifications_BroadcastMedia(t *testing.T) {
 		t.Fatalf("video item should not have image_url: %#v", vid)
 	}
 
-	img := out.Notifications[2]
+	img := out.Notifications[3]
 	if img["type"] != "image" {
 		t.Fatalf("image type=%v", img["type"])
 	}
