@@ -333,32 +333,21 @@ func handlePublishMessage(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB, 
 
 	// Determine content + optional media file_id.
 	body := strings.TrimSpace(msg.Text)
-	fileID := ""
-	if len(msg.Photo) > 0 {
-		fileID = msg.Photo[len(msg.Photo)-1].FileID
-		if strings.TrimSpace(body) == "" {
-			body = strings.TrimSpace(msg.Caption)
-		}
-	} else if msg.Document != nil && strings.TrimSpace(msg.Document.FileID) != "" {
-		// Accept images sent as files. For v1, we restrict to image/* or empty mime (Telegram sometimes omits).
-		mime := strings.ToLower(strings.TrimSpace(msg.Document.MimeType))
-		if mime == "" || strings.HasPrefix(mime, "image/") {
-			fileID = msg.Document.FileID
-			if strings.TrimSpace(body) == "" {
-				body = strings.TrimSpace(msg.Caption)
-			}
-		} else {
-			sendMessage(bot, chatID, "Фақат расм (image/*) қабул қилинади.")
-			return false
-		}
-	} else if strings.TrimSpace(msg.Caption) != "" {
+	fileID, cloudResourceType, uploadFilename, defaultBody := detectPublishMedia(msg)
+	if msg.Document != nil && strings.TrimSpace(msg.Document.FileID) != "" && fileID == "" {
+		sendMessage(bot, chatID, "Фақат расм ёки видео қабул қилинади.")
+		return false
+	}
+	if fileID != "" && strings.TrimSpace(body) == "" {
+		body = strings.TrimSpace(msg.Caption)
+	} else if strings.TrimSpace(msg.Caption) != "" && strings.TrimSpace(body) == "" {
 		body = strings.TrimSpace(msg.Caption)
 	}
 
 	if strings.TrimSpace(body) == "" {
 		if fileID != "" {
 			// Backward-compat requirement: body always present.
-			body = "Фото"
+			body = defaultBody
 		} else {
 			sendMessage(bot, chatID, "Илтимос, матн юборинг.")
 			return false
@@ -403,7 +392,7 @@ func handlePublishMessage(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB, 
 			return false
 		}
 		folder := "yettiqanot/broadcasts/" + postID
-		up, err := cl.UploadBytes(ctx, "image", folder, "upload.jpg", b)
+		up, err := cl.UploadBytes(ctx, cloudResourceType, folder, uploadFilename, b)
 		if err != nil {
 			log.Printf("admin bot: cloudinary upload: %v", err)
 			sendMessage(bot, chatID, "Cloudinaryга юклашда хатолик.")
@@ -666,6 +655,36 @@ func sendMainMenu(bot *tgbotapi.BotAPI, chatID int64) {
 	}
 }
 
+// detectPublishMedia returns Telegram file_id and Cloudinary upload hints for photo/video posts.
+func detectPublishMedia(msg *tgbotapi.Message) (fileID, resourceType, uploadFilename, defaultBody string) {
+	if msg == nil {
+		return "", "", "", ""
+	}
+	if len(msg.Photo) > 0 {
+		return msg.Photo[len(msg.Photo)-1].FileID, "image", "upload.jpg", "Фото"
+	}
+	if msg.Video != nil && strings.TrimSpace(msg.Video.FileID) != "" {
+		return msg.Video.FileID, "video", "upload.mp4", "Видео"
+	}
+	if msg.Document != nil && strings.TrimSpace(msg.Document.FileID) != "" {
+		mime := strings.ToLower(strings.TrimSpace(msg.Document.MimeType))
+		fn := strings.TrimSpace(msg.Document.FileName)
+		switch {
+		case mime == "" || strings.HasPrefix(mime, "image/"):
+			if fn == "" {
+				fn = "upload.jpg"
+			}
+			return msg.Document.FileID, "image", fn, "Фото"
+		case strings.HasPrefix(mime, "video/"):
+			if fn == "" {
+				fn = "upload.mp4"
+			}
+			return msg.Document.FileID, "video", fn, "Видео"
+		}
+	}
+	return "", "", "", ""
+}
+
 func sendPublishPrompt(bot *tgbotapi.BotAPI, chatID int64) {
 	kb := tgbotapi.NewReplyKeyboard(
 		tgbotapi.NewKeyboardButtonRow(
@@ -674,7 +693,7 @@ func sendPublishPrompt(bot *tgbotapi.BotAPI, chatID int64) {
 	)
 	kb.ResizeKeyboard = true
 	kb.OneTimeKeyboard = true
-	m := tgbotapi.NewMessage(chatID, "📝 Янги эълон.\n\nМатн юборинг ёки расм/файл юбориб, captionга матн ёзинг.\n\nБекор қилиш учун қуйидаги тугмани босинг.")
+	m := tgbotapi.NewMessage(chatID, "📝 Янги эълон.\n\nМатн юборинг ёки расм/видео юбориб, captionга матн ёзинг.\n\nБекор қилиш учун қуйидаги тугмани босинг.")
 	m.ReplyMarkup = kb
 	if _, err := bot.Send(m); err != nil {
 		log.Printf("admin bot: send publish prompt: %v", err)

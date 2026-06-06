@@ -98,22 +98,7 @@ func riderAppListNotifications(deps RiderNotificationDeps) gin.HandlerFunc {
 		}
 		defer rows.Close()
 
-		type item struct {
-			ID        string `json:"id"`
-			Title     string `json:"title,omitempty"`
-			Body      string `json:"body"`
-			CreatedAt string `json:"created_at"`
-			ImageURL  string `json:"image_url,omitempty"`
-			Media     *struct {
-				Type     string `json:"type"`
-				URL      string `json:"url"`
-				PublicID string `json:"public_id,omitempty"`
-				Width    int    `json:"width,omitempty"`
-				Height   int    `json:"height,omitempty"`
-				Format   string `json:"format,omitempty"`
-			} `json:"media,omitempty"`
-		}
-		var list []item
+		var list []map[string]any
 		for rows.Next() {
 			var id, body, createdAt string
 			var title sql.NullString
@@ -127,56 +112,41 @@ func riderAppListNotifications(deps RiderNotificationDeps) gin.HandlerFunc {
 			if body == "" {
 				continue
 			}
-			it := item{
-				ID:        strings.TrimSpace(id),
-				Body:      body,
-				CreatedAt: normalizeRiderNotificationTime(createdAt),
-			}
+			itemTitle := ""
 			if title.Valid {
-				it.Title = strings.TrimSpace(title.String)
+				itemTitle = strings.TrimSpace(title.String)
 			}
+			var media *riderNotificationMedia
 			if secureURL.Valid {
-				u := strings.TrimSpace(secureURL.String)
-				if u != "" {
-					it.ImageURL = u
-					mt := strings.TrimSpace(mediaType.String)
-					if mt == "" {
-						mt = "image"
-					}
-					m := &struct {
-						Type     string `json:"type"`
-						URL      string `json:"url"`
-						PublicID string `json:"public_id,omitempty"`
-						Width    int    `json:"width,omitempty"`
-						Height   int    `json:"height,omitempty"`
-						Format   string `json:"format,omitempty"`
-					}{
-						Type: mt,
-						URL:  u,
-					}
-					if publicID.Valid && strings.TrimSpace(publicID.String) != "" {
-						m.PublicID = strings.TrimSpace(publicID.String)
-					}
-					if width.Valid {
-						m.Width = int(width.Int64)
-					}
-					if height.Valid {
-						m.Height = int(height.Int64)
-					}
-					if format.Valid && strings.TrimSpace(format.String) != "" {
-						m.Format = strings.TrimSpace(format.String)
-					}
-					it.Media = m
+				w, h := 0, 0
+				if width.Valid {
+					w = int(width.Int64)
 				}
+				if height.Valid {
+					h = int(height.Int64)
+				}
+				media = buildRiderNotificationMedia(
+					secureURL.String,
+					publicID.String,
+					mediaType.String,
+					format.String,
+					w, h,
+				)
 			}
-			list = append(list, it)
+			list = append(list, riderNotificationItemJSON(
+				strings.TrimSpace(id),
+				itemTitle,
+				body,
+				normalizeRiderNotificationTime(createdAt),
+				media,
+			))
 		}
 		if err := rows.Err(); err != nil {
 			writeRiderAPIError(c, http.StatusInternalServerError, "internal_error", "Texnik xatolik.")
 			return
 		}
 		if list == nil {
-			list = []item{}
+			list = []map[string]any{}
 		}
 		c.JSON(http.StatusOK, gin.H{"notifications": list})
 	}

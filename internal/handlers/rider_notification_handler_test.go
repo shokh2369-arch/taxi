@@ -192,3 +192,60 @@ func TestRiderNotifications_EmptyAndList(t *testing.T) {
 		t.Fatalf("order: %+v", out2.Notifications)
 	}
 }
+
+func TestRiderNotifications_BroadcastMedia(t *testing.T) {
+	db := setupRiderNotificationTestDB(t)
+	defer db.Close()
+	_, err := db.Exec(`INSERT INTO users (id, role, telegram_id) VALUES (1, ?, 0)`, domain.RoleRider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO broadcast_posts (
+		id, title, body, created_at, status, audience,
+		cloudinary_secure_url, cloudinary_public_id, media_type, width, height, format
+	) VALUES
+		('img-post', 'Promo', 'Image body', '2026-05-11 12:00:00', 'published', 'all_riders',
+		 'https://res.cloudinary.com/demo/image.jpg', 'demo/image', 'image', 800, 600, 'jpg'),
+		('vid-post', '', 'Video body', '2026-05-12 12:00:00', 'published', 'all_riders',
+		 'https://res.cloudinary.com/demo/video.mp4', 'demo/video', 'video', 1280, 720, 'mp4')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r, token := newRiderNotificationEngine(t, db, 1)
+	req := httptest.NewRequest(http.MethodGet, "/v1/rider/notifications", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+
+	var out struct {
+		Notifications []map[string]any `json:"notifications"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Notifications) != 2 {
+		t.Fatalf("expected 2 notifications, got %d: %s", len(out.Notifications), rr.Body.String())
+	}
+	vid := out.Notifications[0]
+	if vid["id"] != "vid-post" {
+		t.Fatalf("first=%#v", vid)
+	}
+	if vid["video_url"] != "https://res.cloudinary.com/demo/video.mp4" {
+		t.Fatalf("video_url=%v", vid["video_url"])
+	}
+	if _, ok := vid["image_url"]; ok {
+		t.Fatalf("video item should not have image_url: %#v", vid)
+	}
+
+	img := out.Notifications[1]
+	if img["image_url"] != "https://res.cloudinary.com/demo/image.jpg" {
+		t.Fatalf("image_url=%v", img["image_url"])
+	}
+	if img["imageUrl"] != "https://res.cloudinary.com/demo/image.jpg" {
+		t.Fatalf("imageUrl=%v", img["imageUrl"])
+	}
+}

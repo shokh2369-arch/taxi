@@ -17,6 +17,12 @@ services:
         sync: false
       - key: WEBAPP_URL
         sync: false
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
 
   # Wake free-tier web service on a interval. Uses Python urllib (no curl); produces ~no stdout (avoids "Output too large").
   # Must match your web service’s public URL (Dashboard → service → URL), not necessarily the `name:` field above.
