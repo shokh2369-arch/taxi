@@ -207,7 +207,9 @@ func TestRiderNotifications_BroadcastMedia(t *testing.T) {
 		('img-post', 'Promo', 'Image body', '2026-05-11 12:00:00', 'published', 'all_riders',
 		 'https://res.cloudinary.com/demo/image.jpg', 'demo/image', 'image', 800, 600, 'jpg'),
 		('vid-post', '', 'Video body', '2026-05-12 12:00:00', 'published', 'all_riders',
-		 'https://res.cloudinary.com/demo/video.mp4', 'demo/video', 'video', 1280, 720, 'mp4')`)
+		 'https://res.cloudinary.com/demo/video.mp4', 'demo/video', 'video', 1280, 720, 'mp4'),
+		('txt-post', '', 'Text only', '2026-05-13 12:00:00', 'published', 'all_riders',
+		 NULL, NULL, 'text', NULL, NULL, NULL)`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,12 +229,20 @@ func TestRiderNotifications_BroadcastMedia(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
 		t.Fatal(err)
 	}
-	if len(out.Notifications) != 2 {
-		t.Fatalf("expected 2 notifications, got %d: %s", len(out.Notifications), rr.Body.String())
+	if len(out.Notifications) != 3 {
+		t.Fatalf("expected 3 notifications, got %d: %s", len(out.Notifications), rr.Body.String())
 	}
-	vid := out.Notifications[0]
-	if vid["id"] != "vid-post" {
-		t.Fatalf("first=%#v", vid)
+	txt := out.Notifications[0]
+	if txt["id"] != "txt-post" || txt["type"] != "text" {
+		t.Fatalf("text=%#v", txt)
+	}
+	if _, ok := txt["image_url"]; ok {
+		t.Fatalf("text item should not have image_url: %#v", txt)
+	}
+
+	vid := out.Notifications[1]
+	if vid["id"] != "vid-post" || vid["type"] != "video" {
+		t.Fatalf("video=%#v", vid)
 	}
 	if vid["video_url"] != "https://res.cloudinary.com/demo/video.mp4" {
 		t.Fatalf("video_url=%v", vid["video_url"])
@@ -241,7 +251,10 @@ func TestRiderNotifications_BroadcastMedia(t *testing.T) {
 		t.Fatalf("video item should not have image_url: %#v", vid)
 	}
 
-	img := out.Notifications[1]
+	img := out.Notifications[2]
+	if img["type"] != "image" {
+		t.Fatalf("image type=%v", img["type"])
+	}
 	if img["image_url"] != "https://res.cloudinary.com/demo/image.jpg" {
 		t.Fatalf("image_url=%v", img["image_url"])
 	}

@@ -404,6 +404,8 @@ func handlePublishMessage(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB, 
 		width = up.Width
 		height = up.Height
 		format = up.Format
+	} else {
+		mediaType = "text"
 	}
 
 	// Insert broadcast (published).
@@ -424,7 +426,14 @@ func handlePublishMessage(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB, 
 		sendMessage(bot, chatID, "Сақлашда хатолик.")
 		return false
 	}
-	sendMessage(bot, chatID, "✅ Эълон чиқарилди. Телеграм орқали жўнатиш фон режимида бошланди.")
+	typeLabel := "матн"
+	switch strings.ToLower(strings.TrimSpace(mediaType)) {
+	case "image":
+		typeLabel = "расм"
+	case "video":
+		typeLabel = "видео"
+	}
+	sendMessage(bot, chatID, fmt.Sprintf("✅ %s эълони чиқарилди. Телеграм ва иловага жўнатиш бошланди.", typeLabel))
 	return true
 }
 
@@ -693,7 +702,7 @@ func sendPublishPrompt(bot *tgbotapi.BotAPI, chatID int64) {
 	)
 	kb.ResizeKeyboard = true
 	kb.OneTimeKeyboard = true
-	m := tgbotapi.NewMessage(chatID, "📝 Янги эълон.\n\nМатн юборинг ёки расм/видео юбориб, captionга матн ёзинг.\n\nБекор қилиш учун қуйидаги тугмани босинг.")
+	m := tgbotapi.NewMessage(chatID, "📝 Янги эълон.\n\n3 турда юбориш мумкин:\n1) Матн — фақат хабар матни\n2) Расм — фото + caption (ихтиёрий)\n3) Видео — видео + caption (ихтиёрий)\n\nБекор қилиш учун қуйидаги тугмани босинг.")
 	m.ReplyMarkup = kb
 	if _, err := bot.Send(m); err != nil {
 		log.Printf("admin bot: send publish prompt: %v", err)

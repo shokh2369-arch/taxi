@@ -2,6 +2,12 @@ package handlers
 
 import "strings"
 
+const (
+	BroadcastContentText  = "text"
+	BroadcastContentImage = "image"
+	BroadcastContentVideo = "video"
+)
+
 type riderNotificationMedia struct {
 	Type     string
 	URL      string
@@ -42,14 +48,28 @@ func buildRiderNotificationMedia(
 	return m
 }
 
+func riderNotificationContentType(media *riderNotificationMedia) string {
+	if media == nil {
+		return BroadcastContentText
+	}
+	if strings.ToLower(strings.TrimSpace(media.Type)) == BroadcastContentVideo {
+		return BroadcastContentVideo
+	}
+	return BroadcastContentImage
+}
+
 // riderNotificationItemJSON builds a Flutter-friendly notification payload with
 // both snake_case and camelCase keys for media fields.
 func riderNotificationItemJSON(id, title, body, createdAt string, media *riderNotificationMedia) map[string]any {
+	contentType := riderNotificationContentType(media)
 	out := map[string]any{
-		"id":         id,
-		"body":       body,
-		"created_at": createdAt,
-		"createdAt":  createdAt,
+		"id":           id,
+		"body":         body,
+		"type":         contentType,
+		"content_type": contentType,
+		"contentType":  contentType,
+		"created_at":   createdAt,
+		"createdAt":    createdAt,
 	}
 	if title != "" {
 		out["title"] = title
@@ -78,11 +98,11 @@ func riderNotificationItemJSON(id, title, body, createdAt string, media *riderNo
 	out["media_url"] = media.URL
 	out["mediaUrl"] = media.URL
 
-	switch strings.ToLower(media.Type) {
-	case "video":
+	switch contentType {
+	case BroadcastContentVideo:
 		out["video_url"] = media.URL
 		out["videoUrl"] = media.URL
-	default:
+	case BroadcastContentImage:
 		out["image_url"] = media.URL
 		out["imageUrl"] = media.URL
 	}
