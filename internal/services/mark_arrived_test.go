@@ -13,6 +13,7 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"taxi-mvp/internal/auth"
 	"taxi-mvp/internal/config"
 	"taxi-mvp/internal/domain"
 	"taxi-mvp/internal/logger"
@@ -216,6 +217,35 @@ func TestMarkArrived_SuccessSendsRiderAndDriverTelegram(t *testing.T) {
 	driverMsgs := driverBot.messagesTo(driverTg)
 	if len(driverMsgs) != 1 || driverMsgs[0] != testDriverText {
 		t.Fatalf("driver messages: %q want %q", driverMsgs, testDriverText)
+	}
+}
+
+func TestMarkArrived_HTTApp_SkipsDriverTelegramOnly(t *testing.T) {
+	db := setupMarkArrivedTestDB(t)
+	defer db.Close()
+	tripID := "trip-http"
+	reqID := "req-http"
+	const driverID int64 = 10
+	const riderID int64 = 11
+	const riderTg int64 = 1001
+	const driverTg int64 = 2002
+	pickLat, pickLng := 40.23, 68.843
+	seedTripWaitingNearPickup(t, db, tripID, reqID, driverID, riderID, riderTg, driverTg, pickLat, pickLng, time.Now().UTC())
+
+	riderBot := &fakeTelegramBot{}
+	driverBot := &fakeTelegramBot{}
+	cfg := &config.Config{PickupStartMaxMeters: 500}
+	svc := NewTripService(db, repositories.NewTripRepo(db), riderBot, driverBot, cfg, nil, nil, nil)
+
+	ctx := auth.WithActionSource(context.Background(), auth.ActionSourceHTTPApp)
+	if _, err := svc.MarkArrived(ctx, tripID, driverID); err != nil {
+		t.Fatalf("MarkArrived: %v", err)
+	}
+	if len(riderBot.messagesTo(riderTg)) != 1 {
+		t.Fatalf("rider should still be notified via telegram, got %d msgs", len(riderBot.messagesTo(riderTg)))
+	}
+	if len(driverBot.messagesTo(driverTg)) != 0 {
+		t.Fatalf("driver telegram should be skipped for http app, got %q", driverBot.messagesTo(driverTg))
 	}
 }
 

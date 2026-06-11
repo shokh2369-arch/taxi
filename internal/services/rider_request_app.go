@@ -230,7 +230,7 @@ func (s *RiderRequestAppService) ConfirmRequest(ctx context.Context, riderUserID
 		return ErrRiderRequestConflictState
 	}
 
-	if err := s.match.BroadcastRequest(ctx, requestID); err != nil {
+	if err := s.match.BroadcastRequest(context.Background(), requestID); err != nil {
 		log.Printf("rider_request_app: broadcast request: %v", err)
 	}
 	return nil

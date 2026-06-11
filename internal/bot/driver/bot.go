@@ -1769,7 +1769,10 @@ func handleAccept(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, assignme
 	if tripService != nil {
 		tripService.ScheduleStartReminder(ctx, tripID, userID)
 	}
-	// Send "Open Trip Map" Web App button so driver can open Mini App
+	// Native app drivers see accept/trip status in-app; skip duplicate Telegram message.
+	if services.ShouldSkipDriverTripTelegramNotify(ctx, db, userID) {
+		return
+	}
 	sendWithOpenTripMapButton(bot, chatID, cfg, tripID, userID)
 }
 

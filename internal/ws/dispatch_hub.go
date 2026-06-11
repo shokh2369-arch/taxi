@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"context"
 	"encoding/json"
 	"sync/atomic"
 	"time"
@@ -21,6 +22,7 @@ type DispatchHub struct {
 
 	version      atomic.Int64
 	updatedAtUTC atomic.Int64 // unix nano
+	wake         chan struct{} // signals GET /driver/available-requests long-poll waiters
 }
 
 // DispatchHubDefault is an optional global hub used by publisher hooks.
@@ -33,6 +35,7 @@ func NewDispatchHub() *DispatchHub {
 		unregister: make(chan *dispatchClient, 128),
 		broadcast:  make(chan []byte, 256),
 		clients:    make(map[*dispatchClient]struct{}),
+		wake:       make(chan struct{}, 1),
 	}
 }
 
@@ -80,6 +83,32 @@ func (h *DispatchHub) NotifyDispatchChanged() {
 	case h.broadcast <- b:
 	default:
 		// Best-effort: drop if hub is under backpressure.
+	}
+	h.signalPollWaiters()
+}
+
+// WaitForDispatchChange blocks until a dispatch poke, ctx cancel, or maxWait elapses.
+// Used by GET /driver/available-requests?wait_sec= so offers return without 500ms polling gaps.
+func (h *DispatchHub) WaitForDispatchChange(ctx context.Context, maxWait time.Duration) {
+	if h == nil || maxWait <= 0 {
+		return
+	}
+	timer := time.NewTimer(maxWait)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-h.wake:
+	case <-timer.C:
+	}
+}
+
+func (h *DispatchHub) signalPollWaiters() {
+	if h == nil {
+		return
+	}
+	select {
+	case h.wake <- struct{}{}:
+	default:
 	}
 }
 

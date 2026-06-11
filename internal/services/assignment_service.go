@@ -86,7 +86,7 @@ func (s *AssignmentService) TryAssign(ctx context.Context, requestID string, dri
 
 	var riderTelegramID int64
 	err = s.db.QueryRowContext(ctx, `SELECT telegram_id FROM users WHERE id = ?1`, riderUserID).Scan(&riderTelegramID)
-	if err == nil {
+	if err == nil && riderTelegramID != 0 && !ShouldSkipRiderTripTelegramNotify(ctx, s.db, riderUserID) {
 		chatID := riderTelegramID
 		// Include driver info (phone first) so rider can contact the driver
 		var driverPhone, carType, color, plate string
@@ -220,9 +220,12 @@ func (s *AssignmentService) expireRequests(ctx context.Context) {
 	}
 
 	for _, riderUserID := range riderUserIDs {
+		if ShouldSkipRiderTripTelegramNotify(ctx, s.db, riderUserID) {
+			continue
+		}
 		var telegramID int64
 		err := s.db.QueryRowContext(ctx, `SELECT telegram_id FROM users WHERE id = ?1`, riderUserID).Scan(&telegramID)
-		if err != nil {
+		if err != nil || telegramID == 0 {
 			continue
 		}
 		msg := tgbotapi.NewMessage(telegramID, "Ҳайдовчи топилмади.")

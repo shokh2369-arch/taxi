@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -51,7 +52,11 @@ func RequireRiderBearerAuth(svc *services.RiderAuthService, db *sql.DB) gin.Hand
 			c.Abort()
 			return
 		}
-		c.Request = c.Request.WithContext(auth.WithUser(c.Request.Context(), &auth.User{
+		ctx := c.Request.Context()
+		nowStr := time.Now().UTC().Format("2006-01-02 15:04:05")
+		_, _ = db.ExecContext(ctx, `UPDATE users SET rider_app_last_seen_at = ?1 WHERE id = ?2`, nowStr, userID)
+		ctx = auth.WithActionSource(ctx, auth.ActionSourceHTTPApp)
+		c.Request = c.Request.WithContext(auth.WithUser(ctx, &auth.User{
 			UserID:         userID,
 			TelegramUserID: 0,
 			Role:           domain.RoleRider,

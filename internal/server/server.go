@@ -103,6 +103,7 @@ func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc
 	driverHdr := auth.DriverIDHeaderMiddlewareOpts{Enable: cfg.EnableDriverIDHeader, Debug: cfg.DriverAuthDebug}
 	tryDriverID := auth.TryDriverIDHeader(db, driverHdr)
 	driverAuth := auth.RequireDriverAuth(db, cfg.DriverBotToken, cfg.EnableDriverIDHeader)
+	driverActionSrc := auth.InjectDriverActionSource()
 	riderAuth := auth.RequireRiderAuth(db, cfg.RiderBotToken)
 	appUserAuth := auth.RequireMiniAppAuthDriverOrRider(db, cfg.DriverBotToken, cfg.RiderBotToken)
 
@@ -117,26 +118,26 @@ func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc
 		})
 	}
 	// Always register dispatch websocket; it is independent of the trip hub.
-	r.GET("/ws/driver-dispatch", mirrorDriverWSCredentialsIntoHeaders, tryDriverID, driverAuth, func(c *gin.Context) {
+	r.GET("/ws/driver-dispatch", mirrorDriverWSCredentialsIntoHeaders, tryDriverID, driverAuth, driverActionSrc, func(c *gin.Context) {
 		ws.ServeDriverDispatchWs(dispatchHub, c.Writer, c.Request)
 	})
 
 	r.GET("/trip/:id", handlers.TripInfo(db, cfg, fareSvc))
 	// Mini App: try X-Driver-Id first so Start/Cancel/Finish work without initData when header is present
-	r.POST("/driver/location", tryDriverID, driverAuth, handlers.DriverLocation(db, tripSvc, matchSvc, driverBot, hub, cfg, fareSvc))
+	r.POST("/driver/location", tryDriverID, driverAuth, driverActionSrc, handlers.DriverLocation(db, tripSvc, matchSvc, driverBot, hub, cfg, fareSvc))
 	// Native driver app location (additive). Does not touch Telegram location fields.
-	r.POST("/driver/location/app", tryDriverID, driverAuth, handlers.DriverAppLocation(db, matchSvc))
-	r.POST("/driver/offline", tryDriverID, driverAuth, handlers.DriverManualOffline(db))
-	r.POST("/trip/start", tryDriverID, driverAuth, handlers.TripStart(db, tripSvc))
-	r.POST("/trip/arrived", tryDriverID, driverAuth, handlers.TripArrived(db, tripSvc))
-	r.POST("/trip/finish", tryDriverID, driverAuth, handlers.TripFinish(db, tripSvc))
-	r.POST("/trip/cancel/driver", tryDriverID, driverAuth, handlers.TripCancelDriver(db, tripSvc))
-	r.GET("/driver/referral-link", tryDriverID, driverAuth, handlers.DriverReferralLink(db, driverBot))
-	r.GET("/driver/promo-program", tryDriverID, driverAuth, handlers.DriverPromoProgram(db))
-	r.GET("/driver/referral-status", tryDriverID, driverAuth, handlers.DriverReferralStatus(db))
-	r.GET("/driver/available-requests", tryDriverID, driverAuth, handlers.DriverAvailableRequests(db))
-	r.GET("/driver/trips", tryDriverID, driverAuth, handlers.DriverTrips(db))
-	r.POST("/driver/accept-request", tryDriverID, driverAuth, handlers.DriverAcceptRequest(db, assignSvc, tripSvc))
+	r.POST("/driver/location/app", tryDriverID, driverAuth, driverActionSrc, handlers.DriverAppLocation(db, matchSvc))
+	r.POST("/driver/offline", tryDriverID, driverAuth, driverActionSrc, handlers.DriverManualOffline(db))
+	r.POST("/trip/start", tryDriverID, driverAuth, driverActionSrc, handlers.TripStart(db, tripSvc))
+	r.POST("/trip/arrived", tryDriverID, driverAuth, driverActionSrc, handlers.TripArrived(db, tripSvc))
+	r.POST("/trip/finish", tryDriverID, driverAuth, driverActionSrc, handlers.TripFinish(db, tripSvc))
+	r.POST("/trip/cancel/driver", tryDriverID, driverAuth, driverActionSrc, handlers.TripCancelDriver(db, tripSvc))
+	r.GET("/driver/referral-link", tryDriverID, driverAuth, driverActionSrc, handlers.DriverReferralLink(db, driverBot))
+	r.GET("/driver/promo-program", tryDriverID, driverAuth, driverActionSrc, handlers.DriverPromoProgram(db))
+	r.GET("/driver/referral-status", tryDriverID, driverAuth, driverActionSrc, handlers.DriverReferralStatus(db))
+	r.GET("/driver/available-requests", tryDriverID, driverAuth, driverActionSrc, handlers.DriverAvailableRequests(db))
+	r.GET("/driver/trips", tryDriverID, driverAuth, driverActionSrc, handlers.DriverTrips(db))
+	r.POST("/driver/accept-request", tryDriverID, driverAuth, driverActionSrc, handlers.DriverAcceptRequest(db, assignSvc, tripSvc))
 	r.POST("/trip/cancel/rider", riderAuth, handlers.TripCancelRider(db, tripSvc))
 	r.GET("/rider/referral-link", riderAuth, handlers.RiderReferralLink(db, riderBot))
 
@@ -166,7 +167,7 @@ func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Telegram-Init-Data, X-Driver-Id")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Telegram-Init-Data, X-Driver-Id, X-Driver-Session")
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)
 			return

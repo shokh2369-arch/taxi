@@ -260,9 +260,9 @@ func (s *TripService) StartTrip(ctx context.Context, tripID string, driverUserID
 	}
 	var riderUserID int64
 	_ = s.db.QueryRowContext(ctx, `SELECT rider_user_id FROM trips WHERE id = ?1`, tripID).Scan(&riderUserID)
-	if riderUserID != 0 {
+	if riderUserID != 0 && !ShouldSkipRiderTripTelegramNotify(ctx, s.db, riderUserID) {
 		var riderTelegramID int64
-		if err := s.db.QueryRowContext(ctx, `SELECT telegram_id FROM users WHERE id = ?1`, riderUserID).Scan(&riderTelegramID); err == nil {
+		if err := s.db.QueryRowContext(ctx, `SELECT telegram_id FROM users WHERE id = ?1`, riderUserID).Scan(&riderTelegramID); err == nil && riderTelegramID != 0 {
 			// When trip starts, remove the cancel button from rider keyboard (keep only "Track driver").
 			kb := tgbotapi.NewReplyKeyboard(
 				tgbotapi.NewKeyboardButtonRow(
@@ -506,6 +506,8 @@ func (s *TripService) notifyArrivedAtPickup(ctx context.Context, tripID string, 
 	// Rider notify: always enter this function from MarkArrived after ARRIVED commit; validate then call Send (never bypass API when eligible).
 	if riderUserID == 0 {
 		log.Printf("ARRIVED_NOTIFY_SKIPPED trip_id=%s reason=%s detail=%s", tripID, "no_rider_user_id", "trips.rider_user_id is zero or missing")
+	} else if ShouldSkipRiderTripTelegramNotify(ctx, s.db, riderUserID) {
+		log.Printf("ARRIVED_NOTIFY_SKIPPED trip_id=%s reason=%s rider_user_id=%d", tripID, "rider_on_native_app", riderUserID)
 	} else if s.riderBot == nil {
 		log.Printf("ARRIVED_NOTIFY_SKIPPED trip_id=%s reason=%s detail=%s", tripID, "rider_bot_nil", "TripService.riderBot not configured")
 	} else {
@@ -559,6 +561,15 @@ func (s *TripService) notifyArrivedAtPickup(ctx context.Context, tripID string, 
 		driverMsgText = driverTextRetry
 	}
 
+	if ShouldSkipDriverTripTelegramNotify(ctx, s.db, driverUserID) {
+		logger.ArrivedNotify("arrived_notify_driver_skipped", tripID,
+			slog.String("reason", "driver_on_native_app"),
+			slog.Int64("driver_user_id", driverUserID))
+		logger.ArrivedNotify("arrived_notify_summary", tripID,
+			slog.Bool("rider_sent", riderSent),
+			slog.Bool("driver_sent", driverSent))
+		return
+	}
 	if s.driverBot == nil {
 		logger.ArrivedNotify("arrived_notify_driver_skipped", tripID,
 			slog.String("reason", "driver_bot_nil"),
@@ -805,7 +816,7 @@ func (s *TripService) FinishTrip(ctx context.Context, tripID string, driverUserI
 	var riderTelegramID, driverTelegramID int64
 	_ = s.db.QueryRowContext(ctx, `SELECT telegram_id FROM users WHERE id = ?1`, riderUserID).Scan(&riderTelegramID)
 	_ = s.db.QueryRowContext(ctx, `SELECT telegram_id FROM users WHERE id = ?1`, driverUserID).Scan(&driverTelegramID)
-	if riderTelegramID != 0 {
+	if riderTelegramID != 0 && !ShouldSkipRiderTripTelegramNotify(ctx, s.db, riderUserID) {
 		m := tgbotapi.NewMessage(riderTelegramID, summary)
 		// Restore main menu so rider is not stuck with outdated cancel-only keyboard
 		riderMainMenu := tgbotapi.NewReplyKeyboard(
@@ -821,25 +832,27 @@ func (s *TripService) FinishTrip(ctx context.Context, tripID string, driverUserI
 		}
 	}
 	if driverTelegramID != 0 {
-		// Trip finish: status message + distance/fare; keyboard = live-location help only (online follows live share).
-		driverSummary := formatDriverTripCompletionMessage(distanceM, fareAmount)
-		kb := tgbotapi.NewReplyKeyboard(
-			tgbotapi.NewKeyboardButtonRow(
-				driverloc.ReplyKeyboardButtonShareLiveLocation(),
-			),
-		)
-		kb.ResizeKeyboard = true
-		m := tgbotapi.NewMessage(driverTelegramID, driverSummary)
-		m.ReplyMarkup = kb
-		if _, err := s.driverBot.Send(m); err != nil {
-			log.Printf("trip_service: notify driver finish: %v", tripErrStr(err))
-		}
-		if firstThreeGranted && s.driverBot != nil {
-			var promoBal int64
-			_ = s.db.QueryRowContext(ctx, `SELECT COALESCE(promo_balance, 0) FROM drivers WHERE user_id = ?1`, driverUserID).Scan(&promoBal)
-			if body := accounting.FirstThreeTripBonusTelegramMessage(firstThreeTripNum, promoBal); body != "" {
-				if _, err := s.driverBot.Send(tgbotapi.NewMessage(driverTelegramID, body)); err != nil {
-					log.Printf("trip_service: notify driver first_3_trip promo: %v", tripErrStr(err))
+		if !ShouldSkipDriverTripTelegramNotify(ctx, s.db, driverUserID) {
+			// Trip finish: status message + distance/fare; keyboard = live-location help only (online follows live share).
+			driverSummary := formatDriverTripCompletionMessage(distanceM, fareAmount)
+			kb := tgbotapi.NewReplyKeyboard(
+				tgbotapi.NewKeyboardButtonRow(
+					driverloc.ReplyKeyboardButtonShareLiveLocation(),
+				),
+			)
+			kb.ResizeKeyboard = true
+			m := tgbotapi.NewMessage(driverTelegramID, driverSummary)
+			m.ReplyMarkup = kb
+			if _, err := s.driverBot.Send(m); err != nil {
+				log.Printf("trip_service: notify driver finish: %v", tripErrStr(err))
+			}
+			if firstThreeGranted && s.driverBot != nil {
+				var promoBal int64
+				_ = s.db.QueryRowContext(ctx, `SELECT COALESCE(promo_balance, 0) FROM drivers WHERE user_id = ?1`, driverUserID).Scan(&promoBal)
+				if body := accounting.FirstThreeTripBonusTelegramMessage(firstThreeTripNum, promoBal); body != "" {
+					if _, err := s.driverBot.Send(tgbotapi.NewMessage(driverTelegramID, body)); err != nil {
+						log.Printf("trip_service: notify driver first_3_trip promo: %v", tripErrStr(err))
+					}
 				}
 			}
 		}
@@ -854,7 +867,8 @@ func (s *TripService) FinishTrip(ctx context.Context, tripID string, driverUserI
 				liveRecent = false
 			}
 			legalOK := legal.NewService(s.db).DriverHasActiveLegal(ctx, driverUserID)
-			if !liveRecent || !legalOK {
+			appOnline := driverReceivingOrdersViaApp(ctx, s.db, driverUserID)
+			if !legalOK || (!liveRecent && !appOnline) {
 				_, _ = s.db.ExecContext(ctx, `UPDATE drivers SET is_active = 0 WHERE user_id = ?1`, driverUserID)
 			}
 		} else {
@@ -862,7 +876,7 @@ func (s *TripService) FinishTrip(ctx context.Context, tripID string, driverUserI
 		}
 		// Live-location reminder only when driver is NOT sharing live, every 3 trips, and location was not just auto-updated (e.g. mini app).
 		// Run after a short delay so mini app location update can land first; then we skip reminder if last_seen_at was recently updated.
-		if s.OnDriverStatusUpdate != nil {
+		if s.OnDriverStatusUpdate != nil && !ShouldSkipDriverTripTelegramNotify(ctx, s.db, driverUserID) {
 			s.OnDriverStatusUpdate(driverTelegramID)
 		}
 	}
@@ -937,9 +951,9 @@ func (s *TripService) CancelByDriver(ctx context.Context, tripID string, driverU
 		}
 		return nil, domain.ErrInvalidTransition
 	}
-	if riderUserID != 0 {
+	if riderUserID != 0 && !ShouldSkipRiderTripTelegramNotify(ctx, s.db, riderUserID) {
 		var telegramID int64
-		if err := s.db.QueryRowContext(ctx, `SELECT telegram_id FROM users WHERE id = ?1`, riderUserID).Scan(&telegramID); err == nil {
+		if err := s.db.QueryRowContext(ctx, `SELECT telegram_id FROM users WHERE id = ?1`, riderUserID).Scan(&telegramID); err == nil && telegramID != 0 {
 			msg := tgbotapi.NewMessage(telegramID, "Ҳайдовчи сафарни бекор қилди.")
 			_, _ = s.riderBot.Send(msg)
 			// Restore rider main menu keyboard (same as no active trip) so bottom buttons are not stuck on active-trip state
@@ -990,9 +1004,9 @@ func (s *TripService) CancelByRider(ctx context.Context, tripID string, riderUse
 		}
 		return nil, domain.ErrInvalidTransition
 	}
-	if driverUserID != 0 {
+	if driverUserID != 0 && !ShouldSkipDriverTripTelegramNotify(ctx, s.db, driverUserID) {
 		var telegramID int64
-		if err := s.db.QueryRowContext(ctx, `SELECT telegram_id FROM users WHERE id = ?1`, driverUserID).Scan(&telegramID); err == nil {
+		if err := s.db.QueryRowContext(ctx, `SELECT telegram_id FROM users WHERE id = ?1`, driverUserID).Scan(&telegramID); err == nil && telegramID != 0 {
 			msg := tgbotapi.NewMessage(telegramID, "Мижоз сафарни бекор қилди.")
 			_, _ = s.driverBot.Send(msg)
 		}

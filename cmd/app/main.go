@@ -18,6 +18,7 @@ import (
 	"taxi-mvp/internal/config"
 	"taxi-mvp/internal/db"
 	"taxi-mvp/internal/db/driverapprepair"
+	"taxi-mvp/internal/db/riderapprepair"
 	"taxi-mvp/internal/db/driverlogincodes"
 	"taxi-mvp/internal/db/broadcasts"
 	"taxi-mvp/internal/db/ledgerrepair"
@@ -53,6 +54,9 @@ func main() {
 	}
 	if err := driverapprepair.Ensure(context.Background(), database); err != nil {
 		log.Fatalf("drivers app location columns repair: %v", err)
+	}
+	if err := riderapprepair.Ensure(context.Background(), database); err != nil {
+		log.Fatalf("users rider app last-seen column repair: %v", err)
 	}
 	if err := driverlogincodes.Ensure(context.Background(), database); err != nil {
 		log.Fatalf("driver login codes schema: %v", err)

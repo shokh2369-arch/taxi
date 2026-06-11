@@ -13,6 +13,7 @@ import (
 	"taxi-mvp/internal/domain"
 	"taxi-mvp/internal/services"
 	"taxi-mvp/internal/utils"
+	"taxi-mvp/internal/ws"
 )
 
 // OpenAPI (informal) — Driver dispatch HTTP
@@ -156,20 +157,28 @@ func DriverAvailableRequests(db *sql.DB) gin.HandlerFunc {
 		}
 		if waitSec > 0 && len(offers) == 0 {
 			deadline := time.Now().Add(time.Duration(waitSec) * time.Second)
-			for time.Now().Before(deadline) {
-				select {
-				case <-ctx.Done():
+			hub := ws.DispatchHubDefault
+			for time.Now().Before(deadline) && len(offers) == 0 {
+				if err := ctx.Err(); err != nil {
 					break
-				default:
 				}
-				time.Sleep(500 * time.Millisecond)
+				remaining := time.Until(deadline)
+				waitSlice := remaining
+				if waitSlice > time.Second {
+					waitSlice = time.Second
+				}
+				if hub != nil {
+					hub.WaitForDispatchChange(ctx, waitSlice)
+				} else {
+					select {
+					case <-ctx.Done():
+					case <-time.After(200 * time.Millisecond):
+					}
+				}
 				offers, err = queryOffers()
 				if err != nil {
 					c.JSON(http.StatusInternalServerError, gin.H{"error": "query failed"})
 					return
-				}
-				if len(offers) > 0 {
-					break
 				}
 			}
 		}

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"taxi-mvp/internal/auth"
 	"taxi-mvp/internal/config"
 	"taxi-mvp/internal/domain"
 	"taxi-mvp/internal/legal"
@@ -22,8 +23,8 @@ import (
 const (
 	acceptCallbackPrefix  = "accept:"
 	defaultDriverCooldown = 5
-	dispatchBatchSize     = 3  // send request to N nearest drivers per batch
-	dispatchBatchWaitSec  = 60 // wait this many seconds for any driver in the batch to accept before trying next batch
+	dispatchBatchSize    = 3  // send request to N nearest drivers per batch
+	dispatchBatchWaitSec = 10 // wait this many seconds for any driver in the batch to accept before trying next batch
 	liveLocationOrderHint = "\n\n📍 Жонли локация ёқилган бўлса буюртмалар тезроқ келади."
 	// Live location considered active only when last_live_location_at within this many seconds (aligned with dispatch freshness).
 	liveLocationActiveSeconds = 120
@@ -178,8 +179,12 @@ type driverCandidate struct {
 }
 
 // StartPriorityDispatch starts a goroutine: notify closest driver, wait 8s, if no response notify next.
+// Dispatch may run for minutes (batched offers). Callers include HTTP handlers whose request context
+// is canceled when the JSON response is sent (native rider app confirm). The Telegram rider bot uses
+// context.Background(); dispatch must not be tied to a short-lived caller context.
 func (s *MatchService) StartPriorityDispatch(ctx context.Context, requestID string) {
-	go s.runPriorityDispatch(ctx, requestID)
+	_ = ctx
+	go s.runPriorityDispatch(context.Background(), requestID)
 }
 
 // requestStillDispatchable returns true if the request is PENDING, not expired, and ready to dispatch.
@@ -535,7 +540,7 @@ func (s *MatchService) PulseDriverOnlineFromHTTP(ctx context.Context, driverUser
 	}
 	nowStr := time.Now().UTC().Format("2006-01-02 15:04:05")
 	_, _ = s.db.ExecContext(ctx, `UPDATE drivers SET is_active = 1, manual_offline = 0, last_seen_at = ?1 WHERE user_id = ?2`, nowStr, driverUserID)
-	go s.NotifyDriverOfPendingRequests(context.Background(), driverUserID)
+	go s.NotifyDriverOfPendingRequests(auth.ContextWithDetachedActionSource(ctx), driverUserID)
 }
 
 // NotifyDriverOfPendingRequests sends any PENDING ride requests (within this driver's radius) to a driver who just came online.
@@ -755,7 +760,7 @@ func (s *MatchService) NotifyDriverOfPendingRequests(ctx context.Context, driver
 			),
 		)
 		chatID, msgID := int64(0), 0
-		if !appFresh {
+		if !ShouldSkipDriverTripTelegramNotify(ctx, s.db, driverUserID) {
 			sentMsg, sendErr := s.bot.Send(msg)
 			chatID = telegramID
 			if sendErr != nil {
@@ -775,7 +780,7 @@ func (s *MatchService) NotifyDriverOfPendingRequests(ctx context.Context, driver
 		}
 		ws.NotifyDispatchChangedBurst()
 		// Throttle Telegram sends only; native-app polling rows need no delay between offers.
-		if !appFresh {
+		if !ShouldSkipDriverTripTelegramNotify(ctx, s.db, driverUserID) {
 			time.Sleep(1 * time.Second)
 		}
 	}
