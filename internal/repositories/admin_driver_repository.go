@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
+	"github.com/google/uuid"
 	"taxi-mvp/internal/models"
 )
 
@@ -145,20 +146,44 @@ func (r *adminDriverRepo) GetDriverByID(ctx context.Context, id int64) (*models.
 
 // SetDriverBalance sets total wallet (promo+cash) by adjusting cash_balance only; promo_balance is unchanged.
 // Cannot set total below current promo_balance (would require reducing promotional credit — use a dedicated admin flow).
+// Runs in a transaction and records a driver_ledger row (reference_type 'admin_set_balance') for auditability.
 func (r *adminDriverRepo) SetDriverBalance(ctx context.Context, id int64, newBalance int64) error {
-	var promo int64
-	if err := r.db.QueryRowContext(ctx, `SELECT COALESCE(promo_balance, 0) FROM drivers WHERE user_id = ?1`, id).Scan(&promo); err != nil {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var promo, oldCash int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(promo_balance, 0), COALESCE(cash_balance, 0) FROM drivers WHERE user_id = ?1`, id).Scan(&promo, &oldCash); err != nil {
 		return err
 	}
 	if newBalance < promo {
 		return fmt.Errorf("total cannot be less than promo_balance (%d); promo credit is not reduced via SetDriverBalance", promo)
 	}
 	cash := newBalance - promo
-	_, err := r.db.ExecContext(ctx, `
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE drivers SET cash_balance = ?1, balance = ?2,
 		  is_active = CASE WHEN ?2 <= 0 THEN 0 ELSE is_active END
-		WHERE user_id = ?3`, cash, newBalance, id)
-	return err
+		WHERE user_id = ?3`, cash, newBalance, id); err != nil {
+		return err
+	}
+	refType := "admin_set_balance"
+	refID := uuid.New().String()
+	note := fmt.Sprintf("Admin set total balance to %d (cash %d -> %d; promo %d unchanged).", newBalance, oldCash, cash, promo)
+	ledgerEntry := &models.DriverLedgerEntry{
+		DriverID:      id,
+		Bucket:        models.LedgerBucketCash,
+		EntryType:     models.LedgerEntryManualAdjustment,
+		Amount:        cash - oldCash,
+		ReferenceType: &refType,
+		ReferenceID:   &refID,
+		Note:          &note,
+	}
+	if err := NewDriverLedgerRepository(r.db).InsertTx(ctx, tx, ledgerEntry); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // UpdateVerificationStatus sets verification_status. For "rejected", also clears document file_ids and sets application_step to restart doc upload.

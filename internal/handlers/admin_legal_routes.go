@@ -3,23 +3,32 @@ package handlers
 import (
 	"context"
 	"database/sql"
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"taxi-mvp/internal/auth"
 	"taxi-mvp/internal/legal"
 )
 
 // RegisterAdminLegalRoutes mounts GET/HEAD .../admin/legal/* on the API.
 // Registers under /admin, /api/admin, /api/v1/admin, and /v1/admin so dashboards that probe different API prefixes all work.
-func RegisterAdminLegalRoutes(r *gin.Engine, db *sql.DB) {
+// When adminAPIToken is empty, routes are not mounted.
+func RegisterAdminLegalRoutes(r *gin.Engine, db *sql.DB, adminAPIToken string) {
 	if r == nil || db == nil {
 		return
 	}
+	adminAPIToken = strings.TrimSpace(adminAPIToken)
+	if adminAPIToken == "" {
+		log.Printf("admin_http: ADMIN_API_TOKEN unset; admin legal routes not mounted")
+		return
+	}
+	mw := auth.RequireAdminAPIToken(adminAPIToken)
 	for _, base := range []string{"/admin", "/api/admin", "/api/v1/admin", "/v1/admin"} {
-		g := r.Group(base)
+		g := r.Group(base, mw)
 		registerAdminLegalRoutes(g, db)
 	}
 }

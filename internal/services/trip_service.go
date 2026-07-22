@@ -191,6 +191,9 @@ func (s *TripService) ensureDriverNearPickupWithMaxM(ctx context.Context, tripID
 // sends a reminder to the driver. If STARTED or FINISHED, does nothing. Safe to call once per trip creation.
 // For MVP uses an in-memory timer; can be replaced by DB/job later.
 func (s *TripService) ScheduleStartReminder(ctx context.Context, tripID string, driverUserID int64) {
+	// Deliberately detached from the caller's context: accept handlers pass a request-scoped ctx
+	// that is cancelled as soon as the response is sent, which silently killed the reminder.
+	_ = ctx
 	delay := time.Duration(s.cfg.StartReminderSeconds) * time.Second
 	if delay <= 0 {
 		delay = 60 * time.Second
@@ -199,13 +202,11 @@ func (s *TripService) ScheduleStartReminder(ctx context.Context, tripID string, 
 	go func() {
 		timer := time.NewTimer(delay)
 		defer timer.Stop()
-		select {
-		case <-ctx.Done():
-			return
-		case <-timer.C:
-		}
+		<-timer.C
+		checkCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
 		var status string
-		err := s.db.QueryRowContext(context.Background(), `SELECT status FROM trips WHERE id = ?1 AND driver_user_id = ?2`, tripID, driverUserID).Scan(&status)
+		err := s.db.QueryRowContext(checkCtx, `SELECT status FROM trips WHERE id = ?1 AND driver_user_id = ?2`, tripID, driverUserID).Scan(&status)
 		if err != nil {
 			if err != sql.ErrNoRows {
 				log.Printf("trip_service: start reminder load trip: %v", tripErrStr(err))
@@ -746,7 +747,11 @@ func (s *TripService) FinishTrip(ctx context.Context, tripID string, driverUserI
 	}
 	var rawFare int64
 	if s.fareSvc != nil {
-		rawFare, _ = s.fareSvc.CalculateFare(ctx, float64(distanceM)/1000)
+		rawFare, err = s.fareSvc.CalculateFare(ctx, float64(distanceM)/1000)
+		if err != nil {
+			// Do not settle the trip with a zero fare when fare settings cannot be loaded.
+			return nil, fmt.Errorf("trip finish calculate fare: %w", err)
+		}
 	}
 	if s.fareSvc == nil && s.cfg != nil {
 		rawFare = utils.CalculateFareRounded(float64(s.cfg.StartingFee), float64(s.cfg.PricePerKm), float64(distanceM)/1000)

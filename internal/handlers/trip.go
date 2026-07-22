@@ -136,7 +136,10 @@ type TripInfoResponse struct {
 	Status     string       `json:"status"`
 	Pickup     LatLng       `json:"pickup"` // { lat, lng } for rider/driver map
 	Drop       LatLng       `json:"drop"`   // { lat, lng }
-	DriverLegacy LatLng     `json:"driver"` // legacy alias for driver position (older clients)
+	// DriverLegacy previously used json tag "driver", which collided with the canonical Driver object
+	// above and made encoding/json drop BOTH fields. Legacy clients get lat/lng via driver_pos and via
+	// top-level lat/lng aliases inside the "driver" object.
+	DriverLegacy LatLng     `json:"driver_latlng"` // legacy alias for driver position (older clients)
 	DriverPos  LatLng       `json:"driver_pos"` // { lat, lng } from drivers.last_lat/lng (alias when driver is object)
 	DistanceKm float64      `json:"distance_km"`
 	Fare       int64        `json:"fare"`
@@ -330,6 +333,11 @@ func TripCancelRider(db *sql.DB, tripSvc *services.TripService) gin.HandlerFunc 
 // TripInfo returns trip details for Mini App. Uses FareService for tiered fare when set; otherwise config. FINISHED uses stored fare_amount.
 func TripInfo(db *sql.DB, cfg *config.Config, fareSvc *services.FareService) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		u := auth.UserFromContext(c.Request.Context())
+		if u == nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
 		tripID := c.Param("id")
 		if tripID == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "trip_id required"})
@@ -357,16 +365,21 @@ func TripInfo(db *sql.DB, cfg *config.Config, fareSvc *services.FareService) gin
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 			return
 		}
-		pickup := LatLng{pickupLat.Float64, pickupLng.Float64}
-		drop := LatLng{0, 0}
-		if dropLat.Valid && dropLng.Valid {
-			drop = LatLng{dropLat.Float64, dropLng.Float64}
-		}
 		// Effective driver id: normally trips.driver_user_id, but fall back to ride_requests.assigned_driver_user_id
 		// to guard against rare inconsistent snapshots where status becomes WAITING but trips.driver_user_id is not yet populated.
 		effectiveDriverUserID := driverUserID
 		if effectiveDriverUserID == 0 && assignedDriverUserID.Valid && assignedDriverUserID.Int64 > 0 {
 			effectiveDriverUserID = assignedDriverUserID.Int64
+		}
+		// Only trip participants may read trip details (404 to avoid leaking existence).
+		if u.UserID != riderUserID && u.UserID != effectiveDriverUserID {
+			c.JSON(http.StatusNotFound, gin.H{"error": "trip not found"})
+			return
+		}
+		pickup := LatLng{pickupLat.Float64, pickupLng.Float64}
+		drop := LatLng{0, 0}
+		if dropLat.Valid && dropLng.Valid {
+			drop = LatLng{dropLat.Float64, dropLng.Float64}
 		}
 
 		// Driver fields (best-effort, backward compatible with older DBs).
@@ -481,7 +494,6 @@ func TripInfo(db *sql.DB, cfg *config.Config, fareSvc *services.FareService) gin
 			ID:         tripID,
 			Driver:     driverObj,
 			TripID:     tripID,
-			DriverID:   effectiveDriverUserID,
 			Status:     status,
 			Pickup:     pickup,
 			Drop:       drop,
@@ -497,6 +509,10 @@ func TripInfo(db *sql.DB, cfg *config.Config, fareSvc *services.FareService) gin
 				Fare:       fare,
 				FareAmount: fareAmountPtr,
 			},
+		}
+		// Top-level driver_id is for driver clients; omit for riders (nested driver.id remains for display).
+		if u.Role == domain.RoleDriver {
+			resp.DriverID = effectiveDriverUserID
 		}
 		if riderPhone.Valid {
 			resp.RiderPhone = riderPhone.String

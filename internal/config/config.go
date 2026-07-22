@@ -28,17 +28,21 @@ type Config struct {
 	WebAppURL               string   // Base URL for Telegram Mini App / driver map (e.g. https://example.com/webapp)
 	RiderMapURL             string   // Full URL to rider map HTML (e.g. https://example.com/webapp/rider-map.html); if empty, derived as WebAppURL + "/rider-map.html"
 	APIAddr                 string   // HTTP API address for driver location and trip (e.g. :8080)
-	EnableDriverIDHeader    bool     // Default true in code; set ENABLE_DRIVER_ID_HEADER=false (or 0/no/off) to ignore X-Driver-Id (Telegram-only hardening)
+	EnableDriverIDHeader    bool     // Default false; set ENABLE_DRIVER_ID_HEADER=true (or 1/yes/on) to allow X-Driver-Id (local/dev only)
 	DriverAuthDebug         bool     // If true, log driver header path flags (never log header value or ids); env DRIVER_AUTH_DEBUG
 	EnableDriverHTTPLiveLocation bool // If true, POST /driver/location refreshes last_live_location_at / live_location_active and may mark driver online (same signals dispatch uses for Telegram live). Default on; set ENABLE_DRIVER_HTTP_LIVE_LOCATION=false for Telegram-only HTTP pings (Mini App map without treating HTTP as live).
 	AdminID                 int64    // Telegram user ID of the admin (only this user can use admin bot fare menu)
 	AdminBotToken           string   // Telegram bot token for admin bot (optional; if empty, admin bot is not started)
-	InfiniteDriverBalance   bool     // If true, dispatch ignores balance and no commission is deducted (temporary launch mode)
+	AdminAPIToken           string   // Required to mount /admin HTTP API; Bearer token for dashboard. If empty, admin routes are not mounted.
+	InfiniteDriverBalance   bool     // If true, dispatch ignores balance and no commission is deducted (temporary launch mode). Default false.
 	CommissionPercent       int      // Commission percentage on fare when InfiniteDriverBalance is false (e.g. 5 or 10)
 	DispatchDebug           bool     // If true, emit verbose dispatch/grid debug logs
+	// WSAllowedOrigins: origins allowed for WebSocket CheckOrigin (from WS_ALLOWED_ORIGINS). Empty → derived from WebAppURL.
+	WSAllowedOrigins []string
 	// Dispatch tuning: priority queue (one driver at a time, then next after timeout)
 	DispatchWaitSeconds         int // Seconds to wait for a driver batch to accept before trying next (e.g. 10)
 	DispatchDriverCooldownSec   int // Cooldown before sending another request to the same driver (e.g. 5–10)
+	DispatchOfferVisibleSeconds int // Per-driver app queue visibility after offer created_at (e.g. 90); offers also end on accept/cancel/expired
 	// PickupStartMaxMeters: driver must be within this distance of pickup to start from WAITING (or to mark ARRIVED).
 	PickupStartMaxMeters int
 }
@@ -75,17 +79,20 @@ func Load() (*Config, error) {
 		WebAppURL:              getEnv("WEBAPP_URL", "https://example.com/webapp"),
 		RiderMapURL:            getRiderMapURL(getEnv("WEBAPP_URL", "https://example.com/webapp"), getEnv("RIDER_MAP_URL", "")),
 		APIAddr:                getAPIAddr(),
-		EnableDriverIDHeader:        envEnableDriverIDHeader(),
+		EnableDriverIDHeader:         envEnableDriverIDHeader(),
 		EnableDriverHTTPLiveLocation: envEnableDriverHTTPLiveLocation(),
-		DriverAuthDebug:            getEnv("DRIVER_AUTH_DEBUG", "") == "true" || getEnv("DRIVER_AUTH_DEBUG", "") == "1",
-		AdminID:                getEnvInt64("ADMIN_ID", 0),
-		AdminBotToken:          getEnvFirst("ADMIN_BOT_TOKEN", "ADMIN_BOT", ""),
-		InfiniteDriverBalance:  getEnv("INFINITE_DRIVER_BALANCE", "true") == "true" || getEnv("INFINITE_DRIVER_BALANCE", "true") == "1",
-		CommissionPercent:      getEnvInt("COMMISSION_PERCENT", 5),
-		DispatchDebug:            getEnv("DISPATCH_DEBUG", "") == "true" || getEnv("DISPATCH_DEBUG", "") == "1",
-		DispatchWaitSeconds:       getEnvInt("DISPATCH_WAIT_SECONDS", 10),
-		DispatchDriverCooldownSec: getEnvInt("DISPATCH_DRIVER_COOLDOWN_SECONDS", 5),
-		PickupStartMaxMeters:      pickupStartMaxM,
+		DriverAuthDebug:              getEnv("DRIVER_AUTH_DEBUG", "") == "true" || getEnv("DRIVER_AUTH_DEBUG", "") == "1",
+		AdminID:                      getEnvInt64("ADMIN_ID", 0),
+		AdminBotToken:                getEnvFirst("ADMIN_BOT_TOKEN", "ADMIN_BOT", ""),
+		AdminAPIToken:                strings.TrimSpace(os.Getenv("ADMIN_API_TOKEN")),
+		InfiniteDriverBalance:        envTruthy("INFINITE_DRIVER_BALANCE", false),
+		CommissionPercent:            getEnvInt("COMMISSION_PERCENT", 5),
+		DispatchDebug:                getEnv("DISPATCH_DEBUG", "") == "true" || getEnv("DISPATCH_DEBUG", "") == "1",
+		WSAllowedOrigins:             parseWSAllowedOrigins(getEnv("WEBAPP_URL", "https://example.com/webapp")),
+		DispatchWaitSeconds:          getEnvInt("DISPATCH_WAIT_SECONDS", 10),
+		DispatchDriverCooldownSec:    getEnvInt("DISPATCH_DRIVER_COOLDOWN_SECONDS", 5),
+		DispatchOfferVisibleSeconds:  getEnvInt("DISPATCH_OFFER_VISIBLE_SECONDS", 90),
+		PickupStartMaxMeters:         pickupStartMaxM,
 	}
 
 	if cfg.RiderBotToken == "" {
@@ -101,16 +108,69 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
-// envEnableDriverIDHeader is true by default (native driver app + Mini App with X-Driver-Id).
-// Set ENABLE_DRIVER_ID_HEADER to false, 0, no, or off (case-insensitive) to disable and require Telegram initData only.
+// envEnableDriverIDHeader is false by default (require Bearer session or Telegram initData).
+// Set ENABLE_DRIVER_ID_HEADER to true, 1, yes, or on (case-insensitive) to allow X-Driver-Id for local/dev.
 func envEnableDriverIDHeader() bool {
-	s := strings.TrimSpace(strings.ToLower(os.Getenv("ENABLE_DRIVER_ID_HEADER")))
-	switch s {
-	case "false", "0", "no", "off":
-		return false
-	default:
-		return true
+	return envTruthy("ENABLE_DRIVER_ID_HEADER", false)
+}
+
+// envTruthy reads a boolean env var. When unset/empty, returns defaultVal.
+// True values: true, 1, yes, on. False values: false, 0, no, off (and any other non-empty string → false when defaultVal is true isn't used).
+func envTruthy(key string, defaultVal bool) bool {
+	s := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	if s == "" {
+		return defaultVal
 	}
+	switch s {
+	case "true", "1", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+// parseWSAllowedOrigins returns origins from WS_ALLOWED_ORIGINS (comma-separated),
+// or the scheme+host of webAppURL when the env is empty.
+func parseWSAllowedOrigins(webAppURL string) []string {
+	raw := strings.TrimSpace(os.Getenv("WS_ALLOWED_ORIGINS"))
+	if raw != "" {
+		parts := strings.Split(raw, ",")
+		out := make([]string, 0, len(parts))
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				out = append(out, strings.TrimRight(p, "/"))
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	if o := originFromURL(webAppURL); o != "" {
+		return []string{o}
+	}
+	return nil
+}
+
+func originFromURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	// Simple parse for http(s)://host[:port]/path without pulling net/url.
+	scheme, rest, ok := strings.Cut(raw, "://")
+	if !ok || scheme == "" || rest == "" {
+		return ""
+	}
+	host := rest
+	if i := strings.IndexAny(rest, "/?#"); i >= 0 {
+		host = rest[:i]
+	}
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return ""
+	}
+	return scheme + "://" + host
 }
 
 // envEnableDriverHTTPLiveLocation is true by default so native/Mini App clients that only send POST /driver/location

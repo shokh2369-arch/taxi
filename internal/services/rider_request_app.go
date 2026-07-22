@@ -17,6 +17,7 @@ import (
 	"taxi-mvp/internal/domain"
 	"taxi-mvp/internal/legal"
 	"taxi-mvp/internal/utils"
+	"taxi-mvp/internal/ws"
 )
 
 // Sentinel errors for native rider ride-request HTTP flow (Bearer auth).
@@ -372,6 +373,8 @@ func (s *RiderRequestAppService) cleanupDispatchNotifications(ctx context.Contex
 	}
 	// Remove all notifications so driver polling won't keep old rows around.
 	_, _ = s.db.ExecContext(ctx, `DELETE FROM request_notifications WHERE request_id = ?1`, requestID)
+	// Poke native drivers over WebSocket so their offer lists refresh immediately.
+	ws.NotifyDispatchChangedBurst()
 	return nil
 }
 

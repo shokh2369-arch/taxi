@@ -148,6 +148,7 @@ func main() {
 		log.Printf("bot startup delay done, starting Telegram bots")
 	case <-ctx.Done():
 		log.Println("shutdown during bot delay")
+		shutdownHTTPServer(httpServer)
 		return
 	}
 
@@ -170,8 +171,17 @@ func main() {
 	}
 
 	wg.Wait()
-	_ = httpServer.Shutdown(context.Background())
+	shutdownHTTPServer(httpServer)
 	log.Println("graceful shutdown complete")
+}
+
+// shutdownHTTPServer drains the API server with a hard deadline so exit cannot hang forever.
+func shutdownHTTPServer(s *http.Server) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := s.Shutdown(ctx); err != nil {
+		log.Printf("api server shutdown: %v", err)
+	}
 }
 
 // notifyDriversOfDeployment sets all drivers offline, syncs balance<=0 to offline, then notifies all drivers (e.g. after deployment).

@@ -111,8 +111,18 @@ func (r *TripRepo) CancelByDriver(ctx context.Context, tripID string, driverUser
 	if n == 0 {
 		return 0, 0, nil
 	}
+	r.cancelParentRideRequest(ctx, tripID)
 	_ = r.db.QueryRowContext(ctx, `SELECT rider_user_id FROM trips WHERE id = ?1`, tripID).Scan(&riderUserID)
 	return n, riderUserID, nil
+}
+
+// cancelParentRideRequest moves the trip's ride_requests row from ASSIGNED to CANCELLED (terminal),
+// so cancelled trips do not leave the request stuck in ASSIGNED forever. Best-effort.
+func (r *TripRepo) cancelParentRideRequest(ctx context.Context, tripID string) {
+	_, _ = r.db.ExecContext(ctx, `
+		UPDATE ride_requests SET status = ?1
+		WHERE id = (SELECT request_id FROM trips WHERE id = ?2) AND status = ?3`,
+		domain.RequestStatusCancelled, tripID, domain.RequestStatusAssigned)
 }
 
 // CancelByRider sets status = CANCELLED_BY_RIDER, cancelled_at, cancelled_by = "rider", optional cancel_reason.
@@ -132,6 +142,7 @@ func (r *TripRepo) CancelByRider(ctx context.Context, tripID string, riderUserID
 	if n == 0 {
 		return 0, 0, nil
 	}
+	r.cancelParentRideRequest(ctx, tripID)
 	_ = r.db.QueryRowContext(ctx, `SELECT driver_user_id FROM trips WHERE id = ?1`, tripID).Scan(&driverUserID)
 	return n, driverUserID, nil
 }

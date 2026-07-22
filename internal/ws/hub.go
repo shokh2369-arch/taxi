@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -136,4 +137,27 @@ var Upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
 	CheckOrigin:     func(r *http.Request) bool { return true },
+}
+
+// ConfigureCheckOrigin sets Upgrader.CheckOrigin from an allowlist.
+// Empty Origin (native apps / non-browser) is allowed. Browser Origins must match.
+func ConfigureCheckOrigin(allowedOrigins []string) {
+	allow := make(map[string]struct{}, len(allowedOrigins))
+	for _, o := range allowedOrigins {
+		o = strings.TrimRight(strings.TrimSpace(o), "/")
+		if o != "" {
+			allow[o] = struct{}{}
+		}
+	}
+	Upgrader.CheckOrigin = func(r *http.Request) bool {
+		origin := strings.TrimRight(strings.TrimSpace(r.Header.Get("Origin")), "/")
+		if origin == "" {
+			return true
+		}
+		if len(allow) == 0 {
+			return false
+		}
+		_, ok := allow[origin]
+		return ok
+	}
 }

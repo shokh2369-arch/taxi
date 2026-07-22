@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/google/uuid"
@@ -33,6 +34,10 @@ const (
 	btnBack           = "◀️ Орқага"
 	btnAddPlace       = "📍 Lokatsiya qoshish"
 )
+
+// fileDownloadClient bounds Telegram file downloads; http.Get (default client) has no timeout
+// and would block the synchronous update loop forever on a stuck connection.
+var fileDownloadClient = &http.Client{Timeout: 15 * time.Second}
 
 type placeAddState struct {
 	mu        sync.Mutex
@@ -375,7 +380,7 @@ func handlePublishMessage(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB, 
 			return false
 		}
 		url := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", cfg.AdminBotToken, f.FilePath)
-		resp, err := http.Get(url)
+		resp, err := fileDownloadClient.Get(url)
 		if err != nil {
 			sendMessage(bot, chatID, "Файлни юклаб олишда хатолик.")
 			return false
@@ -520,12 +525,15 @@ func handleApprovalCallback(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB
 		}
 		return
 	}
+	// Reset application_admin_sent so re-submitted documents trigger sendAdminApprovalRequest again
+	// (the driver bot skips the admin packet when the flag is still 1).
 	if _, err := db.ExecContext(ctx, `
 		UPDATE drivers
 		SET verification_status = 'rejected',
 		    license_photo_file_id = NULL,
 		    vehicle_doc_file_id = NULL,
-		    application_step = 'license_photo'
+		    application_step = 'license_photo',
+		    application_admin_sent = 0
 		WHERE user_id = ?1`, driverUserID); err != nil {
 		log.Printf("admin bot: reject driver update error user_id=%d: %v", driverUserID, err)
 		return

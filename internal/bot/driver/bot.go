@@ -27,6 +27,10 @@ import (
 //go:embed live_location_steps.png
 var liveLocationStepsPNG []byte
 
+// fileDownloadClient bounds Telegram file downloads; http.Get (default client) has no timeout
+// and would block the synchronous update loop forever on a stuck connection.
+var fileDownloadClient = &http.Client{Timeout: 15 * time.Second}
+
 const (
 	btnLiveLocation     = driverloc.BtnShareLiveLocation
 	btnPending          = "⏳ Тасдиқлаш кутилмоқда"
@@ -603,6 +607,9 @@ func handleUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 		return
 	}
 	msg := update.Message
+	if msg.From == nil {
+		return
+	}
 	chatID := msg.Chat.ID
 	telegramID := msg.From.ID
 
@@ -650,8 +657,25 @@ func handleUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 	}
 
 	// Application flow: phone -> first_name -> last_name -> car_type -> color -> plate -> license_photo -> vehicle_doc
-	if msg.Contact != nil && handleApplicationText(bot, db, chatID, telegramID, msg.Contact.PhoneNumber) {
-		return
+	// A shared contact is only valid input for the phone step; on any other step it must not be
+	// saved as the answer (e.g. as car_type/name/color) — re-prompt for text instead.
+	if msg.Contact != nil {
+		ctx := context.Background()
+		var userID int64
+		_ = db.QueryRowContext(ctx, `SELECT id FROM users WHERE telegram_id = ?1`, telegramID).Scan(&userID)
+		if userID != 0 {
+			step, complete := inferApplicationStep(ctx, db, userID)
+			if !complete && step != "" {
+				if step == "phone" {
+					if handleApplicationText(bot, db, chatID, telegramID, msg.Contact.PhoneNumber) {
+						return
+					}
+				} else {
+					sendApplicationPrompt(bot, db, chatID, userID, step)
+					return
+				}
+			}
+		}
 	}
 	if len(msg.Photo) > 0 {
 		fileID := msg.Photo[len(msg.Photo)-1].FileID
@@ -1041,7 +1065,7 @@ func sendAdminApprovalRequest(ctx context.Context, bot *tgbotapi.BotAPI, db *sql
 				log.Printf("driver: getFile license error user_id=%d: %v", userID, err)
 			} else if f.FilePath != "" {
 				url := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", cfg.DriverBotToken, f.FilePath)
-				if resp, err := http.Get(url); err != nil {
+				if resp, err := fileDownloadClient.Get(url); err != nil {
 					log.Printf("driver: download license photo error user_id=%d: %v", userID, err)
 				} else {
 					defer resp.Body.Close()
@@ -1067,7 +1091,7 @@ func sendAdminApprovalRequest(ctx context.Context, bot *tgbotapi.BotAPI, db *sql
 				log.Printf("driver: getFile vehicle doc error user_id=%d: %v", userID, err)
 			} else if f.FilePath != "" {
 				url := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", cfg.DriverBotToken, f.FilePath)
-				if resp, err := http.Get(url); err != nil {
+				if resp, err := fileDownloadClient.Get(url); err != nil {
 					log.Printf("driver: download vehicle doc photo error user_id=%d: %v", userID, err)
 				} else {
 					defer resp.Body.Close()
@@ -1523,16 +1547,14 @@ func handleLiveLocationUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Conf
 		}
 		if matchService != nil {
 			log.Printf("driver: live_location auto_online user_id=%d lat=%.6f lng=%.6f grid=%s", userID, lat, lng, gridID)
-			go matchService.NotifyDriverOfPendingRequests(context.Background(), userID)
+			matchService.SpawnNotifyDriverOfPendingRequests(context.Background(), userID)
 		}
 		// Movement-based dispatch when driver moved ~300m (only if we set them online).
 		const minMovementM = 300.0
 		if matchService != nil && prevLat.Valid && prevLng.Valid {
 			distM := utils.HaversineMeters(prevLat.Float64, prevLng.Float64, lat, lng)
 			if distM >= minMovementM {
-				go func(driverID int64) {
-					matchService.NotifyDriverOfPendingRequests(context.Background(), driverID)
-				}(userID)
+				matchService.SpawnNotifyDriverOfPendingRequests(context.Background(), userID)
 			}
 		}
 	} else {
@@ -1564,6 +1586,16 @@ func handleLocation(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 }
 
 func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchService *services.MatchService, assignmentService *services.AssignmentService, tripService *services.TripService, q *tgbotapi.CallbackQuery) {
+	if q == nil {
+		return
+	}
+	// CallbackQuery.Message is optional (e.g. very old messages); From can be missing too. Never dereference blindly.
+	if q.Message == nil || q.From == nil {
+		if q.ID != "" {
+			_, _ = bot.Request(tgbotapi.NewCallback(q.ID, ""))
+		}
+		return
+	}
 	chatID := q.Message.Chat.ID
 	telegramID := q.From.ID
 	data := q.Data

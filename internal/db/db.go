@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"log"
 
 	_ "github.com/tursodatabase/libsql-client-go/libsql"
 )
@@ -21,7 +22,29 @@ func Open(databaseURL string) (*sql.DB, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("ping: %w", err)
 	}
+	// SQLite does not enforce REFERENCES constraints unless foreign_keys is on.
+	// Best-effort: some libsql transports may not support the pragma; do not fail startup.
+	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+		log.Printf("db: enable foreign_keys pragma: %v", err)
+	}
+	if err := ensureTripsDriverStatusIndex(db); err != nil {
+		log.Printf("db: ensure trips(driver_user_id, status) index: %v", err)
+	}
 	return db, nil
+}
+
+// ensureTripsDriverStatusIndex creates the index used by promo/referral finished-trip count queries
+// (startup repair; migrations may not have run on this database yet, so guard on the table).
+func ensureTripsDriverStatusIndex(db *sql.DB) error {
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'trips'`).Scan(&n); err != nil {
+		return err
+	}
+	if n == 0 {
+		return nil
+	}
+	_, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_trips_driver_status ON trips(driver_user_id, status)`)
+	return err
 }
 
 // Close closes the database connection.

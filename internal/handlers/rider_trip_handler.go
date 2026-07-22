@@ -115,7 +115,8 @@ func riderAppListTrips(deps RiderTripDeps) gin.HandlerFunc {
 			var rowid int64
 			var id, status, requestID string
 			var finishedAt, cancelledAt sql.NullString
-			var fareAmount, distanceM int64
+			// fare_amount / distance_m are nullable in production; scanning into int64 500s the whole page.
+			var fareAmount, distanceM sql.NullInt64
 			var pickupLat, pickupLng, dropLat, dropLng sql.NullFloat64
 			if err := rows.Scan(&rowid, &id, &status, &finishedAt, &cancelledAt, &fareAmount, &distanceM, &requestID,
 				&pickupLat, &pickupLng, &dropLat, &dropLng); err != nil {
@@ -124,10 +125,10 @@ func riderAppListTrips(deps RiderTripDeps) gin.HandlerFunc {
 			}
 			finStr, canStr := "", ""
 			if finishedAt.Valid {
-				finStr = finishedAt.String
+				finStr = tripHistoryTimeToRFC3339(finishedAt.String)
 			}
 			if cancelledAt.Valid {
-				canStr = cancelledAt.String
+				canStr = tripHistoryTimeToRFC3339(cancelledAt.String)
 			}
 			item := gin.H{
 				"id":            id,
@@ -136,10 +137,10 @@ func riderAppListTrips(deps RiderTripDeps) gin.HandlerFunc {
 				"status":        status,
 				"request_id":    requestID,
 				"requestId":     requestID,
-				"fare_amount":   fareAmount,
-				"fareAmount":    fareAmount,
-				"distance_m":    distanceM,
-				"distanceM":     distanceM,
+				"fare_amount":   fareAmount.Int64,
+				"fareAmount":    fareAmount.Int64,
+				"distance_m":    distanceM.Int64,
+				"distanceM":     distanceM.Int64,
 				"finished_at":   finStr,
 				"finishedAt":    finStr,
 				"cancelled_at":  canStr,

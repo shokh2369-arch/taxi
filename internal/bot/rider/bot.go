@@ -177,7 +177,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 		return
 	}
 	if msg.Command() == "cancel" {
-		handleCancel(bot, db, cfg, tripService, chatID, telegramID)
+		handleCancel(bot, db, cfg, matchService, tripService, chatID, telegramID)
 		return
 	}
 
@@ -264,7 +264,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 	}
 
 	if msg.Text == btnCancel {
-		handleCancel(bot, db, cfg, tripService, chatID, telegramID)
+		handleCancel(bot, db, cfg, matchService, tripService, chatID, telegramID)
 		return
 	}
 	if msg.Text == btnHelp {
@@ -286,8 +286,16 @@ func setBotCommands(bot *tgbotapi.BotAPI) {
 }
 
 func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchService *services.MatchService, q *tgbotapi.CallbackQuery) {
+	if q == nil {
+		return
+	}
 	// Always ACK callback quickly.
 	_, _ = bot.Request(tgbotapi.NewCallback(q.ID, ""))
+	// CallbackQuery.Message is optional per the Telegram API; all handlers below dereference
+	// q.Message.Chat and q.From, so bail out (already answered) when either is missing.
+	if q.Message == nil || q.From == nil {
+		return
+	}
 
 	if q.Data == cbRiderAcceptTerms {
 		ctx := context.Background()
@@ -1033,7 +1041,7 @@ func estimatePrice(ctx context.Context, db *sql.DB, cfg *config.Config, pickupLa
 	return utils.CalculateFareRounded(float64(startingFee), float64(pricePerKm), distanceKm)
 }
 
-func handleCancel(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, tripService *services.TripService, chatID, telegramID int64) {
+func handleCancel(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchService *services.MatchService, tripService *services.TripService, chatID, telegramID int64) {
 	_ = cfg
 	ctx := context.Background()
 	var userID int64
@@ -1071,14 +1079,22 @@ func handleCancel(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, tripServ
 			}
 		}
 	}
-	res, err := db.ExecContext(ctx, `
-		UPDATE ride_requests SET status = ?1
-		WHERE id = (
-			SELECT id FROM ride_requests
-			WHERE rider_user_id = ?2 AND status = ?3
-			ORDER BY created_at DESC LIMIT 1
-		)`,
-		domain.RequestStatusCancelled, userID, domain.RequestStatusPending)
+	var requestID string
+	if err := db.QueryRowContext(ctx, `
+		SELECT id FROM ride_requests
+		WHERE rider_user_id = ?1 AND status = ?2
+		ORDER BY created_at DESC LIMIT 1`,
+		userID, domain.RequestStatusPending).Scan(&requestID); err != nil && err != sql.ErrNoRows {
+		log.Printf("rider: cancel request lookup: %v", err)
+		send(bot, chatID, "Хатолик.")
+		return
+	}
+	if requestID == "" {
+		send(bot, chatID, "Бекор қилинадиган сўров топилмади.")
+		return
+	}
+	res, err := db.ExecContext(ctx, `UPDATE ride_requests SET status = ?1 WHERE id = ?2 AND status = ?3`,
+		domain.RequestStatusCancelled, requestID, domain.RequestStatusPending)
 	if err != nil {
 		log.Printf("rider: cancel request: %v", err)
 		send(bot, chatID, "Хатолик.")
@@ -1088,6 +1104,11 @@ func handleCancel(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, tripServ
 	if rows == 0 {
 		send(bot, chatID, "Бекор қилинадиган сўров топилмади.")
 		return
+	}
+	// Close driver offers like the app cancel path: delete Telegram offer messages,
+	// drop SENT request_notifications rows, and poke native drivers to refetch.
+	if matchService != nil {
+		matchService.CleanupCancelledRequestOffers(ctx, requestID)
 	}
 	send(bot, chatID, "Бекор қилинди.")
 	if ensureRiderPhone(bot, db, chatID, telegramID) {

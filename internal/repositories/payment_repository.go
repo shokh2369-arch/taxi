@@ -83,13 +83,15 @@ func (r *paymentRepo) ListPayments(ctx context.Context, driverID *int64, from, t
 		query += " AND p.driver_id = ?"
 		args = append(args, *driverID)
 	}
+	// payments.created_at is stored as 'YYYY-MM-DD HH:MM:SS' UTC text (SQLite datetime('now')),
+	// so filters must use the same format; RFC3339 strings never match this column lexically.
 	if from != nil {
 		query += " AND p.created_at >= ?"
-		args = append(args, from.Format(time.RFC3339))
+		args = append(args, from.UTC().Format("2006-01-02 15:04:05"))
 	}
 	if to != nil {
 		query += " AND p.created_at < ?"
-		args = append(args, to.Format(time.RFC3339))
+		args = append(args, to.UTC().Format("2006-01-02 15:04:05"))
 	}
 	query += " ORDER BY p.created_at DESC"
 

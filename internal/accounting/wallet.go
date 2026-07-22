@@ -104,7 +104,7 @@ func ApplyTripCommission(ctx context.Context, db *sql.DB, pay PaymentTXInserter,
 	if infiniteBalanceMode || commission <= 0 {
 		return nil
 	}
-	tx, err := db.BeginTx(ctx, nil)
+	tx, err := beginImmediateTx(ctx, db)
 	if err != nil {
 		return err
 	}
@@ -113,6 +113,21 @@ func ApplyTripCommission(ctx context.Context, db *sql.DB, pay PaymentTXInserter,
 		return err
 	}
 	return tx.Commit()
+}
+
+// beginImmediateTx starts a write (IMMEDIATE) transaction so balance reads and the deduction happen
+// under one write lock (no deferred-lock upgrade race between read and write). database/sql has no
+// portable BEGIN IMMEDIATE, so the first statement is a no-op write that acquires the write lock.
+func beginImmediateTx(ctx context.Context, db *sql.DB) (*sql.Tx, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE drivers SET user_id = user_id WHERE 1 = 0`); err != nil {
+		_ = tx.Rollback()
+		return nil, err
+	}
+	return tx, nil
 }
 
 // ApplyTripCommissionInTx is ApplyTripCommission without starting/committing a transaction.
@@ -127,6 +142,14 @@ func ApplyTripCommissionInTx(ctx context.Context, tx *sql.Tx, db *sql.DB, pay Pa
 	var promoBal, cashBal int64
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(promo_balance,0), COALESCE(cash_balance,0) FROM drivers WHERE user_id = ?1`, driverID).Scan(&promoBal, &cashBal); err != nil {
 		return err
+	}
+	// Guard against already-negative balances: never "deduct" a negative amount (which would credit
+	// the driver) and never push a bucket below zero.
+	if promoBal < 0 {
+		promoBal = 0
+	}
+	if cashBal < 0 {
+		cashBal = 0
 	}
 	fromPromo := commission
 	if fromPromo > promoBal {
@@ -211,10 +234,16 @@ func ApplyTripCommissionInTx(ctx context.Context, tx *sql.Tx, db *sql.DB, pay Pa
 	}
 	legacyNote := "Internal commission accrual offset against driver wallets (promo/cash); not a bank settlement."
 	tripCopy := tripID
-	if pay != nil {
+	// The payments row records what was actually deducted from the driver's wallets. When there is a
+	// shortfall, the uncollected part was never taken and must not appear as a collected commission.
+	deducted := fromPromo + fromCash
+	if pay != nil && deducted > 0 {
+		if uncollected > 0 {
+			legacyNote = fmt.Sprintf("%s Partial: %d of %d so'm collected (%d uncollected).", legacyNote, deducted, commission, uncollected)
+		}
 		if err := pay.InsertPaymentTx(ctx, tx, &models.Payment{
 			DriverID: driverID,
-			Amount:   commission,
+			Amount:   deducted,
 			Type:     models.PaymentTypeCommission,
 			Note:     legacyNote,
 			TripID:   &tripCopy,

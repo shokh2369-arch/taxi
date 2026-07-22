@@ -13,6 +13,7 @@ import (
 	"taxi-mvp/internal/config"
 	"taxi-mvp/internal/domain"
 	"taxi-mvp/internal/legal"
+	"taxi-mvp/internal/ws"
 )
 
 const assignmentLogErrMaxChars = 200
@@ -53,7 +54,20 @@ func (s *AssignmentService) TryAssign(ctx context.Context, requestID string, dri
 	if !legal.NewService(s.db).DriverHasActiveLegal(ctx, driverUserID) {
 		return false, "", fmt.Errorf("assignment: driver %d missing active legal acceptances", driverUserID)
 	}
-	res, err := s.db.ExecContext(ctx, `
+	// Single transaction: ASSIGNED status, ACCEPTED notification, and trip insert commit or roll back
+	// together, so a failed trip insert cannot leave the request stuck in ASSIGNED without a trip.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, "", err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	res, err := tx.ExecContext(ctx, `
 		UPDATE ride_requests
 		SET status = ?1, assigned_driver_user_id = ?2, assigned_at = datetime('now')
 		WHERE id = ?3 AND status = ?4 AND expires_at > datetime('now')`,
@@ -66,23 +80,28 @@ func (s *AssignmentService) TryAssign(ctx context.Context, requestID string, dri
 		return false, "", nil // another driver already accepted or request expired
 	}
 	var riderUserID int64
-	err = s.db.QueryRowContext(ctx, `SELECT rider_user_id FROM ride_requests WHERE id = ?1`, requestID).Scan(&riderUserID)
+	err = tx.QueryRowContext(ctx, `SELECT rider_user_id FROM ride_requests WHERE id = ?1`, requestID).Scan(&riderUserID)
 	if err != nil {
 		return false, "", err
 	}
 	// Mark this driver's notification as ACCEPTED (for dispatch log)
-	_, _ = s.db.ExecContext(ctx, `UPDATE request_notifications SET status = ?1 WHERE request_id = ?2 AND driver_user_id = ?3`,
+	_, _ = tx.ExecContext(ctx, `UPDATE request_notifications SET status = ?1 WHERE request_id = ?2 AND driver_user_id = ?3`,
 		domain.NotificationStatusAccepted, requestID, driverUserID)
 
 	tripID = uuid.New().String()
-	_, err = s.db.ExecContext(ctx, `
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO trips (id, request_id, driver_user_id, rider_user_id, status)
 		VALUES (?1, ?2, ?3, ?4, ?5)`,
 		tripID, requestID, driverUserID, riderUserID, domain.TripStatusWaiting)
 	if err != nil {
 		return false, "", err
 	}
+	if err := tx.Commit(); err != nil {
+		return false, "", err
+	}
+	committed = true
 	log.Printf("dispatch_audit: request=%s accepted_by=%d trip_id=%s", requestID, driverUserID, tripID)
+	CloseDriverQueueOffersExcept(ctx, s.db, requestID, driverUserID, "accepted_by_other", true)
 
 	var riderTelegramID int64
 	err = s.db.QueryRowContext(ctx, `SELECT telegram_id FROM users WHERE id = ?1`, riderUserID).Scan(&riderTelegramID)
@@ -176,6 +195,7 @@ func (s *AssignmentService) RunExpiryWorker(ctx context.Context) {
 			return
 		case <-tick.C:
 			s.expireRequests(ctx)
+			ExpireStaleDriverQueueOffers(ctx, s.db, s.cfg)
 		}
 	}
 }
@@ -202,12 +222,14 @@ func (s *AssignmentService) expireRequests(ctx context.Context) {
 	defer rows.Close()
 
 	var riderUserIDs []int64
+	var expiredRequestIDs []string
 	for rows.Next() {
 		var id string
 		var riderUserID int64
 		if err := rows.Scan(&id, &riderUserID); err != nil {
 			continue
 		}
+		expiredRequestIDs = append(expiredRequestIDs, id)
 		riderUserIDs = append(riderUserIDs, riderUserID)
 	}
 	rows.Close()
@@ -217,6 +239,13 @@ func (s *AssignmentService) expireRequests(ctx context.Context) {
 	if err := tx.Commit(); err != nil {
 		log.Printf("assignment_service: commit: %v", assignmentErrStr(err))
 		return
+	}
+
+	for _, requestID := range expiredRequestIDs {
+		CloseAllDriverQueueOffers(ctx, s.db, requestID, "expired", false)
+	}
+	if len(expiredRequestIDs) > 0 {
+		ws.NotifyDispatchChangedBurst()
 	}
 
 	for _, riderUserID := range riderUserIDs {

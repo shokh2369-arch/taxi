@@ -13,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"taxi-mvp/internal/services"
 )
 
 const (
@@ -228,8 +229,8 @@ func DriverAuthRequestCode(db *sql.DB, driverBot telegramSender) gin.HandlerFunc
 	}
 }
 
-// DriverAuthVerifyCode validates OTP and returns internal driver user id for X-Driver-Id.
-func DriverAuthVerifyCode(db *sql.DB) gin.HandlerFunc {
+// DriverAuthVerifyCode validates OTP and returns an opaque bearer session token.
+func DriverAuthVerifyCode(db *sql.DB, tokens *services.DriverAuthTokenService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var body DriverAuthVerifyCodeBody
 		if err := c.ShouldBindJSON(&body); err != nil {
@@ -257,11 +258,12 @@ func DriverAuthVerifyCode(db *sql.DB) gin.HandlerFunc {
 
 		var rowID int64
 		var stored string
+		var failedAttempts int
 		err = db.QueryRowContext(ctx, `
-			SELECT id, code FROM driver_login_codes
+			SELECT id, code, COALESCE(failed_attempts, 0) FROM driver_login_codes
 			WHERE user_id = ? AND used = 0 AND expires_at > datetime('now')
 			ORDER BY id DESC LIMIT 1`,
-			userID).Scan(&rowID, &stored)
+			userID).Scan(&rowID, &stored, &failedAttempts)
 		if err == sql.ErrNoRows {
 			writeAPIError(c, http.StatusBadRequest, errDriverAuthInvalidCode, "invalid code")
 			return
@@ -273,6 +275,16 @@ func DriverAuthVerifyCode(db *sql.DB) gin.HandlerFunc {
 		}
 
 		if subtle.ConstantTimeCompare([]byte(stored), []byte(codeIn)) != 1 {
+			failedAttempts++
+			if failedAttempts >= 5 {
+				_, _ = db.ExecContext(ctx, `
+					UPDATE driver_login_codes SET failed_attempts = ?, used = 1 WHERE id = ?`,
+					failedAttempts, rowID)
+			} else {
+				_, _ = db.ExecContext(ctx, `
+					UPDATE driver_login_codes SET failed_attempts = ? WHERE id = ?`,
+					failedAttempts, rowID)
+			}
 			writeAPIError(c, http.StatusBadRequest, errDriverAuthInvalidCode, "invalid code")
 			return
 		}
@@ -283,6 +295,23 @@ func DriverAuthVerifyCode(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		c.JSON(http.StatusOK, gin.H{"driver_id": userID})
+		if tokens == nil {
+			writeAPIError(c, http.StatusInternalServerError, errDriverAuthInternal, "token service unavailable")
+			return
+		}
+		issued, err := tokens.Issue(ctx, userID)
+		if err != nil || issued == nil {
+			log.Printf("driver_auth: verify-code issue token error: %v", err)
+			writeAPIError(c, http.StatusInternalServerError, errDriverAuthInternal, "token issue failed")
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"ok":           true,
+			"access_token": issued.AccessToken,
+			"token_type":   issued.TokenType,
+			"expires_in":   issued.ExpiresIn,
+			"driver_id":    issued.DriverID,
+		})
 	}
 }

@@ -22,16 +22,35 @@ type RiderAccessTokenVerifier interface {
 
 const headerInitData = "X-Telegram-Init-Data"
 
+// ServeWsOpts configures WebSocket auth credential sources.
+type ServeWsOpts struct {
+	EnableDriverIDHeader bool
+	// AllowQueryCreds enables init_data / access_token / driver_id query fallbacks
+	// (local/dev only; prefer headers in production).
+	AllowQueryCreds bool
+	DriverTokens    auth.DriverTokenVerifier
+}
+
 // riderAccessTokenFromRequest returns the native rider JWT from Authorization: Bearer
-// or from query access_token (browsers / Flutter web cannot set WS headers).
-// Header is checked first; same validation path for both.
-func riderAccessTokenFromRequest(r *http.Request) string {
+// or, when allowQuery is true, from query access_token.
+func riderAccessTokenFromRequest(r *http.Request, allowQuery bool) string {
 	h := strings.TrimSpace(r.Header.Get("Authorization"))
 	token := strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
 	if token != "" {
 		return token
 	}
-	return strings.TrimSpace(r.URL.Query().Get("access_token"))
+	if allowQuery {
+		return strings.TrimSpace(r.URL.Query().Get("access_token"))
+	}
+	return ""
+}
+
+func initDataFromRequest(r *http.Request, allowQuery bool) string {
+	initData := strings.TrimSpace(r.Header.Get(headerInitData))
+	if initData == "" && allowQuery {
+		initData = strings.TrimSpace(r.URL.Query().Get("init_data"))
+	}
+	return initData
 }
 
 // ServeWs handles GET /ws?trip_id=xxx and upgrades to WebSocket (no auth). Use ServeWsWithAuth for protected WS.
@@ -46,9 +65,9 @@ func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	client := &client{
-		hub:    hub,
-		conn:   conn,
-		send:   make(chan []byte, 256),
+		hub:     hub,
+		conn:    conn,
+		send:    make(chan []byte, 256),
 		tripIDs: map[string]struct{}{tripID: {}},
 	}
 	client.hub.register <- client
@@ -58,18 +77,15 @@ func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 
 // ServeWsWithAuth requires Telegram Mini App auth; only rider or assigned driver of the trip may subscribe.
 // When enableDriverIDHeader is true and init data is absent, accepts header X-Driver-Id (internal driver user id) for drivers only.
-// When riderAuth is non-nil, also accepts the native rider access JWT via Authorization: Bearer or ?access_token=
-// (same verification as /v1/rider/* Bearer middleware) so Flutter web can subscribe without custom WS headers.
-func ServeWsWithAuth(hub *Hub, db *sql.DB, driverBotToken, riderBotToken string, enableDriverIDHeader bool, riderAuth RiderAccessTokenVerifier, w http.ResponseWriter, r *http.Request) {
+// When riderAuth is non-nil, also accepts the native rider access JWT via Authorization: Bearer
+// (and ?access_token= only when opts.AllowQueryCreds).
+func ServeWsWithAuth(hub *Hub, db *sql.DB, driverBotToken, riderBotToken string, opts ServeWsOpts, riderAuth RiderAccessTokenVerifier, w http.ResponseWriter, r *http.Request) {
 	tripID := strings.TrimSpace(r.URL.Query().Get("trip_id"))
 	if tripID == "" {
 		http.Error(w, "trip_id required", http.StatusBadRequest)
 		return
 	}
-	initData := r.Header.Get(headerInitData)
-	if initData == "" {
-		initData = r.URL.Query().Get("init_data")
-	}
+	initData := initDataFromRequest(r, opts.AllowQueryCreds)
 	ctx := r.Context()
 	var userID int64
 	var role string
@@ -94,32 +110,51 @@ func ServeWsWithAuth(hub *Hub, db *sql.DB, driverBotToken, riderBotToken string,
 			w.Write([]byte(`{"error":"user not found"}`))
 			return
 		}
-	} else if token := riderAccessTokenFromRequest(r); token != "" && riderAuth != nil {
-		var err error
-		userID, err = riderAuth.VerifyAccessToken(token)
-		if err != nil || userID <= 0 {
-			logger.AuthFailure("invalid rider access token")
+	} else if token := riderAccessTokenFromRequest(r, opts.AllowQueryCreds); token != "" {
+		// Prefer opaque driver session, then rider JWT (same Authorization header).
+		if opts.DriverTokens != nil {
+			if uid, err := opts.DriverTokens.Verify(ctx, token); err == nil && uid > 0 {
+				var ver sql.NullString
+				err = db.QueryRowContext(ctx, `SELECT verification_status FROM drivers WHERE user_id = ?1`, uid).Scan(&ver)
+				if err == nil && strings.EqualFold(strings.TrimSpace(ver.String), "approved") {
+					userID = uid
+					role = domain.RoleDriver
+				}
+			}
+		}
+		if userID == 0 && riderAuth != nil {
+			var err error
+			userID, err = riderAuth.VerifyAccessToken(token)
+			if err != nil || userID <= 0 {
+				logger.AuthFailure("invalid rider access token")
+				w.WriteHeader(http.StatusUnauthorized)
+				w.Write([]byte(`{"error":"invalid token"}`))
+				return
+			}
+			if err := db.QueryRowContext(ctx, `SELECT role FROM users WHERE id = ?1`, userID).Scan(&role); err != nil {
+				if err == sql.ErrNoRows {
+					logger.AuthFailure("user not found")
+					w.WriteHeader(http.StatusUnauthorized)
+					w.Write([]byte(`{"error":"user not found"}`))
+					return
+				}
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			if strings.TrimSpace(role) != domain.RoleRider {
+				logger.AuthFailure("rider role required for bearer ws")
+				w.WriteHeader(http.StatusForbidden)
+				w.Write([]byte(`{"error":"forbidden"}`))
+				return
+			}
+		}
+		if userID == 0 {
+			logger.AuthFailure("invalid bearer token")
 			w.WriteHeader(http.StatusUnauthorized)
 			w.Write([]byte(`{"error":"invalid token"}`))
 			return
 		}
-		if err := db.QueryRowContext(ctx, `SELECT role FROM users WHERE id = ?1`, userID).Scan(&role); err != nil {
-			if err == sql.ErrNoRows {
-				logger.AuthFailure("user not found")
-				w.WriteHeader(http.StatusUnauthorized)
-				w.Write([]byte(`{"error":"user not found"}`))
-				return
-			}
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		if strings.TrimSpace(role) != domain.RoleRider {
-			logger.AuthFailure("rider role required for bearer ws")
-			w.WriteHeader(http.StatusForbidden)
-			w.Write([]byte(`{"error":"forbidden"}`))
-			return
-		}
-	} else if enableDriverIDHeader {
+	} else if opts.EnableDriverIDHeader {
 		driverIDStr := strings.TrimSpace(r.Header.Get(auth.HeaderDriverID))
 		if driverIDStr == "" {
 			logger.AuthFailure("missing init data")

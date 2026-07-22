@@ -59,7 +59,8 @@ func setupDispatchContractDB(t *testing.T) *sql.DB {
 		driver_user_id INTEGER NOT NULL,
 		chat_id INTEGER NOT NULL,
 		message_id INTEGER NOT NULL,
-		status TEXT NOT NULL
+		status TEXT NOT NULL,
+		created_at TEXT NOT NULL DEFAULT (datetime('now'))
 	);`)
 	exec(`CREATE TABLE trips (
 		id TEXT PRIMARY KEY,
@@ -124,7 +125,7 @@ func TestDriverAvailableRequests_JSONContract(t *testing.T) {
 	c.Request = req
 	injectDriverContext(c, driverID)
 
-	DriverAvailableRequests(db)(c)
+	DriverAvailableRequests(db, nil)(c)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
@@ -180,7 +181,7 @@ func TestDriverAvailableRequests_JSONContract(t *testing.T) {
 	c2.Request = req2
 	injectDriverContext(c2, driverID)
 
-	DriverAvailableRequests(db)(c2)
+	DriverAvailableRequests(db, nil)(c2)
 	if w2.Code != http.StatusOK {
 		t.Fatalf("status = %d", w2.Code)
 	}

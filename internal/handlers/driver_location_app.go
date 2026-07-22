@@ -61,10 +61,11 @@ func DriverAppLocation(db *sql.DB, matchSvc *services.MatchService) gin.HandlerF
 		_, _ = db.ExecContext(ctx, `INSERT OR IGNORE INTO drivers (user_id) VALUES (?1)`, driverID)
 
 		// Update app_* fields and mark driver online for dispatch (is_active/manual_offline/grid/last_seen_at).
-		// Telegram live fields remain untouched (last_lat/last_lng/live_location_active/last_live_location_at).
+		// Also refresh live_location_* so dispatch eligibility matches Telegram live (fresh within ~90–120s).
 		res, err := db.ExecContext(ctx, `
 			UPDATE drivers
 			SET app_lat = ?1, app_lng = ?2, app_last_seen_at = ?3, app_location_active = 1,
+			    last_lat = ?1, last_lng = ?2, last_live_location_at = ?3, live_location_active = 1,
 			    last_seen_at = ?3, grid_id = ?4, is_active = 1, manual_offline = 0
 			WHERE user_id = ?5`,
 			req.Lat, req.Lng, nowStr, gridID, driverID)

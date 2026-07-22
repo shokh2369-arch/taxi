@@ -114,7 +114,8 @@ func DriverTrips(db *sql.DB) gin.HandlerFunc {
 		for rows.Next() {
 			var id, status string
 			var startedAt, finishedAt, cancelledAt sql.NullString
-			var fareAmount int64
+			// fare_amount is nullable in production; scanning into int64 silently drops the row.
+			var fareAmount sql.NullInt64
 			var commissionSom int64
 			if err := rows.Scan(&id, &status, &startedAt, &finishedAt, &cancelledAt, &fareAmount, &commissionSom); err != nil {
 				continue
@@ -125,9 +126,9 @@ func DriverTrips(db *sql.DB) gin.HandlerFunc {
 				"id":        id,
 				"uuid":      id,
 				"status":    status,
-				"fare_som":  fareAmount,
-				"price":     fareAmount,
-				"total_som": fareAmount,
+				"fare_som":  fareAmount.Int64,
+				"price":     fareAmount.Int64,
+				"total_som": fareAmount.Int64,
 			}
 			if startedAt.Valid && strings.TrimSpace(startedAt.String) != "" {
 				if ts := tripHistoryTimeToRFC3339(startedAt.String); ts != "" {

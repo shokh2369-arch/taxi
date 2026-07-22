@@ -17,23 +17,29 @@ import (
 )
 
 // mirrorDriverWSCredentialsIntoHeaders copies query-only credentials onto the canonical HTTP headers
-// before tryDriverID + RequireDriverAuth run, so the WebSocket upgrade is authenticated like other
-// driver GET routes (X-Driver-Id, X-Telegram-Init-Data). If headers are already set, query is ignored.
-func mirrorDriverWSCredentialsIntoHeaders(c *gin.Context) {
-	if strings.TrimSpace(c.GetHeader(auth.HeaderDriverID)) == "" {
-		for _, key := range []string{"driver_id", "x_driver_id"} {
-			if q := strings.TrimSpace(c.Query(key)); q != "" {
-				c.Request.Header.Set(auth.HeaderDriverID, q)
-				break
+// before tryDriverID + RequireDriverAuth run. Only when allowQuery is true (debug/dev flags).
+// If headers are already set, query is ignored.
+func mirrorDriverWSCredentialsIntoHeaders(allowQuery bool) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !allowQuery {
+			c.Next()
+			return
+		}
+		if strings.TrimSpace(c.GetHeader(auth.HeaderDriverID)) == "" {
+			for _, key := range []string{"driver_id", "x_driver_id"} {
+				if q := strings.TrimSpace(c.Query(key)); q != "" {
+					c.Request.Header.Set(auth.HeaderDriverID, q)
+					break
+				}
 			}
 		}
-	}
-	if strings.TrimSpace(c.GetHeader(auth.HeaderInitData)) == "" {
-		if q := strings.TrimSpace(c.Query("init_data")); q != "" {
-			c.Request.Header.Set(auth.HeaderInitData, q)
+		if strings.TrimSpace(c.GetHeader(auth.HeaderInitData)) == "" {
+			if q := strings.TrimSpace(c.Query("init_data")); q != "" {
+				c.Request.Header.Set(auth.HeaderInitData, q)
+			}
 		}
+		c.Next()
 	}
-	c.Next()
 }
 
 // New creates a Gin engine with API routes and optional webapp static files.
@@ -64,6 +70,8 @@ func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc
 		log.Printf("http_request method=%s path=%s status=%d dur_ms=%d", c.Request.Method, path, status, time.Since(start).Milliseconds())
 	})
 
+	ws.ConfigureCheckOrigin(cfg.WSAllowedOrigins)
+
 	healthHandler := func(c *gin.Context) {
 		// Keep health response extremely small and constant (external monitors rely on this).
 		// Do not touch DB, logs, or external services.
@@ -74,9 +82,12 @@ func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc
 	r.GET("/", healthHandler)
 	r.HEAD("/", healthHandler)
 
+	driverSessions := repositories.NewDriverAuthSessionsRepo(db)
+	driverTokens := services.NewDriverAuthTokenService(driverSessions)
+
 	// Native driver login: phone + OTP via existing Telegram driver bot (no Telegram init_data).
 	r.POST("/auth/request-code", handlers.DriverAuthRequestCode(db, driverBot))
-	r.POST("/auth/verify-code", handlers.DriverAuthVerifyCode(db))
+	r.POST("/auth/verify-code", handlers.DriverAuthVerifyCode(db, driverTokens))
 
 	// Native rider login (Flutter rider app): phone + OTP via existing Telegram
 	// rider bot. Issues access_token + refresh_token + expires_in. The four
@@ -102,10 +113,16 @@ func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc
 
 	driverHdr := auth.DriverIDHeaderMiddlewareOpts{Enable: cfg.EnableDriverIDHeader, Debug: cfg.DriverAuthDebug}
 	tryDriverID := auth.TryDriverIDHeader(db, driverHdr)
+	tryDriverBearer := auth.TryDriverBearerAuth(db, driverTokens)
+	tryRiderBearer := func(c *gin.Context) { c.Next() }
+	if riderAuthSvc != nil {
+		tryRiderBearer = auth.TryRiderBearerAuth(db, riderAuthSvc)
+	}
 	driverAuth := auth.RequireDriverAuth(db, cfg.DriverBotToken, cfg.EnableDriverIDHeader)
 	driverActionSrc := auth.InjectDriverActionSource()
 	riderAuth := auth.RequireRiderAuth(db, cfg.RiderBotToken)
 	appUserAuth := auth.RequireMiniAppAuthDriverOrRider(db, cfg.DriverBotToken, cfg.RiderBotToken)
+	allowWSQueryCreds := cfg.DriverAuthDebug || cfg.EnableDriverIDHeader
 
 	// Driver dispatch websocket (best-effort poke). Optional global singleton used by publisher hooks.
 	dispatchHub := ws.NewDispatchHub()
@@ -114,30 +131,34 @@ func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc
 
 	if hub != nil {
 		r.GET("/ws", func(c *gin.Context) {
-			ws.ServeWsWithAuth(hub, db, cfg.DriverBotToken, cfg.RiderBotToken, cfg.EnableDriverIDHeader, riderAuthSvc, c.Writer, c.Request)
+			ws.ServeWsWithAuth(hub, db, cfg.DriverBotToken, cfg.RiderBotToken, ws.ServeWsOpts{
+				EnableDriverIDHeader: cfg.EnableDriverIDHeader,
+				AllowQueryCreds:      allowWSQueryCreds,
+				DriverTokens:         driverTokens,
+			}, riderAuthSvc, c.Writer, c.Request)
 		})
 	}
 	// Always register dispatch websocket; it is independent of the trip hub.
-	r.GET("/ws/driver-dispatch", mirrorDriverWSCredentialsIntoHeaders, tryDriverID, driverAuth, driverActionSrc, func(c *gin.Context) {
+	r.GET("/ws/driver-dispatch", mirrorDriverWSCredentialsIntoHeaders(allowWSQueryCreds), tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, func(c *gin.Context) {
 		ws.ServeDriverDispatchWs(dispatchHub, c.Writer, c.Request)
 	})
 
-	r.GET("/trip/:id", handlers.TripInfo(db, cfg, fareSvc))
+	r.GET("/trip/:id", tryDriverID, tryDriverBearer, tryRiderBearer, appUserAuth, handlers.TripInfo(db, cfg, fareSvc))
 	// Mini App: try X-Driver-Id first so Start/Cancel/Finish work without initData when header is present
-	r.POST("/driver/location", tryDriverID, driverAuth, driverActionSrc, handlers.DriverLocation(db, tripSvc, matchSvc, driverBot, hub, cfg, fareSvc))
+	r.POST("/driver/location", tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, handlers.DriverLocation(db, tripSvc, matchSvc, driverBot, hub, cfg, fareSvc))
 	// Native driver app location (additive). Does not touch Telegram location fields.
-	r.POST("/driver/location/app", tryDriverID, driverAuth, driverActionSrc, handlers.DriverAppLocation(db, matchSvc))
-	r.POST("/driver/offline", tryDriverID, driverAuth, driverActionSrc, handlers.DriverManualOffline(db))
-	r.POST("/trip/start", tryDriverID, driverAuth, driverActionSrc, handlers.TripStart(db, tripSvc))
-	r.POST("/trip/arrived", tryDriverID, driverAuth, driverActionSrc, handlers.TripArrived(db, tripSvc))
-	r.POST("/trip/finish", tryDriverID, driverAuth, driverActionSrc, handlers.TripFinish(db, tripSvc))
-	r.POST("/trip/cancel/driver", tryDriverID, driverAuth, driverActionSrc, handlers.TripCancelDriver(db, tripSvc))
-	r.GET("/driver/referral-link", tryDriverID, driverAuth, driverActionSrc, handlers.DriverReferralLink(db, driverBot))
-	r.GET("/driver/promo-program", tryDriverID, driverAuth, driverActionSrc, handlers.DriverPromoProgram(db))
-	r.GET("/driver/referral-status", tryDriverID, driverAuth, driverActionSrc, handlers.DriverReferralStatus(db))
-	r.GET("/driver/available-requests", tryDriverID, driverAuth, driverActionSrc, handlers.DriverAvailableRequests(db))
-	r.GET("/driver/trips", tryDriverID, driverAuth, driverActionSrc, handlers.DriverTrips(db))
-	r.POST("/driver/accept-request", tryDriverID, driverAuth, driverActionSrc, handlers.DriverAcceptRequest(db, assignSvc, tripSvc))
+	r.POST("/driver/location/app", tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, handlers.DriverAppLocation(db, matchSvc))
+	r.POST("/driver/offline", tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, handlers.DriverManualOffline(db))
+	r.POST("/trip/start", tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, handlers.TripStart(db, tripSvc))
+	r.POST("/trip/arrived", tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, handlers.TripArrived(db, tripSvc))
+	r.POST("/trip/finish", tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, handlers.TripFinish(db, tripSvc))
+	r.POST("/trip/cancel/driver", tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, handlers.TripCancelDriver(db, tripSvc))
+	r.GET("/driver/referral-link", tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, handlers.DriverReferralLink(db, driverBot))
+	r.GET("/driver/promo-program", tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, handlers.DriverPromoProgram(db))
+	r.GET("/driver/referral-status", tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, handlers.DriverReferralStatus(db))
+	r.GET("/driver/available-requests", tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, handlers.DriverAvailableRequests(db, cfg))
+	r.GET("/driver/trips", tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, handlers.DriverTrips(db))
+	r.POST("/driver/accept-request", tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, handlers.DriverAcceptRequest(db, assignSvc, tripSvc))
 	r.POST("/trip/cancel/rider", riderAuth, handlers.TripCancelRider(db, tripSvc))
 	r.GET("/rider/referral-link", riderAuth, handlers.RiderReferralLink(db, riderBot))
 
@@ -146,20 +167,20 @@ func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc
 	r.POST("/rider/request/destination", corsForMiniApp("https://custom-location.vercel.app"), handlers.RiderSetDestination(db, cfg, riderBot, fareSvc))
 
 	// Legal: active documents + accept (active versions only; X-Driver-Id allowed when enabled).
-	r.GET("/legal/active", tryDriverID, appUserAuth, handlers.LegalActiveDocuments(db))
-	r.POST("/legal/accept", tryDriverID, appUserAuth, handlers.LegalAccept(db))
+	r.GET("/legal/active", tryDriverID, tryDriverBearer, appUserAuth, handlers.LegalActiveDocuments(db))
+	r.POST("/legal/accept", tryDriverID, tryDriverBearer, appUserAuth, handlers.LegalAccept(db))
 
 	r.Static("/webapp", "./webapp")
 
 	// Admin HTTP API (dashboard, drivers, payments, driver verification). Additive; does not change trip/dispatch/location logic.
+	// Mounted only when ADMIN_API_TOKEN is set (never open).
 	adminDriverRepo := repositories.NewAdminDriverRepository(db)
 	paymentRepo := repositories.NewPaymentRepository(db)
 	tripStatsRepo := repositories.NewTripStatsRepository(db)
 	adminSvc := services.NewAdminService(db, adminDriverRepo, paymentRepo, tripStatsRepo)
 	adminHandlers := handlers.NewAdminHandlers(adminSvc, matchSvc, driverBot, db)
-	adminHandlers.Register(r)
-	// Legal admin API for dashboards (always mount when DB is available; do not depend on handler wiring).
-	handlers.RegisterAdminLegalRoutes(r, db)
+	adminHandlers.Register(r, cfg.AdminAPIToken)
+	handlers.RegisterAdminLegalRoutes(r, db, cfg.AdminAPIToken)
 	return r
 }
 

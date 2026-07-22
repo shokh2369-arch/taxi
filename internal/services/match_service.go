@@ -146,6 +146,10 @@ type MatchService struct {
 	cfg               *config.Config
 	lastDriverNotif   map[int64]time.Time
 	lastDriverNotifMu sync.Mutex
+	// Per-driver coalescing for SpawnNotifyDriverOfPendingRequests (live-location ticks and
+	// HTTP location pings arrive continuously; without this every tick spawned a goroutine).
+	notifyInFlight sync.Map // driver user_id -> struct{}
+	lastNotifyRun  sync.Map // driver user_id -> time.Time
 }
 
 // NewMatchService returns a MatchService that sends request messages via the driver bot.
@@ -491,12 +495,11 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 			}
 		}
 
-		// Nobody in this batch accepted; mark their notifications as timeout and continue to next batch.
-		for _, driverID := range batchDriverIDs {
-			_, _ = s.db.ExecContext(ctx, `UPDATE request_notifications SET status = ?1 WHERE request_id = ?2 AND driver_user_id = ?3`,
-				domain.NotificationStatusTimeout, requestID, driverID)
-		}
-		log.Printf("dispatch_audit: request=%s batch_timeout drivers_count=%d drivers_sample=%s after=%ds next_batch", requestID, len(batchDriverIDs), sampleInt64(batchDriverIDs, logSliceMaxItems), batchWaitSec)
+		// Batch rotation continues to the next nearest drivers; keep request_notifications SENT so native app
+		// polling (GET /driver/available-requests) stays populated until accept/cancel/expired (see DispatchOfferVisibleSeconds).
+		visibleSec := DispatchOfferVisibleSeconds(s.cfg)
+		log.Printf("dispatch_audit: request=%s batch_window_elapsed drivers_count=%d drivers_sample=%s after=%ds offers_remain_visible_sec=%d next_batch",
+			requestID, len(batchDriverIDs), sampleInt64(batchDriverIDs, logSliceMaxItems), batchWaitSec, visibleSec)
 	}
 }
 
@@ -540,7 +543,61 @@ func (s *MatchService) PulseDriverOnlineFromHTTP(ctx context.Context, driverUser
 	}
 	nowStr := time.Now().UTC().Format("2006-01-02 15:04:05")
 	_, _ = s.db.ExecContext(ctx, `UPDATE drivers SET is_active = 1, manual_offline = 0, last_seen_at = ?1 WHERE user_id = ?2`, nowStr, driverUserID)
-	go s.NotifyDriverOfPendingRequests(auth.ContextWithDetachedActionSource(ctx), driverUserID)
+	s.SpawnNotifyDriverOfPendingRequests(auth.ContextWithDetachedActionSource(ctx), driverUserID)
+}
+
+// SpawnNotifyDriverOfPendingRequests runs NotifyDriverOfPendingRequests in a goroutine with
+// per-driver coalescing: at most one run in flight per driver, and new runs no more often than
+// DispatchDriverCooldownSec. Callers on hot paths (Telegram live-location ticks, POST /driver/location)
+// must use this instead of spawning NotifyDriverOfPendingRequests directly.
+func (s *MatchService) SpawnNotifyDriverOfPendingRequests(ctx context.Context, driverUserID int64) {
+	if s == nil {
+		return
+	}
+	cooldown := time.Duration(defaultDriverCooldown) * time.Second
+	if s.cfg != nil && s.cfg.DispatchDriverCooldownSec > 0 {
+		cooldown = time.Duration(s.cfg.DispatchDriverCooldownSec) * time.Second
+	}
+	if v, ok := s.lastNotifyRun.Load(driverUserID); ok {
+		if last, ok := v.(time.Time); ok && time.Since(last) < cooldown {
+			return
+		}
+	}
+	if _, inFlight := s.notifyInFlight.LoadOrStore(driverUserID, struct{}{}); inFlight {
+		return
+	}
+	s.lastNotifyRun.Store(driverUserID, time.Now())
+	go func() {
+		defer s.notifyInFlight.Delete(driverUserID)
+		s.NotifyDriverOfPendingRequests(ctx, driverUserID)
+	}()
+}
+
+// CleanupCancelledRequestOffers closes driver offers after a request is cancelled: deletes Telegram
+// offer messages (best-effort), removes request_notifications rows so app polling stops showing the
+// offer, and pokes native drivers over WebSocket to refetch. Mirrors the native-app cancel path
+// (RiderRequestAppService.cleanupDispatchNotifications).
+func (s *MatchService) CleanupCancelledRequestOffers(ctx context.Context, requestID string) {
+	if s == nil || s.db == nil || requestID == "" {
+		return
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT chat_id, message_id FROM request_notifications WHERE request_id = ?1 AND message_id != 0`, requestID)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var chatID int64
+			var msgID int
+			if err := rows.Scan(&chatID, &msgID); err != nil {
+				continue
+			}
+			if s.bot != nil && msgID != 0 {
+				// Best-effort delete; ignore failures (message may already be gone).
+				_, _ = s.bot.Request(tgbotapi.NewDeleteMessage(chatID, msgID))
+			}
+		}
+	}
+	_, _ = s.db.ExecContext(ctx, `DELETE FROM request_notifications WHERE request_id = ?1`, requestID)
+	ws.NotifyDispatchChangedBurst()
 }
 
 // NotifyDriverOfPendingRequests sends any PENDING ride requests (within this driver's radius) to a driver who just came online.

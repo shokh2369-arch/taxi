@@ -11,6 +11,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"taxi-mvp/internal/repositories"
+	"taxi-mvp/internal/services"
 	_ "modernc.org/sqlite"
 )
 
@@ -52,8 +54,17 @@ func setupOTPTestDB(t *testing.T) *sql.DB {
 		user_id INTEGER NOT NULL,
 		code TEXT NOT NULL,
 		used INTEGER NOT NULL DEFAULT 0,
+		failed_attempts INTEGER NOT NULL DEFAULT 0,
 		created_at TEXT NOT NULL DEFAULT (datetime('now')),
 		expires_at TEXT NOT NULL
+	);`)
+	exec(`CREATE TABLE driver_auth_sessions (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id INTEGER NOT NULL,
+		token_hash TEXT NOT NULL UNIQUE,
+		expires_at INTEGER NOT NULL,
+		revoked INTEGER NOT NULL DEFAULT 0,
+		created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 	);`)
 	return db
 }
@@ -229,8 +240,9 @@ func TestDriverAuthVerifyCode_NotRegisteredIs403WithCode(t *testing.T) {
 	db := setupOTPTestDB(t)
 	defer db.Close()
 
+	tokens := services.NewDriverAuthTokenService(repositories.NewDriverAuthSessionsRepo(db))
 	r := gin.New()
-	r.POST("/auth/verify-code", DriverAuthVerifyCode(db))
+	r.POST("/auth/verify-code", DriverAuthVerifyCode(db, tokens))
 
 	rr := performJSONRequest(r, "POST", "/auth/verify-code", map[string]string{"phone": "+998901234567", "code": "123456"})
 	if rr.Code != http.StatusForbidden {
@@ -264,8 +276,9 @@ func TestDriverAuthVerifyCode_InvalidCodeIs400WithCode(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	tokens := services.NewDriverAuthTokenService(repositories.NewDriverAuthSessionsRepo(db))
 	r := gin.New()
-	r.POST("/auth/verify-code", DriverAuthVerifyCode(db))
+	r.POST("/auth/verify-code", DriverAuthVerifyCode(db, tokens))
 
 	rr := performJSONRequest(r, "POST", "/auth/verify-code", map[string]string{"phone": "998901234567", "code": "123456"})
 	if rr.Code != http.StatusBadRequest {
@@ -275,6 +288,91 @@ func TestDriverAuthVerifyCode_InvalidCodeIs400WithCode(t *testing.T) {
 	_ = json.Unmarshal(rr.Body.Bytes(), &out)
 	if out["code"] != errDriverAuthInvalidCode {
 		t.Fatalf("code=%v want %v body=%s", out["code"], errDriverAuthInvalidCode, rr.Body.String())
+	}
+}
+
+func TestDriverAuthVerifyCode_IssuesBearerToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupOTPTestDB(t)
+	defer db.Close()
+
+	_, err := db.Exec(`INSERT INTO users (id, role, telegram_id, phone) VALUES (1, 'driver', 999, '998901234567')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO drivers (user_id, verification_status, phone) VALUES (1, 'approved', '998901234567')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO driver_login_codes (user_id, code, used, created_at, expires_at) VALUES (1, '123456', 0, ?1, ?2)`,
+		time.Now().UTC().Format("2006-01-02 15:04:05"),
+		time.Now().UTC().Add(2*time.Minute).Format("2006-01-02 15:04:05"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tokens := services.NewDriverAuthTokenService(repositories.NewDriverAuthSessionsRepo(db))
+	r := gin.New()
+	r.POST("/auth/verify-code", DriverAuthVerifyCode(db, tokens))
+
+	rr := performJSONRequest(r, "POST", "/auth/verify-code", map[string]string{"phone": "998901234567", "code": "123456"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var out map[string]any
+	_ = json.Unmarshal(rr.Body.Bytes(), &out)
+	if out["access_token"] == nil || out["access_token"] == "" {
+		t.Fatalf("missing access_token body=%s", rr.Body.String())
+	}
+	if out["token_type"] != "Bearer" {
+		t.Fatalf("token_type=%v", out["token_type"])
+	}
+	if out["driver_id"] != float64(1) {
+		t.Fatalf("driver_id=%v", out["driver_id"])
+	}
+}
+
+func TestDriverAuthVerifyCode_InvalidatesAfterFiveFailures(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupOTPTestDB(t)
+	defer db.Close()
+
+	_, err := db.Exec(`INSERT INTO users (id, role, telegram_id, phone) VALUES (1, 'driver', 999, '998901234567')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO drivers (user_id, verification_status, phone) VALUES (1, 'approved', '998901234567')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO driver_login_codes (user_id, code, used, created_at, expires_at) VALUES (1, '123456', 0, ?1, ?2)`,
+		time.Now().UTC().Format("2006-01-02 15:04:05"),
+		time.Now().UTC().Add(2*time.Minute).Format("2006-01-02 15:04:05"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tokens := services.NewDriverAuthTokenService(repositories.NewDriverAuthSessionsRepo(db))
+	r := gin.New()
+	r.POST("/auth/verify-code", DriverAuthVerifyCode(db, tokens))
+
+	for i := 0; i < 5; i++ {
+		rr := performJSONRequest(r, "POST", "/auth/verify-code", map[string]string{"phone": "998901234567", "code": "000000"})
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("attempt %d status=%d body=%s", i+1, rr.Code, rr.Body.String())
+		}
+	}
+	var used int
+	if err := db.QueryRow(`SELECT used FROM driver_login_codes WHERE user_id = 1`).Scan(&used); err != nil {
+		t.Fatal(err)
+	}
+	if used != 1 {
+		t.Fatalf("used=%d want 1 after 5 failures", used)
+	}
+	// Correct code should now fail (code invalidated).
+	rr := performJSONRequest(r, "POST", "/auth/verify-code", map[string]string{"phone": "998901234567", "code": "123456"})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("after invalidate status=%d body=%s", rr.Code, rr.Body.String())
 	}
 }
 

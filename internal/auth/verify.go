@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // InitDataUser is the "user" object inside Telegram Mini App initData (JSON).
@@ -56,6 +57,18 @@ func VerifyMiniAppInitData(botToken, initData string) (telegramUserID int64, err
 	computedHex := hex.EncodeToString(computedHash)
 	if !hmac.Equal([]byte(computedHex), []byte(hashReceived)) {
 		return 0, errors.New("auth: init data hash mismatch")
+	}
+	authDate, err := ParseAuthDate(initData)
+	if err != nil {
+		return 0, err
+	}
+	const maxAgeSec int64 = 24 * 60 * 60
+	now := time.Now().Unix()
+	if authDate > now+60 {
+		return 0, errors.New("auth: init data auth_date in the future")
+	}
+	if now-authDate > maxAgeSec {
+		return 0, errors.New("auth: init data expired")
 	}
 	userJSON := vals.Get("user")
 	if userJSON == "" {

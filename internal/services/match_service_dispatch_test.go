@@ -163,3 +163,71 @@ func TestBroadcastRequest_SurvivesCanceledCallerContext(t *testing.T) {
 	}
 	t.Fatal("expected request_notifications row after BroadcastRequest with canceled caller context")
 }
+
+// After the per-batch wait window, app polling rows must stay SENT (not TIMEOUT) while the request is still PENDING.
+func TestBroadcastRequest_OfferStaysSentAfterBatchWait(t *testing.T) {
+	db := setupMatchDispatchTestDB(t)
+	defer db.Close()
+
+	const requestID = "req-batch-wait"
+	_, err := db.Exec(`INSERT INTO users (id, role, telegram_id, phone) VALUES (1, ?, 1001, '+998901112233')`, domain.RoleRider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO users (id, role, telegram_id, phone) VALUES (2, ?, 2002, '+998902223344')`, domain.RoleDriver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO legal_documents (document_type, version, is_active, content) VALUES
+		('driver_terms', 1, 1, 'x'),
+		('privacy_policy_driver', 1, 1, 'y')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO legal_acceptances (user_id, document_type, version) VALUES
+		(2, 'driver_terms', 1), (2, 'privacy_policy_driver', 1)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	_, err = db.Exec(`INSERT INTO drivers (
+		user_id, last_lat, last_lng, app_lat, app_lng, app_last_seen_at, app_location_active,
+		is_active, last_seen_at, phone, car_type, color, plate, balance, verification_status
+	) VALUES (2, 41.30, 69.28, 41.30, 69.28, ?1, 1, 1, ?1, '+998902223344', 'sedan', 'white', '01A001AA', 1000, 'approved')`, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO ride_requests (
+		id, rider_user_id, pickup_lat, pickup_lng, radius_km, status, expires_at,
+		drop_lat, drop_lng, estimated_price, destination_confirmed
+	) VALUES (?1, 1, 41.30, 69.28, 3, ?2, datetime('now','+1 hour'), 41.31, 69.29, 5000, 1)`,
+		requestID, domain.RequestStatusPending)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{InfiniteDriverBalance: true, DispatchWaitSeconds: 1, DispatchOfferVisibleSeconds: 90}
+	matchSvc := NewMatchService(db, (*tgbotapi.BotAPI)(nil), cfg)
+
+	if err := matchSvc.BroadcastRequest(context.Background(), requestID); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		var status string
+		err := db.QueryRow(`SELECT status FROM request_notifications WHERE request_id = ?1 AND driver_user_id = 2`, requestID).Scan(&status)
+		if err == sql.ErrNoRows {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status == domain.NotificationStatusSent {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("expected notification to remain SENT after batch wait window")
+}

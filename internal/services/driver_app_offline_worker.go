@@ -27,9 +27,15 @@ func RunDriverAppAutoOfflineWorker(ctx context.Context, db *sql.DB) {
 		cutoff := time.Now().UTC().Add(-90 * time.Second).Format("2006-01-02 15:04:05")
 
 		// If app schema isn't present yet, do nothing (startup repair should add it).
+		// App pings also refresh live_location_active/last_live_location_at, so when an app-only
+		// driver goes offline we must clear the stale live flag too; otherwise it stays 1 forever.
 		_, err := db.ExecContext(ctx, `
 			UPDATE drivers
-			SET is_active = 0, app_location_active = 0
+			SET is_active = 0, app_location_active = 0,
+			    live_location_active = CASE
+					WHEN last_live_location_at IS NULL OR last_live_location_at < ?1 THEN 0
+					ELSE live_location_active
+				END
 			WHERE COALESCE(is_active, 0) = 1
 			  AND COALESCE(app_location_active, 0) = 1
 			  AND (app_last_seen_at IS NULL OR app_last_seen_at < ?1)

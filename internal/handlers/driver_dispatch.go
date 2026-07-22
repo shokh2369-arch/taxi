@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"taxi-mvp/internal/auth"
+	"taxi-mvp/internal/config"
 	"taxi-mvp/internal/domain"
 	"taxi-mvp/internal/services"
 	"taxi-mvp/internal/utils"
@@ -55,7 +57,9 @@ type DriverAssignedTripStub struct {
 }
 
 // DriverAvailableRequests returns pending offers (request_notifications SENT + PENDING request) and optional active trip stub.
-func DriverAvailableRequests(db *sql.DB) gin.HandlerFunc {
+// Offers are only visible within DispatchOfferVisibleSeconds of request_notifications.created_at.
+func DriverAvailableRequests(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
+	offerVisibleModifier := fmt.Sprintf("-%d seconds", services.DispatchOfferVisibleSeconds(cfg))
 	return func(c *gin.Context) {
 		u := auth.UserFromContext(c.Request.Context())
 		if u == nil || u.Role != domain.RoleDriver {
@@ -104,22 +108,26 @@ func DriverAvailableRequests(db *sql.DB) gin.HandlerFunc {
 
 		queryOffers := func() ([]DriverAvailableOffer, error) {
 			qNew := `
-				SELECT r.id, r.pickup_lat, r.pickup_lng, r.radius_km, COALESCE(r.estimated_price, 0), COALESCE(r.expires_at,'')
+				SELECT r.id, COALESCE(t.id, ''), r.pickup_lat, r.pickup_lng, r.radius_km, COALESCE(r.estimated_price, 0), COALESCE(r.expires_at,'')
 				FROM request_notifications n
 				JOIN ride_requests r ON r.id = n.request_id
+				LEFT JOIN trips t ON t.request_id = r.id AND t.driver_user_id = n.driver_user_id
+				  AND t.status IN ('WAITING','ARRIVED','STARTED')
 				WHERE n.driver_user_id = ?1 AND n.status = ?2
-				  AND r.status = ?3 AND r.expires_at > datetime('now')`
+				  AND r.status = ?3 AND r.expires_at > datetime('now')
+				  AND n.created_at > datetime('now', ?4)`
 			qLegacy := `
 				SELECT r.id, r.pickup_lat, r.pickup_lng, r.radius_km, COALESCE(r.expires_at,'')
 				FROM request_notifications n
 				JOIN ride_requests r ON r.id = n.request_id
 				WHERE n.driver_user_id = ?1 AND n.status = ?2
-				  AND r.status = ?3 AND r.expires_at > datetime('now')`
-			rows, err := db.QueryContext(ctx, qNew, driverID, domain.NotificationStatusSent, domain.RequestStatusPending)
+				  AND r.status = ?3 AND r.expires_at > datetime('now')
+				  AND n.created_at > datetime('now', ?4)`
+			rows, err := db.QueryContext(ctx, qNew, driverID, domain.NotificationStatusSent, domain.RequestStatusPending, offerVisibleModifier)
 			newColsOK := true
 			if err != nil && strings.Contains(strings.ToLower(err.Error()), "no such column") {
 				newColsOK = false
-				rows, err = db.QueryContext(ctx, qLegacy, driverID, domain.NotificationStatusSent, domain.RequestStatusPending)
+				rows, err = db.QueryContext(ctx, qLegacy, driverID, domain.NotificationStatusSent, domain.RequestStatusPending, offerVisibleModifier)
 			}
 			if err != nil {
 				return nil, err
@@ -130,7 +138,7 @@ func DriverAvailableRequests(db *sql.DB) gin.HandlerFunc {
 			for rows.Next() {
 				var o DriverAvailableOffer
 				if newColsOK {
-					if err := rows.Scan(&o.RequestID, &o.PickupLat, &o.PickupLng, &o.RadiusKm, &o.EstimatedPrice, &o.ExpiresAt); err != nil {
+					if err := rows.Scan(&o.RequestID, &o.TripID, &o.PickupLat, &o.PickupLng, &o.RadiusKm, &o.EstimatedPrice, &o.ExpiresAt); err != nil {
 						continue
 					}
 				} else {
@@ -139,6 +147,7 @@ func DriverAvailableRequests(db *sql.DB) gin.HandlerFunc {
 					}
 					o.EstimatedPrice = 0
 				}
+				o.ExpiresAt = formatExpiresAtRFC3339(o.ExpiresAt)
 				if eLat != 0 || eLng != 0 {
 					o.DistanceKm = utils.HaversineMeters(eLat, eLng, o.PickupLat, o.PickupLng) / 1000
 				}
@@ -186,9 +195,12 @@ func DriverAvailableRequests(db *sql.DB) gin.HandlerFunc {
 		var assigned *DriverAssignedTripStub
 		var tripID, status string
 		err = db.QueryRowContext(ctx, `
-			SELECT id, status FROM trips
-			WHERE driver_user_id = ?1 AND status IN ('WAITING','ARRIVED','STARTED') LIMIT 1`,
-			driverID).Scan(&tripID, &status)
+			SELECT t.id, t.status FROM trips t
+			JOIN ride_requests r ON r.id = t.request_id
+			WHERE t.driver_user_id = ?1 AND t.status IN ('WAITING','ARRIVED','STARTED')
+			  AND r.status = ?2
+			LIMIT 1`,
+			driverID, domain.RequestStatusAssigned).Scan(&tripID, &status)
 		if err == nil && tripID != "" {
 			assigned = &DriverAssignedTripStub{TripID: tripID, Status: status}
 		}
@@ -204,6 +216,21 @@ func DriverAvailableRequests(db *sql.DB) gin.HandlerFunc {
 		}
 		c.JSON(http.StatusOK, resp)
 	}
+}
+
+func formatExpiresAtRFC3339(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	t, err := time.ParseInLocation("2006-01-02 15:04:05", raw, time.UTC)
+	if err != nil {
+		if t2, err2 := time.Parse(time.RFC3339, raw); err2 == nil {
+			return t2.UTC().Format(time.RFC3339)
+		}
+		return raw
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 // DriverAcceptRequest delegates to AssignmentService.TryAssign (same as driver bot accept). Schedules start reminder on success.
@@ -254,7 +281,8 @@ func DriverAcceptRequest(db *sql.DB, assignSvc *services.AssignmentService, trip
 		}
 		assigned, tripID, err := assignSvc.TryAssign(ctx, req.RequestID, driverID)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": err.Error(), "request_id": req.RequestID})
+			log.Printf("driver_accept_request failed request_id=%s driver_id=%d err=%v", req.RequestID, driverID, err)
+			c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "assignment_failed", "request_id": req.RequestID})
 			return
 		}
 		if !assigned {

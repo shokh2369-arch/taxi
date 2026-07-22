@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"taxi-mvp/internal/auth"
 	"taxi-mvp/internal/services"
 	"taxi-mvp/internal/utils"
 )
@@ -31,12 +32,19 @@ func NewAdminHandlers(svc *services.AdminService, matchSvc *services.MatchServic
 }
 
 // Register registers admin routes on the given router.
-func (h *AdminHandlers) Register(r *gin.Engine) {
+// When adminAPIToken is empty, routes are not mounted (never exposed open).
+func (h *AdminHandlers) Register(r *gin.Engine, adminAPIToken string) {
 	if h == nil || h.svc == nil {
 		return
 	}
+	adminAPIToken = strings.TrimSpace(adminAPIToken)
+	if adminAPIToken == "" {
+		log.Printf("admin_http: ADMIN_API_TOKEN unset; admin routes not mounted")
+		return
+	}
+	mw := auth.RequireAdminAPIToken(adminAPIToken)
 	for _, base := range []string{"/admin", "/api/admin", "/api/v1/admin", "/v1/admin"} {
-		g := r.Group(base)
+		g := r.Group(base, mw)
 		g.GET("/drivers", h.ListDrivers)
 		g.GET("/map/drivers", h.ListDriversForMap)
 		g.GET("/map/ride-requests", h.ListRideRequestsForMap)

@@ -81,6 +81,10 @@ func DetectDriverActionSource(c *gin.Context) ActionSource {
 	if initData != "" {
 		return ActionSourceTelegram
 	}
+	authz := strings.TrimSpace(c.GetHeader("Authorization"))
+	if strings.HasPrefix(authz, "Bearer ") {
+		return ActionSourceHTTPApp
+	}
 	if strings.TrimSpace(c.GetHeader(HeaderDriverSession)) != "" {
 		return ActionSourceHTTPApp
 	}
