@@ -331,13 +331,11 @@ func TripCancelRider(db *sql.DB, tripSvc *services.TripService) gin.HandlerFunc 
 }
 
 // TripInfo returns trip details for Mini App. Uses FareService for tiered fare when set; otherwise config. FINISHED uses stored fare_amount.
+// Auth is optional: legacy Mini App / map clients call GET /trip/:id with only the trip UUID (capability URL).
+// When a user is authenticated, only trip participants may read (404 for everyone else).
 func TripInfo(db *sql.DB, cfg *config.Config, fareSvc *services.FareService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		u := auth.UserFromContext(c.Request.Context())
-		if u == nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
-			return
-		}
 		tripID := c.Param("id")
 		if tripID == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "trip_id required"})
@@ -371,8 +369,8 @@ func TripInfo(db *sql.DB, cfg *config.Config, fareSvc *services.FareService) gin
 		if effectiveDriverUserID == 0 && assignedDriverUserID.Valid && assignedDriverUserID.Int64 > 0 {
 			effectiveDriverUserID = assignedDriverUserID.Int64
 		}
-		// Only trip participants may read trip details (404 to avoid leaking existence).
-		if u.UserID != riderUserID && u.UserID != effectiveDriverUserID {
+		// Authenticated non-participants get 404 (avoid leaking existence). Anonymous capability-URL reads remain allowed.
+		if u != nil && u.UserID != riderUserID && u.UserID != effectiveDriverUserID {
 			c.JSON(http.StatusNotFound, gin.H{"error": "trip not found"})
 			return
 		}
@@ -510,8 +508,9 @@ func TripInfo(db *sql.DB, cfg *config.Config, fareSvc *services.FareService) gin
 				FareAmount: fareAmountPtr,
 			},
 		}
-		// Top-level driver_id is for driver clients; omit for riders (nested driver.id remains for display).
-		if u.Role == domain.RoleDriver {
+		// Top-level driver_id is for driver / anonymous map clients; omit for authenticated riders
+		// (nested driver.id remains for display).
+		if u == nil || u.Role == domain.RoleDriver {
 			resp.DriverID = effectiveDriverUserID
 		}
 		if riderPhone.Valid {

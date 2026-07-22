@@ -143,7 +143,10 @@ func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc
 		ws.ServeDriverDispatchWs(dispatchHub, c.Writer, c.Request)
 	})
 
-	r.GET("/trip/:id", tryDriverID, tryDriverBearer, tryRiderBearer, appUserAuth, handlers.TripInfo(db, cfg, fareSvc))
+	// GET /trip/:id: auth optional (legacy Mini App capability URL). Prefer Bearer / initData / trip-scoped driver_id when present.
+	tryTripDriverID := auth.TryTripScopedDriverID(db)
+	optionalTripAuth := auth.TryOptionalMiniAppAuthDriverOrRider(db, cfg.DriverBotToken, cfg.RiderBotToken)
+	r.GET("/trip/:id", tryDriverID, tryTripDriverID, tryDriverBearer, tryRiderBearer, optionalTripAuth, handlers.TripInfo(db, cfg, fareSvc))
 	// Mini App: try X-Driver-Id first so Start/Cancel/Finish work without initData when header is present
 	r.POST("/driver/location", tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, handlers.DriverLocation(db, tripSvc, matchSvc, driverBot, hub, cfg, fareSvc))
 	// Native driver app location (additive). Does not touch Telegram location fields.

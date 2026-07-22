@@ -125,3 +125,69 @@ func TestTripInfo_DriverObjectMarshaled(t *testing.T) {
 		t.Fatal("response missing \"driver_pos\"")
 	}
 }
+
+func TestTripInfo_UnauthenticatedAllowed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupTripInfoTestDB(t)
+	defer db.Close()
+
+	_, _ = db.Exec(`INSERT INTO users (id, telegram_id, role, name, phone) VALUES
+		(7, 700, 'driver', 'Driver Seven', '+998900000007'),
+		(2, 200, 'rider', 'Rider Two', '+998900000002')`)
+	_, _ = db.Exec(`INSERT INTO drivers (user_id, last_lat, last_lng, phone, car_type, color, plate, plate_number)
+		VALUES (7, 41.30, 69.28, '+998900000007', 'sedan', 'white', '01A001AA', '01A001AA')`)
+	_, _ = db.Exec(`INSERT INTO ride_requests (id, rider_user_id, pickup_lat, pickup_lng, drop_lat, drop_lng, assigned_driver_user_id)
+		VALUES ('req-1', 2, 41.31, 69.29, 41.35, 69.33, 7)`)
+	_, _ = db.Exec(`INSERT INTO trips (id, request_id, driver_user_id, rider_user_id, status, distance_m, fare_amount)
+		VALUES ('trip-1', 'req-1', 7, 2, 'WAITING', 0, 0)`)
+
+	cfg := &config.Config{StartingFee: 4000, PricePerKm: 1500}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/trip/trip-1", nil)
+	c.Params = gin.Params{{Key: "id", Value: "trip-1"}}
+
+	TripInfo(db, cfg, nil)(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var resp map[string]json.RawMessage
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if raw, ok := resp["driver_id"]; !ok || string(raw) == "0" || string(raw) == "null" {
+		t.Fatalf("anonymous map client should receive driver_id; got %v", resp["driver_id"])
+	}
+}
+
+func TestTripInfo_AuthenticatedNonParticipant404(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupTripInfoTestDB(t)
+	defer db.Close()
+
+	_, _ = db.Exec(`INSERT INTO users (id, telegram_id, role, name, phone) VALUES
+		(7, 700, 'driver', 'Driver Seven', '+998900000007'),
+		(2, 200, 'rider', 'Rider Two', '+998900000002'),
+		(9, 900, 'driver', 'Other', '+998900000009')`)
+	_, _ = db.Exec(`INSERT INTO drivers (user_id, last_lat, last_lng, phone, car_type, color, plate, plate_number)
+		VALUES (7, 41.30, 69.28, '+998900000007', 'sedan', 'white', '01A001AA', '01A001AA')`)
+	_, _ = db.Exec(`INSERT INTO ride_requests (id, rider_user_id, pickup_lat, pickup_lng, drop_lat, drop_lng, assigned_driver_user_id)
+		VALUES ('req-1', 2, 41.31, 69.29, 41.35, 69.33, 7)`)
+	_, _ = db.Exec(`INSERT INTO trips (id, request_id, driver_user_id, rider_user_id, status, distance_m, fare_amount)
+		VALUES ('trip-1', 'req-1', 7, 2, 'WAITING', 0, 0)`)
+
+	cfg := &config.Config{StartingFee: 4000, PricePerKm: 1500}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/trip/trip-1", nil)
+	c.Request = c.Request.WithContext(auth.WithUser(c.Request.Context(), &auth.User{
+		UserID: 9,
+		Role:   domain.RoleDriver,
+	}))
+	c.Params = gin.Params{{Key: "id", Value: "trip-1"}}
+
+	TripInfo(db, cfg, nil)(c)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body = %s", w.Code, w.Body.String())
+	}
+}

@@ -64,5 +64,9 @@ func driverBearerFromRequest(c *gin.Context) string {
 			return t
 		}
 	}
-	return strings.TrimSpace(c.GetHeader(HeaderDriverSession))
+	if t := strings.TrimSpace(c.GetHeader(HeaderDriverSession)); t != "" {
+		return t
+	}
+	// Match /ws ?access_token= fallback used by native clients that cannot set WS headers.
+	return strings.TrimSpace(c.Query("access_token"))
 }
