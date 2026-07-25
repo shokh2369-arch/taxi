@@ -21,10 +21,11 @@ Production behavior when new vars are **unset** matches existing defaults above.
 
 ## Authentication modes
 
-1. **`X-Telegram-Init-Data`** (Mini App): HMAC-validated; maps Telegram user → internal user. Used by `Authorization` is allowed by CORS but **not validated** by this server today (reserved for gateways / future use).
-2. **`X-Driver-Id`**: Digits only — internal **`users.id`** (same as driver `user_id`) **or** Telegram **`users.telegram_id`**. Resolver requires **`drivers.verification_status = approved`**. See **`docs/AUTH.md`** for status codes.
+1. **`X-Telegram-Init-Data`** (Mini App): HMAC-validated; maps Telegram user → internal user.
+2. **Driver bearer token** (native app; from `POST /auth/verify-code`): send as **`Authorization: Bearer <token>`** or **`X-Driver-Session: <token>`**. On WebSocket routes, where setting headers may be impossible (Flutter web), the same token is accepted as a **`?access_token=<token>`** query parameter. Requires **`drivers.verification_status = approved`**.
+3. **`X-Driver-Id`**: Digits only — internal **`users.id`** (same as driver `user_id`) **or** Telegram **`users.telegram_id`**. Resolver requires **`drivers.verification_status = approved`**. Only honored when **`ENABLE_DRIVER_ID_HEADER`** is on; hardened deployments disable it, so **do not rely on this alone** — always attach the bearer token. See **`docs/AUTH.md`** for status codes.
 
-**Route order:** Middleware runs **`TryDriverIDHeader`** first, then **`RequireDriverAuth`**, so a valid **`X-Driver-Id`** can satisfy driver routes without initData when header mode is enabled.
+**Route order:** Middleware runs **`TryDriverIDHeader`**, then **`TryDriverBearerAuth`**, then **`RequireDriverAuth`**, so the bearer token satisfies driver routes even when the `X-Driver-Id` header path is disabled.
 
 ## CORS (e.g. Flutter web)
 
@@ -224,8 +225,12 @@ sessions stayed valid and two devices posted location for the same driver.
 
 1. Read **`X-Telegram-Init-Data`** header, or query **`init_data`** if the header is empty.
 2. If initData is **non-empty**: verify with **driver** bot token, then **rider** bot token; resolve user + role.
-3. **Else** if **`ENABLE_DRIVER_ID_HEADER`** is **true**: require **`X-Driver-Id`** and resolve an **approved** driver (same rules as HTTP).
-4. **Else**: **401** `missing init data`.
+3. **Else** read a bearer token from **`Authorization: Bearer`** (or query **`?access_token=`** when query credentials are allowed): tried first as a **driver OTP session token**, then as a **native rider JWT**.
+4. **Else** if **`ENABLE_DRIVER_ID_HEADER`** is **true**: require **`X-Driver-Id`** and resolve an **approved** driver (same rules as HTTP).
+5. **Else**: **401** `missing init data`.
+
+> **Native driver apps:** when `ENABLE_DRIVER_ID_HEADER` is off (hardened production), `X-Driver-Id` on the upgrade request is ignored and the connection gets **401**. Connect as
+> `wss://<host>/ws?trip_id=<uuid>&access_token=<driver bearer token>` (or set the `Authorization` header if your WebSocket client supports it).
 
 Then **`AuthorizeTripAccess`**: only the **assigned driver** or the **rider** for that trip may subscribe.
 
@@ -265,6 +270,27 @@ curl -sS -H "Connection: Upgrade" -H "Upgrade: websocket" \
 ```
 
 (Use a real WebSocket client in production; `curl` is illustrative only.)
+
+## `GET /ws/driver-dispatch`
+
+Driver-only socket that pokes the client when the dispatch queue changes, so the app can refetch `GET /driver/available-requests` immediately instead of polling.
+
+**Auth:** same middleware chain as other driver HTTP routes (`TryDriverIDHeader` → `TryDriverBearerAuth` → `RequireDriverAuth`). In hardened deployments (`ENABLE_DRIVER_ID_HEADER=false`) the `X-Driver-Id` header is ignored, so attach the driver bearer token:
+
+```text
+wss://<host>/ws/driver-dispatch?access_token=<driver bearer token>
+```
+
+`Authorization: Bearer` / `X-Driver-Session` headers also work when the WebSocket client can set them. Without a valid token the upgrade request returns **401** `driver auth required`.
+
+**Events** (JSON text frames):
+
+| Message | When |
+|---------|------|
+| `{ "type": "hello" }` | On connect |
+| `{ "type": "dispatch_changed", "emitted_at": "RFC3339" }` | An offer was created / taken / expired — refetch `available-requests` |
+
+This socket is best-effort; treat it as a hint and keep the long-poll (`wait_sec=25`) as fallback.
 
 ---
 
