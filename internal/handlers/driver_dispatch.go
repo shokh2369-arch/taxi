@@ -334,9 +334,9 @@ func writeAvailableRequestsErr(c *gin.Context, driverID int64, step string, err 
 	if err == nil {
 		return false
 	}
-	// Client hung up mid-poll (or replaced the long-poll) — do not surface as 500.
+	// Client hung up mid-poll (or replaced the long-poll). Expected under short
+	// client timeouts / overlapping polls — abort quietly; http_request still logs.
 	if errors.Is(err, context.Canceled) || errors.Is(c.Request.Context().Err(), context.Canceled) {
-		log.Printf("driver_available_requests: driver=%d step=%s canceled: %v", driverID, step, err)
 		c.Abort()
 		return true
 	}
