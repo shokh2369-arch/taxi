@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -53,6 +54,18 @@ func (s *DriverAuthTokenService) Issue(ctx context.Context, userID int64) (*Driv
 		return nil, err
 	}
 	hash := driverTokenSHA256Hex(raw)
+	// One active session per driver. Without this, logging in on a second device
+	// left the first session valid, so two phones posted location for the same
+	// driver and fought over the same trip — and neither knew the other existed.
+	// The old session's next request now fails auth, which is the signal the
+	// client uses to log itself out.
+	if n, err := s.sessions.RevokeAllForUser(ctx, userID); err != nil {
+		// Not fatal: a login that cannot revoke is still better than no login,
+		// but it means two devices may briefly coexist.
+		log.Printf("driver_auth: revoke previous sessions for user %d: %v", userID, err)
+	} else if n > 0 {
+		log.Printf("driver_auth: revoked %d previous session(s) for user %d on new login", n, userID)
+	}
 	if _, err := s.sessions.Insert(ctx, userID, hash, now.Add(s.ttl).Unix()); err != nil {
 		return nil, err
 	}

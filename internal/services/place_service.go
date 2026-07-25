@@ -47,4 +47,3 @@ func (s *PlaceService) NearestWithin(ctx context.Context, pickupLat, pickupLng, 
 	sort.Slice(out, func(i, j int) bool { return out[i].DistanceKm < out[j].DistanceKm })
 	return out, nil
 }
-

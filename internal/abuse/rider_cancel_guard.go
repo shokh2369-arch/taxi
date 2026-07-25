@@ -235,9 +235,9 @@ func fmtDurationUzDays(days int) string {
 // --- internal helpers ---
 
 type stateRow struct {
-	RiderUserID    int64
-	BlockUntil     sql.NullString
-	LastWarningAt  sql.NullString
+	RiderUserID     int64
+	BlockUntil      sql.NullString
+	LastWarningAt   sql.NullString
 	EscalationLevel int
 }
 
@@ -303,4 +303,3 @@ func parseTime(s string) (time.Time, error) {
 	}
 	return time.Parse(time.RFC3339, s)
 }
-

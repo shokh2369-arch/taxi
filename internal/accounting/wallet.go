@@ -237,7 +237,10 @@ func ApplyTripCommissionInTx(ctx context.Context, tx *sql.Tx, db *sql.DB, pay Pa
 	// The payments row records what was actually deducted from the driver's wallets. When there is a
 	// shortfall, the uncollected part was never taken and must not appear as a collected commission.
 	deducted := fromPromo + fromCash
-	if pay != nil && deducted > 0 {
+	// Also write the row when nothing could be collected: a commission that was
+	// entirely uncollected is precisely the receivable worth recording, and
+	// skipping it made the largest debts the most invisible.
+	if pay != nil && (deducted > 0 || uncollected > 0) {
 		if uncollected > 0 {
 			legacyNote = fmt.Sprintf("%s Partial: %d of %d so'm collected (%d uncollected).", legacyNote, deducted, commission, uncollected)
 		}
@@ -247,6 +250,11 @@ func ApplyTripCommissionInTx(ctx context.Context, tx *sql.Tx, db *sql.DB, pay Pa
 			Type:     models.PaymentTypeCommission,
 			Note:     legacyNote,
 			TripID:   &tripCopy,
+			// Fee earned and the part still owed, as real columns. Previously the
+			// shortfall lived only inside a metadata JSON string that nothing read,
+			// so receivables could not be aged, chased, or reported.
+			CommissionDue:     commission,
+			UncollectedAmount: uncollected,
 		}); err != nil {
 			return err
 		}
@@ -260,4 +268,3 @@ func strPtr(s string) *string {
 	}
 	return &s
 }
-

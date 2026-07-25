@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"log"
 	"net/http"
 	"os"
@@ -17,16 +16,17 @@ import (
 	driverbot "taxi-mvp/internal/bot/driver"
 	"taxi-mvp/internal/config"
 	"taxi-mvp/internal/db"
-	"taxi-mvp/internal/db/driverapprepair"
-	"taxi-mvp/internal/db/riderapprepair"
-	"taxi-mvp/internal/db/driverlogincodes"
 	"taxi-mvp/internal/db/broadcasts"
+	"taxi-mvp/internal/db/driverapprepair"
+	"taxi-mvp/internal/db/driverlogincodes"
 	"taxi-mvp/internal/db/ledgerrepair"
 	"taxi-mvp/internal/db/legalfingerrepair"
 	"taxi-mvp/internal/db/legalrepair"
 	"taxi-mvp/internal/db/riderappnotifications"
+	"taxi-mvp/internal/db/riderapprepair"
 	"taxi-mvp/internal/db/riderlogincodes"
 	"taxi-mvp/internal/repositories"
+	"taxi-mvp/internal/safe"
 	"taxi-mvp/internal/server"
 	"taxi-mvp/internal/services"
 	"taxi-mvp/internal/ws"
@@ -94,7 +94,11 @@ func main() {
 	matchSvc := services.NewMatchService(database, driverBot, cfg)
 	assignSvc := services.NewAssignmentService(database, riderBot, driverBot, cfg)
 	hub := ws.NewHub()
-	go hub.Run()
+	// The hub owns all WebSocket fan-out; losing it silently would stop every
+	// live trip update, so supervise it rather than just recovering.
+	hubCtx, hubCancel := context.WithCancel(context.Background())
+	defer hubCancel()
+	safe.GoSupervised(hubCtx, "ws_hub", hub.Run)
 	tripRepo := repositories.NewTripRepo(database)
 	paymentRepo := repositories.NewPaymentRepository(database)
 	fareSvc := services.NewFareService(database, cfg)
@@ -109,10 +113,10 @@ func main() {
 	tripSvc.OnDriverStatusUpdate = func(telegramID int64) {
 		driverbot.UpdatePinnedStatusForChat(driverBot, database, cfg, telegramID)
 	}
-
-	// On each process start (deployment/restart), send a one-time notification to all drivers
-	// so they know the system was updated and should go online again.
-	go notifyDriversOfDeployment(database, driverBot)
+	// A driver cancellation returns the ride to the pool; re-dispatch it immediately.
+	tripSvc.OnRequestRequeued = func(requestID string) {
+		matchSvc.StartPriorityDispatch(context.Background(), requestID)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -125,13 +129,17 @@ func main() {
 		cancel()
 	}()
 
-	go assignSvc.RunExpiryWorker(ctx)
-	go assignSvc.RunRadiusExpansionWorker(ctx, matchSvc)
-	go services.RunOnlineBonusWorker(ctx, database, driverBot)
-	go services.RunDriverApprovalNotifier(ctx, database, driverBot)
-	go services.RunDriverAppAutoOfflineWorker(ctx, database)
-	go driverbot.RunLegalReacceptNotifier(ctx, database, driverBot)
-	go services.RunBroadcastFanoutWorker(ctx, database, riderBot, cfg)
+	// Supervised: a panic in any of these would otherwise kill the whole process
+	// (single instance — see render.yaml), and plain recovery would leave the
+	// worker silently dead, so requests would stop expiring or offers would stop
+	// being dispatched with nothing to show why.
+	safe.GoSupervised(ctx, "expiry_worker", func() { assignSvc.RunExpiryWorker(ctx) })
+	safe.GoSupervised(ctx, "radius_expansion_worker", func() { assignSvc.RunRadiusExpansionWorker(ctx, matchSvc) })
+	safe.GoSupervised(ctx, "driver_approval_notifier", func() { services.RunDriverApprovalNotifier(ctx, database, driverBot) })
+	safe.GoSupervised(ctx, "driver_app_auto_offline_worker", func() { services.RunDriverAppAutoOfflineWorker(ctx, database) })
+	safe.GoSupervised(ctx, "legal_reaccept_notifier", func() { driverbot.RunLegalReacceptNotifier(ctx, database, driverBot) })
+	safe.GoSupervised(ctx, "broadcast_fanout_worker", func() { services.RunBroadcastFanoutWorker(ctx, database, riderBot, cfg) })
+	safe.GoSupervised(ctx, "retention_worker", func() { services.RunRetentionWorker(ctx, database) })
 
 	srv := server.New(database, cfg, tripSvc, matchSvc, assignSvc, driverBot, riderBot, hub, fareSvc, riderAuthSvc, riderReqAppSvc)
 	httpServer := &http.Server{Addr: cfg.APIAddr, Handler: srv}
@@ -152,22 +160,40 @@ func main() {
 		return
 	}
 
+	// Bots are deliberately NOT restarted in-process. Telegram allows one
+	// getUpdates consumer per token, and tgbotapi's GetUpdatesChan goroutine is
+	// stopped only by StopReceivingUpdates — re-entering the bot would leave the
+	// old poller alive, so Telegram would answer one of them with 409 while the
+	// other kept draining updates into an abandoned channel and losing them.
+	// Instead a bot that panics or returns unexpectedly cancels the root context,
+	// the process exits cleanly, and the platform restarts it with one poller.
+	// This also makes a silently dead bot loud, rather than leaving the HTTP API
+	// serving happily while nobody is reading Telegram.
 	var wg sync.WaitGroup
+	runBot := func(name string, fn func()) {
+		defer wg.Done()
+		if safe.Run(name, fn) {
+			log.Printf("%s panicked; shutting down so it restarts with a single Telegram poller", name)
+		} else if ctx.Err() == nil {
+			log.Printf("%s exited unexpectedly; shutting down so it restarts", name)
+		} else {
+			return // normal shutdown
+		}
+		cancel()
+	}
+
 	wg.Add(2)
-	go func() {
-		defer wg.Done()
+	go runBot("rider_bot", func() {
 		bot.RunRiderBot(ctx, cfg, database, riderBot, matchSvc, tripSvc)
-	}()
-	go func() {
-		defer wg.Done()
+	})
+	go runBot("driver_bot", func() {
 		bot.RunDriverBot(ctx, cfg, database, driverBot, matchSvc, assignSvc, tripSvc)
-	}()
+	})
 	if adminBot != nil && cfg.AdminID != 0 {
 		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		go runBot("admin_bot", func() {
 			bot.RunAdminBot(ctx, cfg, database, adminBot, fareSvc, driverBot)
-		}()
+		})
 	}
 
 	wg.Wait()
@@ -182,11 +208,4 @@ func shutdownHTTPServer(s *http.Server) {
 	if err := s.Shutdown(ctx); err != nil {
 		log.Printf("api server shutdown: %v", err)
 	}
-}
-
-// notifyDriversOfDeployment sets all drivers offline, syncs balance<=0 to offline, then notifies all drivers (e.g. after deployment).
-func notifyDriversOfDeployment(dbConn *sql.DB, driverBot *tgbotapi.BotAPI) {
-	// Legacy deployment notification is disabled; keep function to avoid breaking startup wiring.
-	_ = dbConn
-	_ = driverBot
 }

@@ -60,13 +60,23 @@ func DriverAppLocation(db *sql.DB, matchSvc *services.MatchService) gin.HandlerF
 		// Ensure drivers row exists for this user (some setups create users first).
 		_, _ = db.ExecContext(ctx, `INSERT OR IGNORE INTO drivers (user_id) VALUES (?1)`, driverID)
 
-		// Update app_* fields and mark driver online for dispatch (is_active/manual_offline/grid/last_seen_at).
+		// Update app_* fields and mark driver online for dispatch (is_active/grid/last_seen_at).
 		// Also refresh live_location_* so dispatch eligibility matches Telegram live (fresh within ~90–120s).
+		//
+		// manual_offline is deliberately NOT cleared here. A driver app posts
+		// background location continuously, so clearing it meant the OFFLINE toggle
+		// silently undid itself on the very next ping: a driver who finished their
+		// shift and drove home kept receiving orders. Going back online is an
+		// explicit action (POST /driver/location clears the flag on the Telegram
+		// path, and the app has its own online control), not a side effect of the
+		// phone reporting where it is. is_active is likewise left alone while the
+		// driver is manually offline.
 		res, err := db.ExecContext(ctx, `
 			UPDATE drivers
 			SET app_lat = ?1, app_lng = ?2, app_last_seen_at = ?3, app_location_active = 1,
 			    last_lat = ?1, last_lng = ?2, last_live_location_at = ?3, live_location_active = 1,
-			    last_seen_at = ?3, grid_id = ?4, is_active = 1, manual_offline = 0
+			    last_seen_at = ?3, grid_id = ?4,
+			    is_active = CASE WHEN COALESCE(manual_offline, 0) = 1 THEN is_active ELSE 1 END
 			WHERE user_id = ?5`,
 			req.Lat, req.Lng, nowStr, gridID, driverID)
 		if err != nil {
@@ -90,4 +100,3 @@ func DriverAppLocation(db *sql.DB, matchSvc *services.MatchService) gin.HandlerF
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	}
 }
-

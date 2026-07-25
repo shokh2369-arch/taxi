@@ -13,11 +13,11 @@ import (
 func TestDetectDriverActionSource(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	tests := []struct {
-		name   string
-		path   string
-		hdr    map[string]string
-		user   *User
-		want   ActionSource
+		name string
+		path string
+		hdr  map[string]string
+		user *User
+		want ActionSource
 	}{
 		{
 			name: "location app is always http app",

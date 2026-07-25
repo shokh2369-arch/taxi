@@ -3,6 +3,7 @@ package repositories
 import (
 	"context"
 	"database/sql"
+	"fmt"
 
 	"taxi-mvp/internal/domain"
 )
@@ -111,18 +112,56 @@ func (r *TripRepo) CancelByDriver(ctx context.Context, tripID string, driverUser
 	if n == 0 {
 		return 0, 0, nil
 	}
-	r.cancelParentRideRequest(ctx, tripID)
+	// The parent request is deliberately NOT cancelled here. TripService decides:
+	// a driver cancellation should put the ride back in the pool for someone else
+	// rather than discard the rider's pickup, destination and estimate.
 	_ = r.db.QueryRowContext(ctx, `SELECT rider_user_id FROM trips WHERE id = ?1`, tripID).Scan(&riderUserID)
 	return n, riderUserID, nil
 }
 
-// cancelParentRideRequest moves the trip's ride_requests row from ASSIGNED to CANCELLED (terminal),
+// CancelParentRideRequest moves the trip's ride_requests row from ASSIGNED to CANCELLED (terminal),
 // so cancelled trips do not leave the request stuck in ASSIGNED forever. Best-effort.
-func (r *TripRepo) cancelParentRideRequest(ctx context.Context, tripID string) {
+func (r *TripRepo) CancelParentRideRequest(ctx context.Context, tripID string) {
 	_, _ = r.db.ExecContext(ctx, `
 		UPDATE ride_requests SET status = ?1
 		WHERE id = (SELECT request_id FROM trips WHERE id = ?2) AND status = ?3`,
 		domain.RequestStatusCancelled, tripID, domain.RequestStatusAssigned)
+}
+
+// RequeueParentRideRequest returns the trip's ride request to PENDING with a
+// fresh TTL so another driver can take it, and reports the request id when it
+// succeeds.
+//
+// Used when the DRIVER cancels. Previously that path cancelled the request
+// outright, so the rider lost their pickup, destination and price estimate and
+// had to walk the whole ordering flow again through no fault of their own.
+// Falls back to leaving the request alone (caller cancels it) if it cannot be
+// requeued — for example if the rider already has another PENDING request, which
+// the one-pending-per-rider index forbids.
+func (r *TripRepo) RequeueParentRideRequest(ctx context.Context, tripID string, ttlSeconds int) (requestID string, ok bool) {
+	if ttlSeconds <= 0 {
+		ttlSeconds = 120
+	}
+	if err := r.db.QueryRowContext(ctx,
+		`SELECT request_id FROM trips WHERE id = ?1`, tripID).Scan(&requestID); err != nil || requestID == "" {
+		return "", false
+	}
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE ride_requests
+		SET status = ?1,
+		    assigned_driver_user_id = NULL,
+		    assigned_at = NULL,
+		    radius_expanded_at = NULL,
+		    expires_at = datetime('now', ?2)
+		WHERE id = ?3 AND status = ?4`,
+		domain.RequestStatusPending, fmt.Sprintf("+%d seconds", ttlSeconds), requestID, domain.RequestStatusAssigned)
+	if err != nil {
+		return "", false
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return "", false
+	}
+	return requestID, true
 }
 
 // CancelByRider sets status = CANCELLED_BY_RIDER, cancelled_at, cancelled_by = "rider", optional cancel_reason.
@@ -142,7 +181,7 @@ func (r *TripRepo) CancelByRider(ctx context.Context, tripID string, riderUserID
 	if n == 0 {
 		return 0, 0, nil
 	}
-	r.cancelParentRideRequest(ctx, tripID)
+	r.CancelParentRideRequest(ctx, tripID)
 	_ = r.db.QueryRowContext(ctx, `SELECT driver_user_id FROM trips WHERE id = ?1`, tripID).Scan(&driverUserID)
 	return n, driverUserID, nil
 }

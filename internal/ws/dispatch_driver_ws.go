@@ -7,6 +7,7 @@ import (
 	"github.com/gorilla/websocket"
 	"taxi-mvp/internal/auth"
 	"taxi-mvp/internal/domain"
+	"taxi-mvp/internal/safe"
 )
 
 type dispatchClient struct {
@@ -50,7 +51,7 @@ func ServeDriverDispatchWs(hub *DispatchHub, w http.ResponseWriter, r *http.Requ
 	default:
 	}
 
-	go c.writePump()
+	safe.Go("ws_dispatch_write_pump", c.writePump)
 	c.readPump()
 }
 

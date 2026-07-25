@@ -36,4 +36,3 @@ func (r *tripStatsRepo) CountTripsForDay(ctx context.Context, day time.Time) (in
 	).Scan(&count)
 	return count, err
 }
-

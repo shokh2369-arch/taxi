@@ -4,19 +4,19 @@ import "time"
 
 // Driver ledger entry types (append-only audit). Amount is signed: positive credits the driver bucket, negative debits.
 const (
-	LedgerEntryPromoGranted              = "PROMO_GRANTED"
-	LedgerEntryCommissionAccrued         = "COMMISSION_ACCRUED"
-	LedgerEntryPromoAppliedToCommission  = "PROMO_APPLIED_TO_COMMISSION"
-	LedgerEntryCashAppliedToCommission   = "CASH_APPLIED_TO_COMMISSION"
-	LedgerEntryPromoExpired              = "PROMO_EXPIRED"
-	LedgerEntryManualAdjustment          = "MANUAL_ADJUSTMENT"
-	LedgerEntryCashTopUp                 = "CASH_TOPUP"
-	LedgerEntryCashDeduction             = "CASH_DEDUCTION"
+	LedgerEntryPromoGranted             = "PROMO_GRANTED"
+	LedgerEntryCommissionAccrued        = "COMMISSION_ACCRUED"
+	LedgerEntryPromoAppliedToCommission = "PROMO_APPLIED_TO_COMMISSION"
+	LedgerEntryCashAppliedToCommission  = "CASH_APPLIED_TO_COMMISSION"
+	LedgerEntryPromoExpired             = "PROMO_EXPIRED"
+	LedgerEntryManualAdjustment         = "MANUAL_ADJUSTMENT"
+	LedgerEntryCashTopUp                = "CASH_TOPUP"
+	LedgerEntryCashDeduction            = "CASH_DEDUCTION"
 	LedgerEntryManualDeduction          = "MANUAL_DEDUCTION"
 )
 
 const LedgerBucketPromo = "promo"
-const LedgerBucketCash  = "cash"
+const LedgerBucketCash = "cash"
 
 // DriverLedgerEntry is one append-only row in driver_ledger.
 type DriverLedgerEntry struct {

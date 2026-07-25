@@ -191,3 +191,67 @@ func TestTripInfo_AuthenticatedNonParticipant404(t *testing.T) {
 		t.Fatalf("status = %d, want 404; body = %s", w.Code, w.Body.String())
 	}
 }
+
+// Contact details are for participants only.
+//
+// The trip UUID doubles as a capability for map and tracking links, and it
+// travels in query strings, logs and Referer headers — too weak a secret to hang
+// phone numbers on, especially since it never expires. An authenticated driver
+// must still get the rider's phone (they need to call them); an anonymous caller
+// gets the map payload and nothing more.
+func TestTripInfo_PhoneNumbersRequireAuthentication(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupTripInfoTestDB(t)
+	defer db.Close()
+
+	_, _ = db.Exec(`INSERT INTO users (id, telegram_id, role, name, phone) VALUES
+		(7, 700, 'driver', 'Driver Seven', '+998900000007'),
+		(2, 200, 'rider', 'Rider Two', '+998900000002')`)
+	_, _ = db.Exec(`INSERT INTO drivers (user_id, last_lat, last_lng, phone, car_type, color, plate, plate_number)
+		VALUES (7, 41.30, 69.28, '+998900000007', 'sedan', 'white', '01A001AA', '01A001AA')`)
+	_, _ = db.Exec(`INSERT INTO ride_requests (id, rider_user_id, pickup_lat, pickup_lng, drop_lat, drop_lng, assigned_driver_user_id)
+		VALUES ('req-p', 2, 41.31, 69.29, 41.35, 69.33, 7)`)
+	_, _ = db.Exec(`INSERT INTO trips (id, request_id, driver_user_id, rider_user_id, status, distance_m, fare_amount)
+		VALUES ('trip-p', 'req-p', 7, 2, 'WAITING', 0, 0)`)
+
+	cfg := &config.Config{StartingFee: 4000, PricePerKm: 1500}
+	call := func(authAs *auth.User) map[string]any {
+		t.Helper()
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		req := httptest.NewRequest(http.MethodGet, "/trip/trip-p", nil)
+		if authAs != nil {
+			req = req.WithContext(auth.WithUser(req.Context(), authAs))
+		}
+		c.Request = req
+		c.Params = gin.Params{{Key: "id", Value: "trip-p"}}
+		TripInfo(db, cfg, nil)(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d body = %s", w.Code, w.Body.String())
+		}
+		var body map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		return body
+	}
+
+	anon := call(nil)
+	if v, ok := anon["rider_phone"]; ok && v != "" {
+		t.Errorf("anonymous caller received rider_phone = %v", v)
+	}
+	if info, ok := anon["driver_info"].(map[string]any); ok {
+		if phone, ok := info["phone"]; ok && phone != "" {
+			t.Errorf("anonymous caller received driver phone = %v", phone)
+		}
+	}
+	// The map payload itself must still work without credentials.
+	if _, ok := anon["status"]; !ok {
+		t.Error("anonymous caller should still receive the trip status")
+	}
+
+	authed := call(&auth.User{UserID: 7, Role: domain.RoleDriver})
+	if got, _ := authed["rider_phone"].(string); got != "+998900000002" {
+		t.Errorf("authenticated driver rider_phone = %q, want the rider's number", got)
+	}
+}

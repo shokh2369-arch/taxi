@@ -124,4 +124,3 @@ func sign(params map[string]string, secret string) string {
 	h := sha1.Sum([]byte(base))
 	return hex.EncodeToString(h[:])
 }
-

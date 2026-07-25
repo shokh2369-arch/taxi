@@ -80,7 +80,7 @@ func TestDriverAvailableRequests_OfferPersistsWhilePending(t *testing.T) {
 		VALUES ('req-persist', 1, 'SENT', datetime('now','-30 seconds'))`)
 
 	cfg := &config.Config{DispatchOfferVisibleSeconds: 90}
-	handler := DriverAvailableRequests(db, cfg)
+	handler := DriverAvailableRequests(db, cfg, nil)
 
 	var lastRequestID string
 	for i := 0; i < 3; i++ {
@@ -143,7 +143,7 @@ func TestDriverAvailableRequests_HidesOffersPastVisibilityWindow(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodGet, "/driver/available-requests", nil)
 	injectDriverContext(c, driverID)
-	DriverAvailableRequests(db, cfg)(c)
+	DriverAvailableRequests(db, cfg, nil)(c)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
@@ -177,7 +177,7 @@ func TestDriverAvailableRequests_PrecreatedTripStaysInQueue(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodGet, "/driver/available-requests", nil)
 	c.Request = c.Request.WithContext(context.Background())
 	injectDriverContext(c, 1)
-	DriverAvailableRequests(db, nil)(c)
+	DriverAvailableRequests(db, nil, nil)(c)
 
 	var resp map[string]interface{}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {

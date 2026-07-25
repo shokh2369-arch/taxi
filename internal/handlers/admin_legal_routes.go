@@ -527,12 +527,12 @@ func (h *adminLegalHTTP) userAcceptances(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"ok":            true,
-		"user_id":       uid,
-		"actor_id":      uid,
-		"acceptances":   out,
-		"records":       out,
-		"history":       out,
-		"count":         len(out),
+		"ok":          true,
+		"user_id":     uid,
+		"actor_id":    uid,
+		"acceptances": out,
+		"records":     out,
+		"history":     out,
+		"count":       len(out),
 	})
 }

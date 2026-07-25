@@ -517,7 +517,7 @@ func (h *AdminHandlers) DeductBalance(c *gin.Context) {
 		if err := h.db.QueryRowContext(ctx, `SELECT u.telegram_id FROM users u JOIN drivers d ON d.user_id = u.id WHERE d.user_id = ?1`, driverID).Scan(&telegramID); err != nil {
 			log.Printf("admin_deduct_balance: driver telegram lookup failed driver_id=%d err=%v", driverID, err)
 		} else if telegramID != 0 {
-			text := fmt.Sprintf("Балансингиздан %d сўм ечилди.\nСабаб: %s.\n\nЖорий нақд баланс: %d сўм.", deducted, req.Reason, cash)
+			text := fmt.Sprintf("Балансингиздан %s сўм ечилди.\nСабаб: %s.\n\nЖорий нақд баланс: %s сўм.", utils.FormatSoM(deducted), req.Reason, utils.FormatSoM(cash))
 			msg := tgbotapi.NewMessage(telegramID, text)
 			if _, err := h.driverBot.Send(msg); err != nil {
 				log.Printf("admin_deduct_balance: telegram notify failed driver_id=%d telegram_id=%d err=%v", driverID, telegramID, err)

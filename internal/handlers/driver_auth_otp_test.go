@@ -6,14 +6,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	_ "modernc.org/sqlite"
 	"taxi-mvp/internal/repositories"
 	"taxi-mvp/internal/services"
-	_ "modernc.org/sqlite"
 )
 
 type fakeTelegramSender struct {
@@ -390,5 +391,63 @@ func TestNormalizePhoneDigits(t *testing.T) {
 		if got := normalizePhoneDigits(tt.in); got != tt.want {
 			t.Errorf("normalizePhoneDigits(%q) = %q, want %q", tt.in, got, tt.want)
 		}
+	}
+}
+
+// Concurrent wrong guesses must all be counted. The previous implementation read
+// failed_attempts, incremented in Go and wrote back an absolute value, so N
+// simultaneous requests all read the same number and all wrote the same +1 —
+// the 5-attempt lockout never tripped and the code space could be probed at
+// full concurrency.
+func TestDriverAuthVerifyCode_ConcurrentWrongGuessesConsumeCode(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupOTPTestDB(t)
+	defer db.Close()
+
+	if _, err := db.Exec(`INSERT INTO users (id, role, telegram_id, phone) VALUES (1, 'driver', 999, '998901234567')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO drivers (user_id, verification_status, phone) VALUES (1, 'approved', '998901234567')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO driver_login_codes (user_id, code, used, created_at, expires_at) VALUES (1, '999999', 0, ?1, ?2)`,
+		time.Now().UTC().Format("2006-01-02 15:04:05"),
+		time.Now().UTC().Add(2*time.Minute).Format("2006-01-02 15:04:05")); err != nil {
+		t.Fatal(err)
+	}
+
+	tokens := services.NewDriverAuthTokenService(repositories.NewDriverAuthSessionsRepo(db))
+	r := gin.New()
+	r.POST("/auth/verify-code", DriverAuthVerifyCode(db, tokens))
+
+	const guesses = driverAuthMaxFailedAttempts
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < guesses; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			performJSONRequest(r, "POST", "/auth/verify-code", map[string]string{"phone": "998901234567", "code": "123456"})
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	var attempts, used int
+	if err := db.QueryRow(`SELECT COALESCE(failed_attempts,0), used FROM driver_login_codes WHERE user_id = 1`).Scan(&attempts, &used); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != guesses {
+		t.Errorf("failed_attempts = %d, want %d (lost increments mean the lockout can be bypassed)", attempts, guesses)
+	}
+	if used != 1 {
+		t.Errorf("used = %d, want 1 (code should be consumed at %d attempts)", used, driverAuthMaxFailedAttempts)
+	}
+
+	// The consumed code must no longer be usable, even with the right value.
+	rr := performJSONRequest(r, "POST", "/auth/verify-code", map[string]string{"phone": "998901234567", "code": "999999"})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("consumed code still accepted: status=%d body=%s", rr.Code, rr.Body.String())
 	}
 }

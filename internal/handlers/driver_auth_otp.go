@@ -17,16 +17,18 @@ import (
 )
 
 const (
-	driverOTPDigits            = 6
-	errDriverAuthNotRegistered = "DRIVER_NOT_REGISTERED"
-	errDriverAuthInvalidCode   = "INVALID_CODE"
-	errDriverAuthRateLimited   = "RATE_LIMITED"
-	errDriverAuthNoTelegram    = "NO_TELEGRAM"
-	errDriverAuthTelegramFail  = "TELEGRAM_SEND_FAILED"
-	errDriverAuthInvalidPhone  = "INVALID_PHONE"
-	errDriverAuthInvalidBody   = "INVALID_BODY"
-	errDriverAuthInternal      = "INTERNAL_ERROR"
-	errDriverAuthTelegramDown  = "TELEGRAM_UNAVAILABLE"
+	driverOTPDigits = 6
+	// driverAuthMaxFailedAttempts is how many wrong guesses consume a login code.
+	driverAuthMaxFailedAttempts = 5
+	errDriverAuthNotRegistered  = "DRIVER_NOT_REGISTERED"
+	errDriverAuthInvalidCode    = "INVALID_CODE"
+	errDriverAuthRateLimited    = "RATE_LIMITED"
+	errDriverAuthNoTelegram     = "NO_TELEGRAM"
+	errDriverAuthTelegramFail   = "TELEGRAM_SEND_FAILED"
+	errDriverAuthInvalidPhone   = "INVALID_PHONE"
+	errDriverAuthInvalidBody    = "INVALID_BODY"
+	errDriverAuthInternal       = "INTERNAL_ERROR"
+	errDriverAuthTelegramDown   = "TELEGRAM_UNAVAILABLE"
 )
 
 func writeAPIError(c *gin.Context, status int, code, message string) {
@@ -65,6 +67,16 @@ func normalizePhoneDigits(s string) string {
 		return "998" + d
 	}
 	return d
+}
+
+// maskPhoneDigits keeps only the last 4 digits for logging. Rejected logins are
+// logged on every attempt, so an unmasked phone here accumulates a plaintext
+// subscriber directory in the log stream. Mirrors the rider flow's maskPhone.
+func maskPhoneDigits(digits string) string {
+	if len(digits) <= 4 {
+		return strings.Repeat("*", len(digits))
+	}
+	return strings.Repeat("*", len(digits)-4) + digits[len(digits)-4:]
 }
 
 type driverLookup struct {
@@ -160,13 +172,13 @@ func DriverAuthRequestCode(db *sql.DB, driverBot telegramSender) gin.HandlerFunc
 				uid = lookup.UserID
 			}
 			log.Printf("driver_auth_request_code_reject phone=%s user_found=%v selected_user_id=%d role=%s has_driver_row=%v verification_status=%s driver_approved=%v status=%d code=%s",
-				digits, err != sql.ErrNoRows, uid, role, hasDriver, verStr, isApprovedDriver(lookup), http.StatusForbidden, errDriverAuthNotRegistered)
+				maskPhoneDigits(digits), err != sql.ErrNoRows, uid, role, hasDriver, verStr, isApprovedDriver(lookup), http.StatusForbidden, errDriverAuthNotRegistered)
 			writeAPIError(c, http.StatusForbidden, errDriverAuthNotRegistered, "driver not registered or not approved")
 			return
 		}
 		if err != nil {
 			log.Printf("driver_auth_request_code_reject phone=%s user_found=%v driver_approved=%v status=%d code=%s detail=%v",
-				digits, false, false, http.StatusInternalServerError, errDriverAuthInternal, err)
+				maskPhoneDigits(digits), false, false, http.StatusInternalServerError, errDriverAuthInternal, err)
 			writeAPIError(c, http.StatusInternalServerError, errDriverAuthInternal, "lookup failed")
 			return
 		}
@@ -174,13 +186,13 @@ func DriverAuthRequestCode(db *sql.DB, driverBot telegramSender) gin.HandlerFunc
 		telegramID := lookup.TelegramID
 		if telegramID == 0 {
 			log.Printf("driver_auth_request_code_reject phone=%s user_found=%v driver_approved=%v status=%d code=%s",
-				digits, true, true, http.StatusBadRequest, errDriverAuthNoTelegram)
+				maskPhoneDigits(digits), true, true, http.StatusBadRequest, errDriverAuthNoTelegram)
 			writeAPIError(c, http.StatusBadRequest, errDriverAuthNoTelegram, "driver has no Telegram linked")
 			return
 		}
 		if driverBot == nil {
 			log.Printf("driver_auth_request_code_reject phone=%s user_found=%v driver_approved=%v status=%d code=%s",
-				digits, true, true, http.StatusServiceUnavailable, errDriverAuthTelegramDown)
+				maskPhoneDigits(digits), true, true, http.StatusServiceUnavailable, errDriverAuthTelegramDown)
 			writeAPIError(c, http.StatusServiceUnavailable, errDriverAuthTelegramDown, "telegram unavailable")
 			return
 		}
@@ -191,7 +203,7 @@ func DriverAuthRequestCode(db *sql.DB, driverBot telegramSender) gin.HandlerFunc
 			WHERE user_id = ? AND created_at > datetime('now', '-30 seconds')`,
 			userID).Scan(&recent); err == nil && recent > 0 {
 			log.Printf("driver_auth_request_code_reject phone=%s user_found=%v driver_approved=%v status=%d code=%s",
-				digits, true, true, http.StatusTooManyRequests, errDriverAuthRateLimited)
+				maskPhoneDigits(digits), true, true, http.StatusTooManyRequests, errDriverAuthRateLimited)
 			writeAPIError(c, http.StatusTooManyRequests, errDriverAuthRateLimited, "rate limited")
 			return
 		}
@@ -199,7 +211,7 @@ func DriverAuthRequestCode(db *sql.DB, driverBot telegramSender) gin.HandlerFunc
 		code, err := generateOTP6()
 		if err != nil {
 			log.Printf("driver_auth_request_code_reject phone=%s user_found=%v driver_approved=%v status=%d code=%s detail=%v",
-				digits, true, true, http.StatusInternalServerError, errDriverAuthInternal, err)
+				maskPhoneDigits(digits), true, true, http.StatusInternalServerError, errDriverAuthInternal, err)
 			writeAPIError(c, http.StatusInternalServerError, errDriverAuthInternal, "otp generation failed")
 			return
 		}
@@ -258,12 +270,13 @@ func DriverAuthVerifyCode(db *sql.DB, tokens *services.DriverAuthTokenService) g
 
 		var rowID int64
 		var stored string
-		var failedAttempts int
+		// failed_attempts is not read back here: the counter is incremented
+		// atomically in SQL below rather than round-tripped through Go.
 		err = db.QueryRowContext(ctx, `
-			SELECT id, code, COALESCE(failed_attempts, 0) FROM driver_login_codes
+			SELECT id, code FROM driver_login_codes
 			WHERE user_id = ? AND used = 0 AND expires_at > datetime('now')
 			ORDER BY id DESC LIMIT 1`,
-			userID).Scan(&rowID, &stored, &failedAttempts)
+			userID).Scan(&rowID, &stored)
 		if err == sql.ErrNoRows {
 			writeAPIError(c, http.StatusBadRequest, errDriverAuthInvalidCode, "invalid code")
 			return
@@ -275,15 +288,17 @@ func DriverAuthVerifyCode(db *sql.DB, tokens *services.DriverAuthTokenService) g
 		}
 
 		if subtle.ConstantTimeCompare([]byte(stored), []byte(codeIn)) != 1 {
-			failedAttempts++
-			if failedAttempts >= 5 {
-				_, _ = db.ExecContext(ctx, `
-					UPDATE driver_login_codes SET failed_attempts = ?, used = 1 WHERE id = ?`,
-					failedAttempts, rowID)
-			} else {
-				_, _ = db.ExecContext(ctx, `
-					UPDATE driver_login_codes SET failed_attempts = ? WHERE id = ?`,
-					failedAttempts, rowID)
+			// Increment and consume in one statement. Reading the counter and
+			// writing back an absolute value lets N concurrent guesses all read
+			// the same value and all write the same +1, so the lockout never
+			// trips and the code space can be probed at full concurrency.
+			if _, err := db.ExecContext(ctx, `
+				UPDATE driver_login_codes
+				SET failed_attempts = COALESCE(failed_attempts, 0) + 1,
+				    used = CASE WHEN COALESCE(failed_attempts, 0) + 1 >= ? THEN 1 ELSE used END
+				WHERE id = ?`,
+				driverAuthMaxFailedAttempts, rowID); err != nil {
+				log.Printf("driver_auth: record failed attempt row_id=%d: %v", rowID, err)
 			}
 			writeAPIError(c, http.StatusBadRequest, errDriverAuthInvalidCode, "invalid code")
 			return

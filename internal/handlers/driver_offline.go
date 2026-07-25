@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"database/sql"
+	"log"
 	"net/http"
 	"strings"
 
@@ -44,5 +45,40 @@ func DriverManualOffline(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"ok": true})
+	}
+}
+
+// DriverGoOnline clears a manual OFFLINE so the driver receives orders again.
+//
+// The counterpart to POST /driver/offline. It exists because location pings no
+// longer clear manual_offline: a driver app reports position in the background,
+// so treating any ping as "I'm back on shift" made the OFFLINE toggle undo
+// itself. Going online is now an explicit action.
+//
+// Telegram live-location sharing also clears the flag, so a driver whose app has
+// not been updated yet is never permanently stuck offline.
+func DriverGoOnline(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		u := auth.UserFromContext(c.Request.Context())
+		if u == nil || u.Role != domain.RoleDriver {
+			logger.AuthFailure("driver auth required")
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "driver auth required"})
+			return
+		}
+		ctx := c.Request.Context()
+		if _, err := db.ExecContext(ctx,
+			`UPDATE drivers SET manual_offline = 0 WHERE user_id = ?1`, u.UserID); err != nil {
+			log.Printf("driver_online: clear manual_offline driver_user_id=%d: %v", u.UserID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to go online"})
+			return
+		}
+		// The driver still has to satisfy the usual dispatch gates (approved,
+		// legal accepted, balance, fresh location), so report what they are
+		// rather than implying orders will start arriving.
+		c.JSON(http.StatusOK, gin.H{
+			"ok":             true,
+			"manual_offline": false,
+			"note":           "Orders resume once your location is fresh and your balance is positive.",
+		})
 	}
 }

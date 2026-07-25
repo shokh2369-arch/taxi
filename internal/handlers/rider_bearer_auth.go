@@ -69,3 +69,14 @@ func RequireRiderBearerAuth(svc *services.RiderAuthService, db *sql.DB) gin.Hand
 func writeRiderAPIError(c *gin.Context, status int, code, message string) {
 	c.JSON(status, gin.H{"error": gin.H{"code": code, "message": message}})
 }
+
+// writeRiderAPIErrorWithDetails is writeRiderAPIError plus extra fields inside the
+// error object, for cases where the client can act on the detail (for example the
+// id of the pending request that is blocking a new one).
+func writeRiderAPIErrorWithDetails(c *gin.Context, status int, code, message string, details gin.H) {
+	body := gin.H{"code": code, "message": message}
+	for k, v := range details {
+		body[k] = v
+	}
+	c.JSON(status, gin.H{"error": body})
+}

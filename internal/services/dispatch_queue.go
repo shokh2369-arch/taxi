@@ -48,6 +48,12 @@ func CloseDriverQueueOffersExcept(ctx context.Context, db *sql.DB, requestID str
 		}
 		driverIDs = append(driverIDs, id)
 	}
+	// A truncated stream here silently leaves losing drivers holding a SENT offer
+	// for an already-assigned ride. ExpireStaleDriverQueueOffers cleans up on the
+	// next tick, but without this the failure is invisible.
+	if err := rows.Err(); err != nil {
+		log.Printf("dispatch_queue: close offers for request %s: rows truncated after %d driver(s): %v", requestID, len(driverIDs), err)
+	}
 	if len(driverIDs) == 0 {
 		return 0
 	}
@@ -105,6 +111,9 @@ func ExpireStaleDriverQueueOffers(ctx context.Context, db *sql.DB, cfg *config.C
 			continue
 		}
 		toClose = append(toClose, p)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("dispatch_queue: expire stale offers: rows truncated after %d offer(s): %v", len(toClose), err)
 	}
 	if len(toClose) == 0 {
 		return 0

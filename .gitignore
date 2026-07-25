@@ -1,1 +1,26 @@
+# Secrets
 .env*
+
+# Compiled binaries
+app.exe
+*.exe
+*.dll
+*.so
+*.dylib
+bin/
+dist/
+
+# Test and coverage output
+*.test
+*.out
+coverage.*
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/

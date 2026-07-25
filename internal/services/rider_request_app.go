@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/google/uuid"
 
 	"taxi-mvp/internal/abuse"
 	"taxi-mvp/internal/config"
@@ -23,33 +23,33 @@ import (
 // Sentinel errors for native rider ride-request HTTP flow (Bearer auth).
 // Handlers map these to JSON { error: { code, message } }.
 var (
-	ErrRiderRequestLegalRequired     = errors.New("rider_request: legal acceptance required")
-	ErrRiderRequestPhoneRequired     = errors.New("rider_request: phone required")
-	ErrRiderRequestAbuseBlocked      = errors.New("rider_request: abuse block active")
-	ErrRiderRequestDuplicatePending  = errors.New("rider_request: already has pending request")
-	ErrRiderRequestNotFound          = errors.New("rider_request: not found")
-	ErrRiderRequestNotYours          = errors.New("rider_request: not your request")
-	ErrRiderRequestConflictState     = errors.New("rider_request: invalid state for operation")
-	ErrRiderRequestInvalidCoords     = errors.New("rider_request: invalid coordinates")
-	ErrRiderRequestMatchUnavailable  = errors.New("rider_request: dispatch service unavailable")
+	ErrRiderRequestLegalRequired    = errors.New("rider_request: legal acceptance required")
+	ErrRiderRequestPhoneRequired    = errors.New("rider_request: phone required")
+	ErrRiderRequestAbuseBlocked     = errors.New("rider_request: abuse block active")
+	ErrRiderRequestDuplicatePending = errors.New("rider_request: already has pending request")
+	ErrRiderRequestNotFound         = errors.New("rider_request: not found")
+	ErrRiderRequestNotYours         = errors.New("rider_request: not your request")
+	ErrRiderRequestConflictState    = errors.New("rider_request: invalid state for operation")
+	ErrRiderRequestInvalidCoords    = errors.New("rider_request: invalid coordinates")
+	ErrRiderRequestMatchUnavailable = errors.New("rider_request: dispatch service unavailable")
 )
 
 // RiderRequestAppService implements the same DB progression as the Telegram
 // rider bot (internal/bot/rider/bot.go): pickup INSERT → destination UPDATE
 // + server estimated_price → destination_confirmed + MatchService.BroadcastRequest.
 type RiderRequestAppService struct {
-	db      *sql.DB
-	cfg     *config.Config
-	match   *MatchService
+	db    *sql.DB
+	cfg   *config.Config
+	match *MatchService
 }
 
 // RiderCancelResponse is the v1 rider cancellation response shape.
 type RiderCancelResponse struct {
-	OK        bool   `json:"ok"`
-	RequestID string `json:"request_id"`
+	OK        bool    `json:"ok"`
+	RequestID string  `json:"request_id"`
 	TripID    *string `json:"trip_id"` // nil => JSON null
-	Status    string `json:"status"`
-	Result    string `json:"result"`
+	Status    string  `json:"status"`
+	Result    string  `json:"result"`
 }
 
 // NewRiderRequestAppService wires the app ride-request use-case. match may be
@@ -98,6 +98,11 @@ func (s *RiderRequestAppService) CreatePickupRequest(ctx context.Context, riderU
 		return "", ErrRiderRequestAbuseBlocked
 	}
 
+	// Fast path so the common case returns a clean error rather than relying on
+	// the constraint. This check alone is not sufficient — it is a read followed
+	// by a write with no transaction, so two concurrent calls (a double-tap, or a
+	// client retry after a timeout) can both pass it. The partial unique index
+	// from migration 063 is what actually enforces one pending request per rider.
 	var existing int
 	if err := s.db.QueryRowContext(ctx,
 		`SELECT 1 FROM ride_requests WHERE rider_user_id = ?1 AND status = ?2 LIMIT 1`,
@@ -116,6 +121,10 @@ func (s *RiderRequestAppService) CreatePickupRequest(ctx context.Context, riderU
 		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
 		reqUUID.String(), riderUserID, pickupLat, pickupLng, s.cfg.MatchRadiusKm, domain.RequestStatusPending, expiresAt, pickupGrid)
 	if err != nil {
+		if IsUniqueConstraintErr(err) {
+			// Lost the race against a concurrent create for the same rider.
+			return "", ErrRiderRequestDuplicatePending
+		}
 		log.Printf("rider_request_app: create request: %v", err)
 		return "", err
 	}
@@ -219,10 +228,18 @@ func (s *RiderRequestAppService) ConfirmRequest(ctx context.Context, riderUserID
 	}
 	log.Printf("rider_request_app: confirm request=%s pickup=(%.6f,%.6f) est=%d", requestID, pickupLat, pickupLng, est)
 
+	// Restart the dispatch window here. expires_at was last set when the rider
+	// picked a destination, so any time they spent reading the price estimate came
+	// straight out of the search window — confirm after 90s and drivers got 30s to
+	// respond; confirm after 121s and it failed outright.
+	confirmTTL := "+120 seconds"
+	if s.cfg != nil && s.cfg.RequestExpiresSeconds > 0 {
+		confirmTTL = fmt.Sprintf("+%d seconds", s.cfg.RequestExpiresSeconds)
+	}
 	res, err := s.db.ExecContext(ctx, `
-		UPDATE ride_requests SET destination_confirmed = 1
+		UPDATE ride_requests SET destination_confirmed = 1, expires_at = datetime('now', ?4)
 		WHERE id = ?1 AND rider_user_id = ?2 AND status = ?3`,
-		requestID, riderUserID, domain.RequestStatusPending)
+		requestID, riderUserID, domain.RequestStatusPending, confirmTTL)
 	if err != nil {
 		return err
 	}

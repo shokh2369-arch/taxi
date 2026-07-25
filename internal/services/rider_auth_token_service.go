@@ -38,11 +38,11 @@ type RiderAuthTokens struct {
 // is already a high-entropy secret unique to the deployment. We hash it once
 // at construction so we never feed the raw bot token into HMAC.
 type RiderAuthTokenService struct {
-	sessions       *repositories.RiderAuthSessionsRepo
-	hmacSecret     []byte
-	accessTTL      time.Duration
-	refreshTTL     time.Duration
-	now            func() time.Time
+	sessions   *repositories.RiderAuthSessionsRepo
+	hmacSecret []byte
+	accessTTL  time.Duration
+	refreshTTL time.Duration
+	now        func() time.Time
 }
 
 // NewRiderAuthTokenService constructs a token service. botToken must be the

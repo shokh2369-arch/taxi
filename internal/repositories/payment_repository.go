@@ -47,14 +47,28 @@ func (r *paymentRepo) insertPayment(ctx context.Context, tx *sql.Tx, p *models.P
 	}
 	if p.TripID != nil && *p.TripID != "" {
 		res, err = execer.ExecContext(ctx, `
-			INSERT INTO payments (driver_id, amount, type, note, trip_id)
-			VALUES (?1, ?2, ?3, ?4, ?5)`,
-			p.DriverID, p.Amount, string(p.Type), p.Note, *p.TripID)
+			INSERT INTO payments (driver_id, amount, type, note, trip_id, commission_due, uncollected_amount)
+			VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
+			p.DriverID, p.Amount, string(p.Type), p.Note, *p.TripID, p.CommissionDue, p.UncollectedAmount)
 	} else {
 		res, err = execer.ExecContext(ctx, `
-			INSERT INTO payments (driver_id, amount, type, note)
-			VALUES (?1, ?2, ?3, ?4)`,
-			p.DriverID, p.Amount, string(p.Type), p.Note)
+			INSERT INTO payments (driver_id, amount, type, note, commission_due, uncollected_amount)
+			VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
+			p.DriverID, p.Amount, string(p.Type), p.Note, p.CommissionDue, p.UncollectedAmount)
+	}
+	if err != nil && isMissingColumnErr(err) {
+		// Database has not run migration 067 yet: fall back to the original shape.
+		if p.TripID != nil && *p.TripID != "" {
+			res, err = execer.ExecContext(ctx, `
+				INSERT INTO payments (driver_id, amount, type, note, trip_id)
+				VALUES (?1, ?2, ?3, ?4, ?5)`,
+				p.DriverID, p.Amount, string(p.Type), p.Note, *p.TripID)
+		} else {
+			res, err = execer.ExecContext(ctx, `
+				INSERT INTO payments (driver_id, amount, type, note)
+				VALUES (?1, ?2, ?3, ?4)`,
+				p.DriverID, p.Amount, string(p.Type), p.Note)
+		}
 	}
 	if err != nil {
 		return err

@@ -11,32 +11,32 @@ import (
 
 // Config holds application configuration loaded from environment.
 type Config struct {
-	RiderBotToken           string
-	DriverBotToken          string
-	DatabaseURL             string
-	CloudinaryCloudName     string
-	CloudinaryAPIKey        string
-	CloudinaryAPISecret     string
-	StartingFee             int     // Base fare when trip starts (so'm)
-	PricePerKm              int     // Per-km rate (so'm)
-	MatchRadiusKm           float64
-	ExpandedRadiusKm        float64   // Radius after expansion if no driver (e.g. 4)
-	RadiusExpansionMinutes  int       // Minutes before expanding radius
-	RequestExpiresSeconds   int
-	DriverSeenSeconds       int
-	StartReminderSeconds    int
-	WebAppURL               string   // Base URL for Telegram Mini App / driver map (e.g. https://example.com/webapp)
-	RiderMapURL             string   // Full URL to rider map HTML (e.g. https://example.com/webapp/rider-map.html); if empty, derived as WebAppURL + "/rider-map.html"
-	APIAddr                 string   // HTTP API address for driver location and trip (e.g. :8080)
-	EnableDriverIDHeader    bool     // Default false; set ENABLE_DRIVER_ID_HEADER=true (or 1/yes/on) to allow X-Driver-Id (local/dev only)
-	DriverAuthDebug         bool     // If true, log driver header path flags (never log header value or ids); env DRIVER_AUTH_DEBUG
-	EnableDriverHTTPLiveLocation bool // If true, POST /driver/location refreshes last_live_location_at / live_location_active and may mark driver online (same signals dispatch uses for Telegram live). Default on; set ENABLE_DRIVER_HTTP_LIVE_LOCATION=false for Telegram-only HTTP pings (Mini App map without treating HTTP as live).
-	AdminID                 int64    // Telegram user ID of the admin (only this user can use admin bot fare menu)
-	AdminBotToken           string   // Telegram bot token for admin bot (optional; if empty, admin bot is not started)
-	AdminAPIToken           string   // Required to mount /admin HTTP API; Bearer token for dashboard. If empty, admin routes are not mounted.
-	InfiniteDriverBalance   bool     // If true, dispatch ignores balance and no commission is deducted (temporary launch mode). Default false.
-	CommissionPercent       int      // Commission percentage on fare when InfiniteDriverBalance is false (e.g. 5 or 10)
-	DispatchDebug           bool     // If true, emit verbose dispatch/grid debug logs
+	RiderBotToken                string
+	DriverBotToken               string
+	DatabaseURL                  string
+	CloudinaryCloudName          string
+	CloudinaryAPIKey             string
+	CloudinaryAPISecret          string
+	StartingFee                  int // Base fare when trip starts (so'm)
+	PricePerKm                   int // Per-km rate (so'm)
+	MatchRadiusKm                float64
+	ExpandedRadiusKm             float64 // Radius after expansion if no driver (e.g. 4)
+	RadiusExpansionMinutes       int     // Minutes before expanding radius
+	RequestExpiresSeconds        int
+	DriverSeenSeconds            int
+	StartReminderSeconds         int
+	WebAppURL                    string // Base URL for Telegram Mini App / driver map (e.g. https://example.com/webapp)
+	RiderMapURL                  string // Full URL to rider map HTML (e.g. https://example.com/webapp/rider-map.html); if empty, derived as WebAppURL + "/rider-map.html"
+	APIAddr                      string // HTTP API address for driver location and trip (e.g. :8080)
+	EnableDriverIDHeader         bool   // Default false; set ENABLE_DRIVER_ID_HEADER=true (or 1/yes/on) to allow X-Driver-Id (local/dev only)
+	DriverAuthDebug              bool   // If true, log driver header path flags (never log header value or ids); env DRIVER_AUTH_DEBUG
+	EnableDriverHTTPLiveLocation bool   // If true, POST /driver/location refreshes last_live_location_at / live_location_active and may mark driver online (same signals dispatch uses for Telegram live). Default on; set ENABLE_DRIVER_HTTP_LIVE_LOCATION=false for Telegram-only HTTP pings (Mini App map without treating HTTP as live).
+	AdminID                      int64  // Telegram user ID of the admin (only this user can use admin bot fare menu)
+	AdminBotToken                string // Telegram bot token for admin bot (optional; if empty, admin bot is not started)
+	AdminAPIToken                string // Required to mount /admin HTTP API; Bearer token for dashboard. If empty, admin routes are not mounted.
+	InfiniteDriverBalance        bool   // If true, dispatch ignores balance and no commission is deducted (temporary launch mode). Default false.
+	CommissionPercent            int    // Commission percentage on fare when InfiniteDriverBalance is false (e.g. 5 or 10)
+	DispatchDebug                bool   // If true, emit verbose dispatch/grid debug logs
 	// WSAllowedOrigins: origins allowed for WebSocket CheckOrigin (from WS_ALLOWED_ORIGINS). Empty → derived from WebAppURL.
 	WSAllowedOrigins []string
 	// Dispatch tuning: priority queue (one driver at a time, then next after timeout)
@@ -57,28 +57,28 @@ func Load() (*Config, error) {
 	expandedRadiusKm, _ := strconv.ParseFloat(getEnv("EXPANDED_RADIUS_KM", "4"), 64)
 	radiusExpansionMin, _ := strconv.Atoi(getEnv("RADIUS_EXPANSION_MINUTES", "5"))
 	requestExpires, _ := strconv.Atoi(getEnv("REQUEST_EXPIRES_SECONDS", "120")) // 2 min TTL: request no longer sent after this
-	driverSeen, _ := strconv.Atoi(getEnv("DRIVER_SEEN_SECONDS", "600")) // 10 min: orders pushed to drivers seen in last 10 min
+	driverSeen, _ := strconv.Atoi(getEnv("DRIVER_SEEN_SECONDS", "600"))         // 10 min: orders pushed to drivers seen in last 10 min
 	startReminder, _ := strconv.Atoi(getEnv("START_REMINDER_SECONDS", "60"))
 	pickupStartMaxM, _ := strconv.Atoi(getEnv("PICKUP_START_MAX_METERS", "100"))
 
 	cfg := &Config{
-		RiderBotToken:          getEnv("RIDER_BOT_TOKEN", ""),
-		DriverBotToken:         getEnv("DRIVER_BOT_TOKEN", ""),
-		DatabaseURL:            getDatabaseURL(),
-		CloudinaryCloudName:    strings.TrimSpace(os.Getenv("CLOUDINARY_CLOUD_NAME")),
-		CloudinaryAPIKey:       strings.TrimSpace(os.Getenv("CLOUDINARY_API_KEY")),
-		CloudinaryAPISecret:    strings.TrimSpace(os.Getenv("CLOUDINARY_API_SECRET")),
-		StartingFee:            startingFee,
-		PricePerKm:             pricePerKm,
-		MatchRadiusKm:          matchRadiusKm,
-		ExpandedRadiusKm:       expandedRadiusKm,
-		RadiusExpansionMinutes: radiusExpansionMin,
-		RequestExpiresSeconds:  requestExpires,
-		DriverSeenSeconds:      driverSeen,
-		StartReminderSeconds:   startReminder,
-		WebAppURL:              getEnv("WEBAPP_URL", "https://example.com/webapp"),
-		RiderMapURL:            getRiderMapURL(getEnv("WEBAPP_URL", "https://example.com/webapp"), getEnv("RIDER_MAP_URL", "")),
-		APIAddr:                getAPIAddr(),
+		RiderBotToken:                getEnv("RIDER_BOT_TOKEN", ""),
+		DriverBotToken:               getEnv("DRIVER_BOT_TOKEN", ""),
+		DatabaseURL:                  getDatabaseURL(),
+		CloudinaryCloudName:          strings.TrimSpace(os.Getenv("CLOUDINARY_CLOUD_NAME")),
+		CloudinaryAPIKey:             strings.TrimSpace(os.Getenv("CLOUDINARY_API_KEY")),
+		CloudinaryAPISecret:          strings.TrimSpace(os.Getenv("CLOUDINARY_API_SECRET")),
+		StartingFee:                  startingFee,
+		PricePerKm:                   pricePerKm,
+		MatchRadiusKm:                matchRadiusKm,
+		ExpandedRadiusKm:             expandedRadiusKm,
+		RadiusExpansionMinutes:       radiusExpansionMin,
+		RequestExpiresSeconds:        requestExpires,
+		DriverSeenSeconds:            driverSeen,
+		StartReminderSeconds:         startReminder,
+		WebAppURL:                    getEnv("WEBAPP_URL", "https://example.com/webapp"),
+		RiderMapURL:                  getRiderMapURL(getEnv("WEBAPP_URL", "https://example.com/webapp"), getEnv("RIDER_MAP_URL", "")),
+		APIAddr:                      getAPIAddr(),
 		EnableDriverIDHeader:         envEnableDriverIDHeader(),
 		EnableDriverHTTPLiveLocation: envEnableDriverHTTPLiveLocation(),
 		DriverAuthDebug:              getEnv("DRIVER_AUTH_DEBUG", "") == "true" || getEnv("DRIVER_AUTH_DEBUG", "") == "1",

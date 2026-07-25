@@ -14,6 +14,18 @@ import (
 	"taxi-mvp/internal/config"
 )
 
+const (
+	// One send per tick keeps delivery under Telegram's rate limit.
+	broadcastSendInterval = 120 * time.Millisecond
+	// How many candidates one query fetches, then drained one per tick.
+	broadcastBatchSize = 50
+	// Idle polling backoff for the candidate query.
+	broadcastMinPollDelay = 1 * time.Second
+	broadcastMaxPollDelay = 60 * time.Second
+	// How often elapsed per-chat cooldowns are swept out of the map.
+	broadcastCooldownEvictEvery = 5 * time.Minute
+)
+
 // RunBroadcastFanoutWorker delivers published broadcasts to all rider Telegram users (users.role='rider'),
 // idempotent via broadcast_telegram_deliveries.
 func RunBroadcastFanoutWorker(ctx context.Context, db *sql.DB, riderBot *tgbotapi.BotAPI, _ *config.Config) {
@@ -21,11 +33,21 @@ func RunBroadcastFanoutWorker(ctx context.Context, db *sql.DB, riderBot *tgbotap
 		return
 	}
 	// Conservative base rate: ~10 msg/s. On 429, pause according to retry_after.
-	tick := time.NewTicker(120 * time.Millisecond)
+	tick := time.NewTicker(broadcastSendInterval)
 	defer tick.Stop()
 
 	var globalNext time.Time
 	perChatNext := make(map[int64]time.Time)
+
+	// The candidate query is a broadcast_posts x users anti-join. Running it on
+	// every 120ms tick cost ~720k scans/day with nothing published, and made
+	// delivering to N riders re-run it N times. Instead: fetch a batch, drain it
+	// one send per tick, and when there is nothing to send back off the polling
+	// interval so an idle system is nearly silent.
+	var queue []broadcastCandidate
+	var nextPoll time.Time
+	pollDelay := broadcastMinPollDelay
+	lastEvict := time.Now()
 
 	for {
 		select {
@@ -36,39 +58,66 @@ func RunBroadcastFanoutWorker(ctx context.Context, db *sql.DB, riderBot *tgbotap
 			if globalNext.After(now) {
 				continue
 			}
-			// Pick a small batch so we can skip chats currently in cooldown without spinning on the same row.
-			cands, err := pickBroadcastCandidates(ctx, db, 50)
-			if err != nil {
-				if err != sql.ErrNoRows {
-					log.Printf("broadcast fanout: pick: %v", err)
+
+			// Bounded memory: drop per-chat cooldowns that have already elapsed.
+			if now.Sub(lastEvict) >= broadcastCooldownEvictEvery {
+				for chatID, until := range perChatNext {
+					if !until.After(now) {
+						delete(perChatNext, chatID)
+					}
 				}
-				continue
+				lastEvict = now
 			}
-			if len(cands) == 0 {
-				continue
+
+			if len(queue) == 0 {
+				if now.Before(nextPoll) {
+					continue
+				}
+				cands, err := pickBroadcastCandidates(ctx, db, broadcastBatchSize)
+				if err != nil {
+					if err != sql.ErrNoRows {
+						log.Printf("broadcast fanout: pick: %v", err)
+					}
+					nextPoll = now.Add(pollDelay)
+					continue
+				}
+				if len(cands) == 0 {
+					// Nothing pending: back off so an idle worker stops hammering the DB.
+					if pollDelay *= 2; pollDelay > broadcastMaxPollDelay {
+						pollDelay = broadcastMaxPollDelay
+					}
+					nextPoll = now.Add(pollDelay)
+					continue
+				}
+				pollDelay = broadcastMinPollDelay
+				queue = cands
 			}
 
 			var chosen *broadcastCandidate
-			for i := range cands {
-				ch := cands[i].ChatID
+			for i := range queue {
+				ch := queue[i].ChatID
 				if ch == 0 {
 					continue
 				}
 				if next, ok := perChatNext[ch]; ok && next.After(now) {
 					continue
 				}
-				if strings.TrimSpace(cands[i].BroadcastID) == "" {
+				if strings.TrimSpace(queue[i].BroadcastID) == "" {
 					continue
 				}
-				hasBody := strings.TrimSpace(cands[i].Body) != ""
-				hasMedia := cands[i].MediaURL.Valid && strings.TrimSpace(cands[i].MediaURL.String) != ""
+				hasBody := strings.TrimSpace(queue[i].Body) != ""
+				hasMedia := queue[i].MediaURL.Valid && strings.TrimSpace(queue[i].MediaURL.String) != ""
 				if !hasBody && !hasMedia {
 					continue
 				}
-				chosen = &cands[i]
+				chosen = &queue[i]
+				queue = append(queue[:i], queue[i+1:]...)
 				break
 			}
 			if chosen == nil {
+				// Every queued candidate is unusable or cooling down; refetch later.
+				queue = nil
+				nextPoll = now.Add(broadcastMinPollDelay)
 				continue
 			}
 
@@ -272,4 +321,3 @@ func truncateRunes(s string, max int) string {
 	}
 	return strings.TrimSpace(string(r[:max])) + "…"
 }
-

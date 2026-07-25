@@ -181,4 +181,3 @@ func RiderSetDestination(db *sql.DB, cfg *config.Config, riderBot *tgbotapi.BotA
 		c.JSON(http.StatusOK, gin.H{"ok": true, "estimated_price": est})
 	}
 }
-

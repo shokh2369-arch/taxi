@@ -11,6 +11,7 @@ import (
 
 	"taxi-mvp/internal/auth"
 	"taxi-mvp/internal/config"
+	"taxi-mvp/internal/domain"
 	"taxi-mvp/internal/services"
 )
 
@@ -149,7 +150,8 @@ func riderAppCreateRequest(deps RiderRequestDeps) gin.HandlerFunc {
 		}
 		reqID, err := deps.RiderReqSvc.CreatePickupRequest(c.Request.Context(), uid, body.PickupLat, body.PickupLng, strings.TrimSpace(body.ClientRequestID))
 		if err != nil {
-			mapRiderRequestError(c, err)
+			// Pass rider context so a duplicate_pending carries the blocking request.
+			mapRiderRequestErrorWithContext(c, err, deps.DB, uid)
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"request_id": reqID, "requestId": reqID})
@@ -174,9 +176,9 @@ func riderAppSetDestination(deps RiderRequestDeps) gin.HandlerFunc {
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{
-			"ok":               true,
-			"estimated_price":  est,
-			"estimatedPrice":   est,
+			"ok":              true,
+			"estimated_price": est,
+			"estimatedPrice":  est,
 		})
 	}
 }
@@ -251,7 +253,16 @@ func riderAppCancelRequest(c *gin.Context, deps RiderRequestDeps, riderUserID in
 	c.JSON(http.StatusOK, out)
 }
 
+// mapRiderRequestError maps service errors to the rider JSON envelope.
+//
+// db and riderUserID are optional; when supplied, duplicate_pending carries the
+// blocking request so the client can act on it instead of leaving the rider to
+// wait out the 30-minute abandoned-request timeout with no way forward.
 func mapRiderRequestError(c *gin.Context, err error) {
+	mapRiderRequestErrorWithContext(c, err, nil, 0)
+}
+
+func mapRiderRequestErrorWithContext(c *gin.Context, err error, db *sql.DB, riderUserID int64) {
 	switch {
 	case errors.Is(err, services.ErrRiderRequestLegalRequired):
 		writeRiderAPIError(c, http.StatusForbidden, "legal_required", "Iltimos, avval foydalanuvchi shartlari va maxfiylik siyosatini qabul qiling.")
@@ -260,6 +271,30 @@ func mapRiderRequestError(c *gin.Context, err error) {
 	case errors.Is(err, services.ErrRiderRequestAbuseBlocked):
 		writeRiderAPIError(c, http.StatusForbidden, "abuse_blocked", "Buyurtma vaqtincha cheklangan. Keyinroq qayta urinib ko‘ring.")
 	case errors.Is(err, services.ErrRiderRequestDuplicatePending):
+		// Include the blocking request so the client can offer to cancel it. Without
+		// this the only escape from an abandoned request is the 30-minute server-side
+		// timeout, which reads to the rider as "the app is broken".
+		details := gin.H{}
+		if db != nil && riderUserID > 0 {
+			var id string
+			var confirmed int
+			if e := db.QueryRowContext(c.Request.Context(), `
+				SELECT id, COALESCE(destination_confirmed, 0)
+				FROM ride_requests
+				WHERE rider_user_id = ?1 AND status = ?2
+				ORDER BY created_at DESC LIMIT 1`,
+				riderUserID, domain.RequestStatusPending).Scan(&id, &confirmed); e == nil && id != "" {
+				details["pending_request_id"] = id
+				// false means the rider never confirmed a destination, so this request
+				// was never dispatched and is safe to cancel and start over.
+				details["destination_confirmed"] = confirmed == 1
+			}
+		}
+		if len(details) > 0 {
+			writeRiderAPIErrorWithDetails(c, http.StatusConflict, "duplicate_pending",
+				"Sizda allaqachon faol so‘rov bor. Haydovchi topilguncha yoki bekor qilinguncha kuting.", details)
+			return
+		}
 		writeRiderAPIError(c, http.StatusConflict, "duplicate_pending", "Sizda allaqachon faol so‘rov bor. Haydovchi topilguncha yoki bekor qilinguncha kuting.")
 	case errors.Is(err, services.ErrRiderRequestNotFound):
 		writeRiderAPIError(c, http.StatusNotFound, "not_found", "So‘rov topilmadi.")

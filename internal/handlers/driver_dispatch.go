@@ -1,7 +1,11 @@
 package handlers
 
 import (
+	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -21,16 +25,19 @@ import (
 // OpenAPI (informal) — Driver dispatch HTTP
 //
 // GET /driver/available-requests:
-//   200: { assigned_trip: null | { trip_id, status }, available_requests, requests, pending_requests, queue, orders, jobs: Offer[] }
-//   Offer: { request_id, trip_id?, pickup_lat, pickup_lng, distance_km, radius_km, expires_at? }
+//
+//	200: { assigned_trip: null | { trip_id, status }, available_requests, requests, pending_requests, queue, orders, jobs: Offer[] }
+//	Offer: { request_id, trip_id?, pickup_lat, pickup_lng, distance_km, radius_km, expires_at? }
 //
 // POST /driver/accept-request:
-//   body: { trip_id?, request_id? }
-//   200: { ok, trip_id, request_id?, assigned?, result?, status? } | idempotent already_assigned
-//   400: { ok: false, error, request_id? } | { error: invalid body | ... }
-//   403/404: trip_id-only branch
-//   409: { ok: false, error: "request no longer available", request_id }
-//   503: assignment unavailable
+//
+//	body: { trip_id?, request_id? }
+//	200: { ok, trip_id, request_id?, assigned?, result?, status? } | idempotent already_assigned
+//	400: { ok: false, error, request_id? } | { error: invalid body | ... }
+//	403/404: trip_id-only branch
+//	409: { ok: false, error: "request no longer available", request_id }
+//	409: { ok: false, error: "driver_has_active_trip", message, active_trip_id, request_id }
+//	503: assignment unavailable
 //
 // DriverAcceptRequestBody is accepted for POST /driver/accept-request. At least one of trip_id or request_id should be set.
 type DriverAcceptRequestBody struct {
@@ -40,14 +47,14 @@ type DriverAcceptRequestBody struct {
 
 // DriverAvailableOffer is one pending offer for the driver (same underlying rows as Telegram dispatch).
 type DriverAvailableOffer struct {
-	RequestID  string  `json:"request_id"`
-	TripID     string  `json:"trip_id,omitempty"`
-	PickupLat  float64 `json:"pickup_lat"`
-	PickupLng  float64 `json:"pickup_lng"`
-	DistanceKm float64 `json:"distance_km"`
-	RadiusKm   float64 `json:"radius_km"`
-	EstimatedPrice int64 `json:"estimated_price"`
-	ExpiresAt  string  `json:"expires_at,omitempty"`
+	RequestID      string  `json:"request_id"`
+	TripID         string  `json:"trip_id,omitempty"`
+	PickupLat      float64 `json:"pickup_lat"`
+	PickupLng      float64 `json:"pickup_lng"`
+	DistanceKm     float64 `json:"distance_km"`
+	RadiusKm       float64 `json:"radius_km"`
+	EstimatedPrice int64   `json:"estimated_price"`
+	ExpiresAt      string  `json:"expires_at,omitempty"`
 }
 
 // DriverAssignedTripStub is optional context for an in-progress assignment (Flutter may call GET /trip/:id for full detail).
@@ -58,7 +65,7 @@ type DriverAssignedTripStub struct {
 
 // DriverAvailableRequests returns pending offers (request_notifications SENT + PENDING request) and optional active trip stub.
 // Offers are only visible within DispatchOfferVisibleSeconds of request_notifications.created_at.
-func DriverAvailableRequests(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
+func DriverAvailableRequests(db *sql.DB, cfg *config.Config, fareSvc *services.FareService) gin.HandlerFunc {
 	offerVisibleModifier := fmt.Sprintf("-%d seconds", services.DispatchOfferVisibleSeconds(cfg))
 	return func(c *gin.Context) {
 		u := auth.UserFromContext(c.Request.Context())
@@ -171,10 +178,15 @@ func DriverAvailableRequests(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 				if err := ctx.Err(); err != nil {
 					break
 				}
+				// The 1-second cap existed because the dispatch wake reached only one
+				// waiter, so every other long poll had to re-query on a timer. The wake
+				// is now a broadcast, so wait for the real signal and cap only loosely
+				// as a safety net. This is what makes wait_sec=25 a genuine long poll
+				// instead of disguised 1-second polling.
 				remaining := time.Until(deadline)
 				waitSlice := remaining
-				if waitSlice > time.Second {
-					waitSlice = time.Second
+				if waitSlice > 5*time.Second {
+					waitSlice = 5 * time.Second
 				}
 				if hub != nil {
 					hub.WaitForDispatchChange(ctx, waitSlice)
@@ -192,6 +204,17 @@ func DriverAvailableRequests(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 			}
 		}
 
+		// Deterministic pick. This LIMIT 1 previously had no ORDER BY, so when a
+		// driver held more than one active trip SQLite was free to return either —
+		// and the reported assigned_trip.status flipped between them from poll to
+		// poll. That is the "button changes then reverts" symptom; it was never
+		// replica lag (there is one Turso primary and no read cache), it was a
+		// nondeterministic row choice over rows that should not have coexisted.
+		//
+		// TryAssign now refuses to give a driver a second active trip, so new
+		// duplicates cannot appear; the ORDER BY makes legacy rows stable too, and
+		// picking the furthest-progressed trip means a just-tapped ARRIVED never
+		// reads back as WAITING.
 		var assigned *DriverAssignedTripStub
 		var tripID, status string
 		err = db.QueryRowContext(ctx, `
@@ -199,11 +222,32 @@ func DriverAvailableRequests(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 			JOIN ride_requests r ON r.id = t.request_id
 			WHERE t.driver_user_id = ?1 AND t.status IN ('WAITING','ARRIVED','STARTED')
 			  AND r.status = ?2
+			ORDER BY CASE t.status
+			           WHEN 'STARTED' THEN 0
+			           WHEN 'ARRIVED' THEN 1
+			           ELSE 2
+			         END,
+			         t.id
 			LIMIT 1`,
 			driverID, domain.RequestStatusAssigned).Scan(&tripID, &status)
 		if err == nil && tripID != "" {
 			assigned = &DriverAssignedTripStub{TripID: tripID, Status: status}
 		}
+
+		// A driver should never have more than one active trip. If legacy rows put
+		// them in that state, say so rather than silently picking one.
+		var activeCount int
+		if err := db.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM trips
+			WHERE driver_user_id = ?1 AND status IN ('WAITING','ARRIVED','STARTED')`,
+			driverID).Scan(&activeCount); err == nil && activeCount > 1 {
+			log.Printf("driver_dispatch: driver %d has %d active trips; serving %s (%s)", driverID, activeCount, tripID, status)
+		}
+
+		// Stable balance shape. Clients were scrapping a long list of aliases to
+		// find these; total/promo/cash in so'm is the contract from here on.
+		bal := loadDriverBalance(ctx, db, driverID)
+		tariff := driverTariffFromSettings(ctx, cfg, fareSvc)
 
 		resp := gin.H{
 			"assigned_trip":      assigned,
@@ -213,6 +257,28 @@ func DriverAvailableRequests(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 			"queue":              offers,
 			"orders":             offers,
 			"jobs":               offers,
+			"total_balance":      bal.Total,
+			"promo_balance":      bal.Promo,
+			"cash_balance":       bal.Cash,
+			"balance":            bal.Total, // legacy alias
+			// The rate the driver is working under, so a wallet screen can show it
+			// without a second call. Full tariff is at GET /driver/tariff.
+			"commission_percent": tariff.CommissionPercent,
+			"commission_charged": tariff.CommissionCharged,
+		}
+
+		// This endpoint is polled every few seconds per online driver and is mostly
+		// unchanged between polls, so support conditional requests: an idle poll
+		// costs a hash comparison and a 304 instead of a full body.
+		etag, unchanged := writeETag(c, resp)
+		if unchanged {
+			// AbortWithStatus, not Status: gin defers WriteHeader, so c.Status alone
+			// would leave the recorder/response at 200 with an empty body.
+			c.AbortWithStatus(http.StatusNotModified)
+			return
+		}
+		if etag != "" {
+			c.Header("ETag", etag)
 		}
 		c.JSON(http.StatusOK, resp)
 	}
@@ -234,7 +300,7 @@ func formatExpiresAtRFC3339(raw string) string {
 }
 
 // DriverAcceptRequest delegates to AssignmentService.TryAssign (same as driver bot accept). Schedules start reminder on success.
-func DriverAcceptRequest(db *sql.DB, assignSvc *services.AssignmentService, tripSvc *services.TripService) gin.HandlerFunc {
+func DriverAcceptRequest(db *sql.DB, assignSvc *services.AssignmentService, tripSvc *services.TripService, cfg *config.Config, fareSvc *services.FareService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		u := auth.UserFromContext(c.Request.Context())
 		if u == nil || u.Role != domain.RoleDriver {
@@ -260,7 +326,7 @@ func DriverAcceptRequest(db *sql.DB, assignSvc *services.AssignmentService, trip
 			var st string
 			err := db.QueryRowContext(ctx, `SELECT driver_user_id, status FROM trips WHERE id = ?1`, req.TripID).Scan(&driverUserID, &st)
 			if err == sql.ErrNoRows {
-				c.JSON(http.StatusNotFound, gin.H{"ok": false, "error": "trip not found", "trip_id": req.TripID})
+				c.JSON(http.StatusNotFound, gin.H{"ok": false, "code": CodeNotFound, "message": "trip not found", "error": "trip not found", "trip_id": req.TripID})
 				return
 			}
 			if err != nil {
@@ -268,10 +334,14 @@ func DriverAcceptRequest(db *sql.DB, assignSvc *services.AssignmentService, trip
 				return
 			}
 			if driverUserID != driverID {
-				c.JSON(http.StatusForbidden, gin.H{"ok": false, "error": "not assigned to this trip"})
+				c.JSON(http.StatusForbidden, gin.H{"ok": false, "code": CodeNotAssignedToTrip, "message": "not assigned to this trip", "error": "not assigned to this trip"})
 				return
 			}
-			c.JSON(http.StatusOK, gin.H{"ok": true, "trip_id": req.TripID, "status": st, "result": "already_assigned"})
+			body := gin.H{"ok": true, "trip_id": req.TripID, "status": st, "result": "already_assigned", "assigned": true}
+			if snap := loadDriverTripSnapshot(ctx, db, cfg, fareSvc, req.TripID); snap != nil {
+				body["trip"] = snap
+			}
+			c.JSON(http.StatusOK, body)
 			return
 		}
 
@@ -282,16 +352,104 @@ func DriverAcceptRequest(db *sql.DB, assignSvc *services.AssignmentService, trip
 		assigned, tripID, err := assignSvc.TryAssign(ctx, req.RequestID, driverID)
 		if err != nil {
 			log.Printf("driver_accept_request failed request_id=%s driver_id=%d err=%v", req.RequestID, driverID, err)
-			c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "assignment_failed", "request_id": req.RequestID})
+			c.JSON(http.StatusBadRequest, gin.H{"ok": false, "code": CodeInternalError, "message": "assignment failed", "error": "assignment_failed", "request_id": req.RequestID})
 			return
 		}
 		if !assigned {
-			c.JSON(http.StatusConflict, gin.H{"ok": false, "error": "request no longer available", "request_id": req.RequestID})
+			// TryAssign refuses for two very different reasons: another driver took
+			// the request, or this driver already has an active trip. In the second
+			// case the offer stays visible (it rolls back to PENDING/SENT), so
+			// without a distinct code the driver taps accept, sees "no longer
+			// available", watches the offer reappear, and loops with no idea the
+			// cause is their own unfinished trip.
+			if activeTripID, ok := driverActiveTripID(ctx, db, driverID); ok {
+				c.JSON(http.StatusConflict, gin.H{
+					"ok":             false,
+					"code":           CodeDriverHasActiveTrip,
+					"error":          "driver_has_active_trip",
+					"message":        "Finish or cancel your current trip before accepting a new one.",
+					"active_trip_id": activeTripID,
+					"request_id":     req.RequestID,
+				})
+				return
+			}
+			c.JSON(http.StatusConflict, gin.H{"ok": false, "code": CodeRequestUnavailable, "message": "request no longer available", "error": "request no longer available", "request_id": req.RequestID})
 			return
 		}
 		if tripSvc != nil {
 			tripSvc.ScheduleStartReminder(ctx, tripID, driverID)
 		}
-		c.JSON(http.StatusOK, gin.H{"ok": true, "trip_id": tripID, "request_id": req.RequestID, "assigned": true})
+		// Return the trip inline (coordinates, fare, rider phone) so the client can
+		// render the pickup screen from this one response instead of chaining a
+		// GET /trip/:id straight after every accept.
+		body := gin.H{"ok": true, "trip_id": tripID, "request_id": req.RequestID, "assigned": true}
+		if snap := loadDriverTripSnapshot(ctx, db, cfg, fareSvc, tripID); snap != nil {
+			body["trip"] = snap
+		}
+		c.JSON(http.StatusOK, body)
 	}
+}
+
+// driverActiveTripID returns the driver's current active trip, if any.
+// Used only to explain why an accept was refused.
+func driverActiveTripID(ctx context.Context, db *sql.DB, driverID int64) (string, bool) {
+	var tripID string
+	err := db.QueryRowContext(ctx, `
+		SELECT id FROM trips
+		WHERE driver_user_id = ?1 AND status IN (?2, ?3, ?4)
+		ORDER BY id LIMIT 1`,
+		driverID, domain.TripStatusWaiting, domain.TripStatusArrived, domain.TripStatusStarted).Scan(&tripID)
+	if err != nil {
+		return "", false
+	}
+	return tripID, tripID != ""
+}
+
+// DriverBalance is the stable wallet shape returned with dispatch responses.
+// All values are whole so'm.
+type DriverBalance struct {
+	Total int64 `json:"total_balance"`
+	Promo int64 `json:"promo_balance"`
+	Cash  int64 `json:"cash_balance"`
+}
+
+// loadDriverBalance reads the driver's wallet, tolerating databases where the
+// promo/cash split (migration 035) has not been applied.
+func loadDriverBalance(ctx context.Context, db *sql.DB, driverID int64) DriverBalance {
+	var b DriverBalance
+	err := db.QueryRowContext(ctx, `
+		SELECT COALESCE(balance, 0), COALESCE(promo_balance, 0), COALESCE(cash_balance, 0)
+		FROM drivers WHERE user_id = ?1`, driverID).Scan(&b.Total, &b.Promo, &b.Cash)
+	if err != nil && isMissingColumnErrHandlers(err) {
+		_ = db.QueryRowContext(ctx, `SELECT COALESCE(balance, 0) FROM drivers WHERE user_id = ?1`, driverID).Scan(&b.Total)
+	}
+	return b
+}
+
+func isMissingColumnErrHandlers(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no such column") || strings.Contains(msg, "has no column")
+}
+
+// writeETag hashes the response and compares it with If-None-Match.
+// Returns the computed ETag and whether the client's copy is still current.
+func writeETag(c *gin.Context, body any) (etag string, notModified bool) {
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return "", false
+	}
+	sum := sha256.Sum256(raw)
+	etag = `W/"` + hex.EncodeToString(sum[:16]) + `"`
+	if match := strings.TrimSpace(c.GetHeader("If-None-Match")); match != "" {
+		for _, candidate := range strings.Split(match, ",") {
+			if strings.TrimSpace(candidate) == etag {
+				c.Header("ETag", etag)
+				return etag, true
+			}
+		}
+	}
+	return etag, false
 }

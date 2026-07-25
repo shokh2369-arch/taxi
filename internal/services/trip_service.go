@@ -76,6 +76,10 @@ type TripService struct {
 	fareSvc              *FareService                   // optional; if set, fare comes from DB tiered settings
 	payments             repositories.PaymentRepository // optional; legacy payments row on commission; nil skips InsertPaymentTx
 	OnDriverStatusUpdate func(telegramID int64)         // optional; e.g. update driver's pinned status panel after trip finish
+	// OnRequestRequeued is called when a driver cancellation returns a ride
+	// request to the dispatch pool, so it can be broadcast to other drivers.
+	// Optional; nil means the request simply waits for the expiry worker.
+	OnRequestRequeued func(requestID string)
 }
 
 // HubBroadcaster is the minimal interface for broadcasting trip events (optional; can be nil).
@@ -271,7 +275,7 @@ func (s *TripService) StartTrip(ctx context.Context, tripID string, driverUserID
 				),
 			)
 			kb.ResizeKeyboard = true
-			msg := tgbotapi.NewMessage(riderTelegramID, "Сафар бошланди ▶️")
+			msg := tgbotapi.NewMessage(riderTelegramID, "▶️ Сафар бошланди.\n\nЯхши йўл!")
 			msg.ReplyMarkup = kb
 			if _, err := s.riderBot.Send(msg); err != nil {
 				log.Printf("trip_service: notify rider start: %v", tripErrStr(err))
@@ -493,10 +497,18 @@ func telegramSendRiderArrivedMessage(tripID string, chatID int64, bot telegramBo
 	return zero, lastErr
 }
 
+// Messages sent when the driver marks arrival. Package-level so tests can assert
+// on which message went to whom without restating the wording.
+const (
+	arrivedRiderText       = "✅ Ҳайдовчи сизнинг манзилингизга етиб келди.\n\nСафар бошлашга тайёр: ҳайдовчи билан учрашинг. Ҳайдовчи сафарни бошлагач, йўл давом этади."
+	arrivedDriverTextOK    = "✅ Мижозга етиб келдингиз. Йўловчига хабар юборилди. Сафарни бошлашингиз мумкин."
+	arrivedDriverTextRetry = "⚠️ Мижозга хабар етмади. Илтимос, қайта уриниб кўринг."
+)
+
 func (s *TripService) notifyArrivedAtPickup(ctx context.Context, tripID string, driverUserID, riderUserID int64) {
-	const riderText = "✅ Ҳайдовчи сизнинг манзилингизга етиб келди.\n\nСафар бошлашга тайёр: ҳайдовчи билан учрашинг. Ҳайдовчи сафарни бошлагач, йўл давом этади."
-	const driverTextSuccess = "✅ Мижозга етиб келдингиз. Йўловчига хабар юборилди. Сафарни бошлашингиз мумкин."
-	const driverTextRetry = "Мижозга хабар етмади, қайта уриниб кўринг"
+	const riderText = arrivedRiderText
+	const driverTextSuccess = arrivedDriverTextOK
+	const driverTextRetry = arrivedDriverTextRetry
 
 	log.Printf("ARRIVED_NOTIFY_BEGIN trip_id=%s driver_user_id=%d rider_user_id=%d", tripID, driverUserID, riderUserID)
 
@@ -548,7 +560,7 @@ func (s *TripService) notifyArrivedAtPickup(ctx context.Context, tripID string, 
 				primaryResp, sendErr = telegramSendRiderArrivedMessage(tripID, chatID, s.riderBot, riderMsg)
 			}
 			if sendErr != nil {
-					log.Printf("ARRIVED_NOTIFY_FAILED trip_id=%s error=%v", tripID, tripErrStr(sendErr))
+				log.Printf("ARRIVED_NOTIFY_FAILED trip_id=%s error=%v", tripID, tripErrStr(sendErr))
 				riderFailureForDriverUX = true
 			} else {
 				riderSent = true
@@ -621,6 +633,17 @@ func (s *TripService) notifyArrivedAtPickup(ctx context.Context, tripID string, 
 // MinSpeedKmh is the minimum speed (km/h) for a segment to count toward fare distance (avoids GPS noise).
 const MinSpeedKmh = 2.0
 
+// MaxSpeedKmh is the upper bound for a billable segment. Anything faster is not
+// a car on a road, so it is recorded but not charged to the rider. This is the
+// ceiling that was missing: MinSpeedKmh is a floor, so an implausibly fast
+// segment previously passed the check by definition.
+const MaxSpeedKmh = 150.0
+
+// maxSegmentMeters caps a single billable jump regardless of the time between
+// points, covering the case where a stale or skewed timestamp makes an
+// impossible distance look slow enough to pass.
+const maxSegmentMeters = 5000.0
+
 // AddPoint appends a location only when trip status is STARTED. When segment is valid (movement >= 5m, speed > 2 km/h),
 // adds the segment to trips.distance_m via AddTripDistance so GET /trip/:id returns live distance.
 // Returns accepted (true if point was stored), ignoreReason (e.g. "trip not started", "movement too small"), and error.
@@ -667,10 +690,21 @@ func (s *TripService) AddPoint(ctx context.Context, tripID string, driverUserID 
 			durationSec = 1 // fallback: avoid dropping distance when time parse fails or clock skew
 		}
 		speedKmh := segmentKm * 3600 / durationSec
-		if speedKmh <= MinSpeedKmh {
+		switch {
+		case speedKmh <= MinSpeedKmh:
 			logger.DriverLocation(tripID, driverUserID, "accepted", "speed too slow")
-		}
-		if speedKmh > MinSpeedKmh {
+		case speedKmh > MaxSpeedKmh || segmentM > maxSegmentMeters:
+			// Location is self-reported, and the fare the RIDER pays in cash is
+			// computed from the distance accumulated here. Without an upper bound a
+			// driver could post coordinates a kilometre apart as fast as the server
+			// accepted them and multiply the fare arbitrarily — the faster the lie,
+			// the more certainly it passed the (floor-only) speed check.
+			// The point is still stored so the trace stays complete; only the
+			// distance credit is withheld.
+			logger.DriverLocation(tripID, driverUserID, "ignored", "implausible segment")
+			log.Printf("trip_service: implausible segment trip=%s driver_user_id=%d segment_m=%.0f duration_s=%.1f speed_kmh=%.0f (not billed)",
+				tripID, driverUserID, segmentM, durationSec, speedKmh)
+		default:
 			addM := int64(math.Round(segmentM))
 			n, upErr := s.tripRepo.AddTripDistance(ctx, tripID, addM)
 			if upErr != nil {
@@ -761,17 +795,24 @@ func (s *TripService) FinishTrip(ctx context.Context, tripID string, driverUserI
 	// Rider bonus/discount is disabled: no referral bonus is applied for riders.
 	var riderBonusUsed int64
 
+	// commission_percent is admin-configurable over 0..100 and 0 is a legitimate
+	// setting ("commission off"). Treating 0 as "unset" meant an admin could set
+	// it to zero and drivers would still be charged the 5% default on every trip.
+	// FareService already substitutes a default when no fare_settings row exists,
+	// so whatever it returns is the configured value.
 	pc := 5
 	if s.fareSvc != nil {
-		if settings, err := s.fareSvc.GetFareSettings(ctx); err == nil && settings != nil && settings.CommissionPercent > 0 {
+		if settings, err := s.fareSvc.GetFareSettings(ctx); err == nil && settings != nil {
 			pc = settings.CommissionPercent
 		}
-	}
-	if s.cfg != nil && pc <= 0 && s.cfg.CommissionPercent > 0 {
+	} else if s.cfg != nil {
 		pc = s.cfg.CommissionPercent
 	}
-	if pc <= 0 {
-		pc = 5
+	if pc < 0 {
+		pc = 0
+	}
+	if pc > 100 {
+		pc = 100
 	}
 	inf := s.cfg != nil && s.cfg.InfiniteDriverBalance
 	var commission int64
@@ -904,6 +945,7 @@ func (s *TripService) FinishTrip(ctx context.Context, tripID string, driverUserI
 				"fare":        fareAmount,
 			},
 		})
+		s.forgetTripSeq(tripID)
 	}
 	logger.TripEvent("trip_finish", tripID, "updated", logger.TripEventAttrs(driverUserID, riderUserID)...)
 	return &TripActionResult{Result: "updated", Status: domain.TripStatusFinished}, nil
@@ -919,13 +961,13 @@ func normalizeFare(rawFare int64) int64 {
 
 func formatTripSummary(distanceM, fareAmount int64, riderBonusUsed int64) string {
 	km := float64(distanceM) / 1000
-	return fmt.Sprintf("Сафар тугади.\nМасофа: %.2f км\nНарх: %d сўм", km, fareAmount)
+	return fmt.Sprintf("✅ Сафар тугади.\n\n📏 Масофа: %.2f км\n💰 Нарх: %s сўм", km, utils.FormatSoM(fareAmount))
 }
 
 // formatDriverTripCompletionMessage returns the driver trip completion message (Mini App finish): status + live location hint + distance/fare.
 func formatDriverTripCompletionMessage(distanceM, fareAmount int64) string {
 	km := float64(distanceM) / 1000
-	return fmt.Sprintf("✅ Сафар тугади.\nМасофа: %.2f км\nНарх: %d сўм\n\nЯнги буюртмалар фақат жонли локация орқали.", km, fareAmount)
+	return fmt.Sprintf("✅ Сафар тугади.\n\n📏 Масофа: %.2f км\n💰 Нарх: %s сўм\n\n📍 Янги буюртмалар фақат жонли локация орқали келади.", km, utils.FormatSoM(fareAmount))
 }
 
 // CancelByDriver sets trip to CANCELLED_BY_DRIVER when status is WAITING or STARTED. Idempotent if already CANCELLED_BY_DRIVER.
@@ -956,10 +998,39 @@ func (s *TripService) CancelByDriver(ctx context.Context, tripID string, driverU
 		}
 		return nil, domain.ErrInvalidTransition
 	}
+	// Put the ride back in the pool rather than throwing it away. The rider did
+	// nothing wrong, and re-entering pickup, destination and estimate after a
+	// driver walks away is the worst moment in the product to be sent to the back
+	// of the queue. If it cannot be requeued, fall back to cancelling it.
+	ttl := 120
+	if s.cfg != nil && s.cfg.RequestExpiresSeconds > 0 {
+		ttl = s.cfg.RequestExpiresSeconds
+	}
+	requeuedID, requeued := s.tripRepo.RequeueParentRideRequest(ctx, tripID, ttl)
+	if requeued {
+		if s.OnRequestRequeued != nil {
+			s.OnRequestRequeued(requeuedID)
+		}
+		log.Printf("trip_service: driver %d cancelled trip %s; request %s returned to dispatch", driverUserID, tripID, requeuedID)
+	} else {
+		s.tripRepo.CancelParentRideRequest(ctx, tripID)
+	}
+
+	// Record the cancellation so repeat offenders are visible. A driver cancelling
+	// after accepting is more damaging to a rider than the reverse, yet only the
+	// rider side was ever counted.
+	if err := abuse.RecordDriverCancelEvent(ctx, s.db, driverUserID, tripID, time.Now()); err != nil {
+		log.Printf("trip_service: record driver cancel: %v", tripErrStr(err))
+	}
+
 	if riderUserID != 0 && !ShouldSkipRiderTripTelegramNotify(ctx, s.db, riderUserID) {
 		var telegramID int64
 		if err := s.db.QueryRowContext(ctx, `SELECT telegram_id FROM users WHERE id = ?1`, riderUserID).Scan(&telegramID); err == nil && telegramID != 0 {
-			msg := tgbotapi.NewMessage(telegramID, "Ҳайдовчи сафарни бекор қилди.")
+			cancelText := "❌ Ҳайдовчи сафарни бекор қилди.\n\n«🚕 Янги такси чақириш» орқали қайта буюртма беринг."
+			if requeued {
+				cancelText = "❌ Ҳайдовчи сафарни бекор қилди.\n\n🔄 Сўровингиз сақланди — бошқа ҳайдовчи қидирилмоқда."
+			}
+			msg := tgbotapi.NewMessage(telegramID, cancelText)
 			_, _ = s.riderBot.Send(msg)
 			// Restore rider main menu keyboard (same as no active trip) so bottom buttons are not stuck on active-trip state
 			mainMenu := tgbotapi.NewReplyKeyboard(
@@ -969,13 +1040,18 @@ func (s *TripService) CancelByDriver(ctx context.Context, tripID string, driverU
 				),
 			)
 			mainMenu.ResizeKeyboard = true
-			kbMsg := tgbotapi.NewMessage(telegramID, "Янги сўров учун «Такси чақириш» ни босинг.")
+			followUp := "Янги сўров учун «Такси чақириш» ни босинг."
+			if requeued {
+				followUp = "Илтимос, кутиб туринг — сўровингиз бошқа ҳайдовчиларга юборилди."
+			}
+			kbMsg := tgbotapi.NewMessage(telegramID, followUp)
 			kbMsg.ReplyMarkup = mainMenu
 			_, _ = s.riderBot.Send(kbMsg)
 		}
 	}
 	if s.hub != nil {
 		s.hub.BroadcastToTrip(tripID, ws.Event{Type: "trip_cancelled", TripStatus: domain.TripStatusCancelledByDriver, Payload: map[string]string{"by": "driver"}})
+		s.forgetTripSeq(tripID)
 	}
 	logger.TripEvent("trip_cancel_driver", tripID, "updated", logger.TripEventAttrs(driverUserID, riderUserID)...)
 	return &TripActionResult{Result: "updated", Status: domain.TripStatusCancelledByDriver}, nil
@@ -1012,12 +1088,13 @@ func (s *TripService) CancelByRider(ctx context.Context, tripID string, riderUse
 	if driverUserID != 0 && !ShouldSkipDriverTripTelegramNotify(ctx, s.db, driverUserID) {
 		var telegramID int64
 		if err := s.db.QueryRowContext(ctx, `SELECT telegram_id FROM users WHERE id = ?1`, driverUserID).Scan(&telegramID); err == nil && telegramID != 0 {
-			msg := tgbotapi.NewMessage(telegramID, "Мижоз сафарни бекор қилди.")
+			msg := tgbotapi.NewMessage(telegramID, "❌ Мижоз сафарни бекор қилди.")
 			_, _ = s.driverBot.Send(msg)
 		}
 	}
 	if s.hub != nil {
 		s.hub.BroadcastToTrip(tripID, ws.Event{Type: "trip_cancelled", TripStatus: domain.TripStatusCancelledByRider, Payload: map[string]string{"by": "rider"}})
+		s.forgetTripSeq(tripID)
 	}
 	logger.TripEvent("trip_cancel_rider", tripID, "updated", logger.TripEventAttrs(driverUserID, riderUserID)...)
 
@@ -1037,4 +1114,13 @@ func (s *TripService) CancelByRider(ctx context.Context, tripID string, riderUse
 	}
 
 	return &TripActionResult{Result: "updated", Status: domain.TripStatusCancelledByRider}, nil
+}
+
+// forgetTripSeq releases the hub's per-trip event sequence counter once a trip
+// reaches a terminal state, so the map does not grow for the process lifetime.
+func (s *TripService) forgetTripSeq(tripID string) {
+	type seqForgetter interface{ ForgetTrip(string) }
+	if f, ok := s.hub.(seqForgetter); ok {
+		f.ForgetTrip(tripID)
+	}
 }

@@ -49,9 +49,9 @@ func TestCalculateFareTiered(t *testing.T) {
 		want       int64
 	}{
 		{"0 km", base, tier0_1, tier1_2, tier2Plus, 0, 4000},
-		{"0.5 km => base + 0.5*tier0_1", base, tier0_1, tier1_2, tier2Plus, 0.5, 4750},   // 4000 + 750
-		{"1 km => base + 1*tier0_1", base, tier0_1, tier1_2, tier2Plus, 1, 5500},         // 4000 + 1500
-		{"1.6 km => base + 1*tier0_1 + 0.6*tier1_2", base, tier0_1, tier1_2, tier2Plus, 1.6, 6220}, // 4000+1500+720
+		{"0.5 km => base + 0.5*tier0_1", base, tier0_1, tier1_2, tier2Plus, 0.5, 4750},              // 4000 + 750
+		{"1 km => base + 1*tier0_1", base, tier0_1, tier1_2, tier2Plus, 1, 5500},                    // 4000 + 1500
+		{"1.6 km => base + 1*tier0_1 + 0.6*tier1_2", base, tier0_1, tier1_2, tier2Plus, 1.6, 6220},  // 4000+1500+720
 		{"3.2 km => base + t0_1 + t1_2 + 1.2*t2Plus", base, tier0_1, tier1_2, tier2Plus, 3.2, 7900}, // 4000+1500+1200+1200
 	}
 	for _, tt := range tests {
@@ -61,5 +61,26 @@ func TestCalculateFareTiered(t *testing.T) {
 				t.Errorf("CalculateFareTiered(...) = %d, want %d", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestFormatSoM(t *testing.T) {
+	cases := []struct {
+		in   int64
+		want string
+	}{
+		{0, "0"},
+		{7, "7"},
+		{999, "999"},
+		{1000, "1 000"},
+		{25000, "25 000"},
+		{250000, "250 000"},
+		{1234567, "1 234 567"},
+		{-25000, "-25 000"},
+	}
+	for _, c := range cases {
+		if got := FormatSoM(c.in); got != c.want {
+			t.Errorf("FormatSoM(%d) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }

@@ -48,9 +48,10 @@ func RequireMiniAppAuth(db *sql.DB, botToken string) gin.HandlerFunc {
 }
 
 // RequireDriverAuth sets the driver in the request context using either:
-// 1) Already-set user (e.g. by TryDriverIDHeader from X-Driver-Id when ENABLE_DRIVER_ID_HEADER): continue.
-// 2) Telegram initData: reads X-Telegram-Init-Data (or init_data query), validates with driver bot token,
-//    maps Telegram user id to internal user_id and role, then sets that user in context.
+//  1. Already-set user (e.g. by TryDriverIDHeader from X-Driver-Id when ENABLE_DRIVER_ID_HEADER): continue.
+//  2. Telegram initData: reads X-Telegram-Init-Data (or init_data query), validates with driver bot token,
+//     maps Telegram user id to internal user_id and role, then sets that user in context.
+//
 // X-Driver-Id is handled only in TryDriverIDHeader (run before this middleware on driver routes).
 func RequireDriverAuth(db *sql.DB, driverBotToken string, enableDriverIDHeader bool) gin.HandlerFunc {
 	return func(c *gin.Context) {

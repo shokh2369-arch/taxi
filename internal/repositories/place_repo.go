@@ -97,4 +97,3 @@ func (r *PlaceRepo) List(ctx context.Context) ([]models.Place, error) {
 	}
 	return out, rows.Err()
 }
-

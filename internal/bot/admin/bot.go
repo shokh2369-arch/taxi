@@ -19,20 +19,21 @@ import (
 	"taxi-mvp/internal/config"
 	"taxi-mvp/internal/repositories"
 	"taxi-mvp/internal/services"
+	"taxi-mvp/internal/utils"
 )
 
 const (
-	btnFareMenu       = "💰 Нарх белгилаш"
-	btnPublishPost    = "📣 Post publish"
-	btnCancelPublish  = "❎ Бекор қилиш"
-	btnBaseFare       = "🚕 Старт нархи"
-	btnTier0_1        = "1️⃣ 0–1 км нархи"
-	btnTier1_2        = "2️⃣ 1–2 км нархи"
-	btnTier2Plus      = "♾ 2 км дан юқори нарх"
-	btnCommissionPct  = "📊 Комиссия %"
-	btnViewTariff     = "📄 Жорий тарифни кўриш"
-	btnBack           = "◀️ Орқага"
-	btnAddPlace       = "📍 Lokatsiya qoshish"
+	btnFareMenu      = "💰 Нарх белгилаш"
+	btnPublishPost   = "📣 Post publish"
+	btnCancelPublish = "❎ Бекор қилиш"
+	btnBaseFare      = "🚕 Старт нархи"
+	btnTier0_1       = "1️⃣ 0–1 км нархи"
+	btnTier1_2       = "2️⃣ 1–2 км нархи"
+	btnTier2Plus     = "♾ 2 км дан юқори нарх"
+	btnCommissionPct = "📊 Комиссия %"
+	btnViewTariff    = "📄 Жорий тарифни кўриш"
+	btnBack          = "◀️ Орқага"
+	btnAddPlace      = "📍 Lokatsiya qoshish"
 )
 
 // fileDownloadClient bounds Telegram file downloads; http.Get (default client) has no timeout
@@ -40,14 +41,14 @@ const (
 var fileDownloadClient = &http.Client{Timeout: 15 * time.Second}
 
 type placeAddState struct {
-	mu        sync.Mutex
-	step      map[int64]string // telegram user id -> "name" | "location"
-	tempName  map[int64]string
+	mu       sync.Mutex
+	step     map[int64]string // telegram user id -> "name" | "location"
+	tempName map[int64]string
 }
 
 type publishState struct {
-	mu      sync.Mutex
-	await   map[int64]bool // admin telegram id -> awaiting post content
+	mu    sync.Mutex
+	await map[int64]bool // admin telegram id -> awaiting post content
 }
 
 func (s *publishState) setAwait(telegramID int64, v bool) {
@@ -217,7 +218,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB, fareSvc 
 			name = strings.TrimSpace(name)
 			if name == "" {
 				placeState.clear(fromID)
-				sendMessage(bot, chatID, "Хатолик. /add_place ни қайта ишга туширинг.")
+				sendMessage(bot, chatID, "❌ Манзил номи сақланмаган.\n\n/add_place ни қайта ишга туширинг.")
 				return
 			}
 			loc := update.Message.Location
@@ -227,7 +228,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, cfg *config.Config, db *sql.DB, fareSvc 
 			if _, err := placeRepo.Create(context.Background(), name, loc.Latitude, loc.Longitude); err != nil {
 				log.Printf("admin bot: create place: %v", err)
 				placeState.clear(fromID)
-				sendMessage(bot, chatID, "Хатолик. Сақланмади.")
+				sendMessage(bot, chatID, "❌ Манзилни сақлаб бўлмади.\n\nИлтимос, қайта уриниб кўринг.")
 				return
 			}
 			placeState.clear(fromID)
@@ -561,7 +562,7 @@ func sendPlaceDeleteMenu(bot *tgbotapi.BotAPI, chatID int64, placeRepo *reposito
 	}
 	ps, err := placeRepo.List(context.Background())
 	if err != nil {
-		sendMessage(bot, chatID, "Хатолик.")
+		sendMessage(bot, chatID, "❌ Манзиллар рўйхатини юклаб бўлмади. Кейинроқ уриниб кўринг.")
 		return
 	}
 	if len(ps) == 0 {
@@ -598,7 +599,7 @@ func handlePlaceDeleteCallback(bot *tgbotapi.BotAPI, cfg *config.Config, q *tgbo
 	}
 	if err := placeRepo.Delete(context.Background(), id); err != nil {
 		log.Printf("admin bot: delete place id=%d: %v", id, err)
-		sendMessage(bot, q.Message.Chat.ID, "Хатолик. Ўчирилмади.")
+		sendMessage(bot, q.Message.Chat.ID, "❌ Манзилни ўчириб бўлмади.\n\nИлтимос, қайта уриниб кўринг.")
 		return
 	}
 	sendMessage(bot, q.Message.Chat.ID, "✅ Ўчирилди.")
@@ -641,7 +642,7 @@ func handleNumericInput(bot *tgbotapi.BotAPI, cfg *config.Config, fareSvc *servi
 	state.clear(adminTelegramID)
 	if err != nil {
 		log.Printf("admin bot: update fare %s: %v", field, err)
-		sendMessage(bot, chatID, "Хатолик: янгилаш амалга ошмади.")
+		sendMessage(bot, chatID, "❌ Тарифни янгилаб бўлмади.\n\nИлтимос, қайта уриниб кўринг.")
 		return
 	}
 	sendMessage(bot, chatID, "✅ Янгиланди.")
@@ -746,8 +747,8 @@ func sendCurrentTariff(bot *tgbotapi.BotAPI, fareSvc *services.FareService, chat
 		return
 	}
 	text := fmt.Sprintf(
-		"📄 Жорий тариф:\n\n🚕 Старт нархи: %d сўм\n1️⃣ 0–1 км: %d сўм/км\n2️⃣ 1–2 км: %d сўм/км\n♾ 2+ км: %d сўм/км\n\n📊 Комиссия: %d%%",
-		settings.BaseFare, settings.Tier0_1Km, settings.Tier1_2Km, settings.Tier2PlusKm, settings.CommissionPercent,
+		"📄 Жорий тариф:\n\n🚕 Старт нархи: %s сўм\n1️⃣ 0–1 км: %s сўм/км\n2️⃣ 1–2 км: %s сўм/км\n♾ 2+ км: %s сўм/км\n\n📊 Комиссия: %d%%",
+		utils.FormatSoM(settings.BaseFare), utils.FormatSoM(settings.Tier0_1Km), utils.FormatSoM(settings.Tier1_2Km), utils.FormatSoM(settings.Tier2PlusKm), settings.CommissionPercent,
 	)
 	sendMessage(bot, chatID, text)
 }

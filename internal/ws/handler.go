@@ -11,6 +11,7 @@ import (
 	"taxi-mvp/internal/auth"
 	"taxi-mvp/internal/domain"
 	"taxi-mvp/internal/logger"
+	"taxi-mvp/internal/safe"
 )
 
 // RiderAccessTokenVerifier validates native rider access JWTs (same contract as
@@ -71,7 +72,7 @@ func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		tripIDs: map[string]struct{}{tripID: {}},
 	}
 	client.hub.register <- client
-	go client.writePump()
+	safe.Go("ws_write_pump", client.writePump)
 	client.readPump()
 }
 
@@ -215,7 +216,7 @@ func ServeWsWithAuth(hub *Hub, db *sql.DB, driverBotToken, riderBotToken string,
 	}
 	client.hub.register <- client
 	logger.WebSocketEvent("connect", tripID, userID)
-	go client.writePump()
+	safe.Go("ws_write_pump", client.writePump)
 	client.readPump()
 }
 

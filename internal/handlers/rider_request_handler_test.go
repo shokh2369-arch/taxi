@@ -427,3 +427,53 @@ func TestRiderRequest_Cancel_NotYourRequest_403(t *testing.T) {
 		t.Fatalf("code=%q body=%s", code, rr.Body.String())
 	}
 }
+
+// duplicate_pending must identify the request that is blocking the new one.
+//
+// Without it the client can only tell the rider to wait, and if the blocking
+// request was abandoned before confirming a destination that wait is up to the
+// 30-minute server-side timeout — which reads as the app being broken. With the
+// id and the confirmed flag, the client can offer to cancel and start over.
+func TestRiderRequest_DuplicatePendingIdentifiesBlockingRequest(t *testing.T) {
+	db := setupRiderRequestHandlerDB(t, "rider_req_dup_details")
+	defer db.Close()
+	seedRiderLegalAndUser(t, db, 1)
+	r, token := newRiderRequestTestEngine(t, db)
+	h := map[string]string{"Authorization": "Bearer " + token}
+
+	first := postJSON(r, "/v1/rider/requests", map[string]any{"pickup_lat": 41.3, "pickup_lng": 69.28}, h)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first create status=%d body=%s", first.Code, first.Body.String())
+	}
+	var created struct {
+		RequestID string `json:"request_id"`
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+
+	second := postJSON(r, "/v1/rider/requests", map[string]any{"pickup_lat": 41.31, "pickup_lng": 69.29}, h)
+	if second.Code != http.StatusConflict {
+		t.Fatalf("second create status=%d body=%s", second.Code, second.Body.String())
+	}
+
+	var env struct {
+		Error struct {
+			Code                 string `json:"code"`
+			PendingRequestID     string `json:"pending_request_id"`
+			DestinationConfirmed bool   `json:"destination_confirmed"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(second.Body.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, second.Body.String())
+	}
+	if env.Error.Code != "duplicate_pending" {
+		t.Fatalf("code=%q, want duplicate_pending", env.Error.Code)
+	}
+	if env.Error.PendingRequestID != created.RequestID {
+		t.Errorf("pending_request_id = %q, want the blocking request %q", env.Error.PendingRequestID, created.RequestID)
+	}
+	if env.Error.DestinationConfirmed {
+		t.Error("a freshly created request has no confirmed destination; the flag should be false")
+	}
+}

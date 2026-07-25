@@ -26,4 +26,3 @@ type Driver struct {
 	UserTermsAcceptedLegacy int `db:"user_terms_accepted"`
 	DriverTermsLegacy       int `db:"driver_terms_legacy"`
 }
-

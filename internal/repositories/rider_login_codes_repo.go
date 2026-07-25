@@ -24,7 +24,7 @@ type RiderLoginCode struct {
 	CreatedAt int64
 }
 
-// RiderLoginCodesRepo persists 4-digit OTP codes used by the rider Telegram
+// RiderLoginCodesRepo persists 6-digit OTP codes used by the rider Telegram
 // bot login flow. All queries assume phone is already normalized to E.164
 // (caller's responsibility — the service layer enforces this).
 type RiderLoginCodesRepo struct {

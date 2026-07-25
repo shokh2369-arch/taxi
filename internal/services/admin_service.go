@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"taxi-mvp/internal/accounting"
 	"taxi-mvp/internal/domain"
 	"taxi-mvp/internal/models"
@@ -177,7 +179,11 @@ func (s *AdminService) AdjustDriverBalance(ctx context.Context, driverID int64, 
 
 	ledger := repositories.NewDriverLedgerRepository(s.db)
 	refType := "admin_adjust"
-	refID := "admin:" + strconv.FormatInt(adminID, 10)
+	// Must be unique per adjustment: migration 042 adds a UNIQUE index on
+	// (driver_id, reference_type, reference_id), so a reference keyed only on the
+	// admin makes every adjustment after the first for a given driver/admin pair
+	// fail the insert and roll back the balance update with it.
+	refID := fmt.Sprintf("admin:%s:%s", strconv.FormatInt(adminID, 10), uuid.New().String())
 	note := reason
 	if note == "" {
 		note = "Admin manual balance adjustment"

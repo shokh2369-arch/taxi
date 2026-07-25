@@ -26,8 +26,14 @@ func (s *Service) ActiveDocument(ctx context.Context, documentType string) (vers
 }
 
 // ActiveDocuments returns all active documents for the given types (in stable order).
-func (s *Service) ActiveDocuments(ctx context.Context, types []string) (map[string]struct{ Version int; Content string }, error) {
-	out := make(map[string]struct{ Version int; Content string })
+func (s *Service) ActiveDocuments(ctx context.Context, types []string) (map[string]struct {
+	Version int
+	Content string
+}, error) {
+	out := make(map[string]struct {
+		Version int
+		Content string
+	})
 	if len(types) == 0 {
 		return out, nil
 	}
@@ -50,7 +56,10 @@ func (s *Service) ActiveDocuments(ctx context.Context, types []string) (map[stri
 		if err := rows.Scan(&dt, &ver, &c); err != nil {
 			return nil, err
 		}
-		out[dt] = struct{ Version int; Content string }{Version: ver, Content: c}
+		out[dt] = struct {
+			Version int
+			Content string
+		}{Version: ver, Content: c}
 	}
 	return out, rows.Err()
 }

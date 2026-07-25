@@ -20,6 +20,7 @@ import (
 	"taxi-mvp/internal/domain"
 	"taxi-mvp/internal/legal"
 	"taxi-mvp/internal/repositories"
+	"taxi-mvp/internal/safe"
 	"taxi-mvp/internal/services"
 	"taxi-mvp/internal/utils"
 )
@@ -67,7 +68,7 @@ func Run(ctx context.Context, cfg *config.Config, db *sql.DB, bot *tgbotapi.BotA
 	updates := bot.GetUpdatesChan(u)
 
 	notified := &notifiedState{}
-	go pollAndNotifyRider(ctx, bot, db, cfg, notified)
+	safe.GoSupervised(ctx, "rider_poll_notify", func() { pollAndNotifyRider(ctx, bot, db, cfg, notified) })
 
 	for {
 		select {
@@ -199,11 +200,11 @@ func handleUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 		log.Printf("rider: web_app_data chat_id=%d from_id=%d data_len=%d", chatID, telegramID, len(raw))
 		if raw == "" {
 			// Still return early so WebAppData messages don't fall through into other flows.
-			send(bot, chatID, "Хатолик. Манзил маълумоти келмади.")
+			send(bot, chatID, "❌ Манзил маълумоти келмади.\n\nИлтимос, харитадан манзилни қайта танланг.")
 			return
 		}
 		if riderUserID == 0 {
-			send(bot, chatID, "Аввал /start босинг.")
+			send(bot, chatID, "👋 Бошлаш учун /start буйруғини босинг.")
 			return
 		}
 		handleDestinationWebAppData(bot, db, cfg, matchService, chatID, riderUserID, raw)
@@ -212,7 +213,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 
 	if msg.Location != nil {
 		if riderUserID == 0 {
-			send(bot, chatID, "Аввал /start босинг.")
+			send(bot, chatID, "👋 Бошлаш учун /start буйруғини босинг.")
 			return
 		}
 		if !legal.NewService(db).RiderHasActiveLegal(ctx, riderUserID) {
@@ -227,7 +228,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 
 	if msg.Text == btnTaxiCall || msg.Text == btnTaxiNew {
 		if riderUserID == 0 {
-			send(bot, chatID, "Аввал /start босинг.")
+			send(bot, chatID, "👋 Бошлаш учун /start буйруғини босинг.")
 			return
 		}
 		if !legal.NewService(db).RiderHasActiveLegal(ctx, riderUserID) {
@@ -241,7 +242,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 
 	if msg.Text == btnTrackDriver {
 		if riderUserID == 0 {
-			send(bot, chatID, "Аввал /start босинг.")
+			send(bot, chatID, "👋 Бошлаш учун /start буйруғини босинг.")
 			return
 		}
 		if !legal.NewService(db).RiderHasActiveLegal(ctx, riderUserID) {
@@ -258,7 +259,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 		if riderUserID != 0 {
 			sendRiderLegalScreens(bot, db, chatID)
 		} else {
-			send(bot, chatID, "⚠️ Давом этиш учун аввал қоидаларни қабул қилишингиз керак.\n\n/start буюрғини босинг.")
+			send(bot, chatID, "⚠️ Давом этиш учун аввал қоидаларни қабул қилишингиз керак.\n\n/start буйруғини босинг.")
 		}
 		return
 	}
@@ -306,13 +307,13 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 			telegramID, domain.RoleRider)
 		var userID int64
 		if err := db.QueryRowContext(ctx, `SELECT id FROM users WHERE telegram_id = ?1`, telegramID).Scan(&userID); err != nil || userID == 0 {
-			send(bot, q.Message.Chat.ID, "Хатолик.")
+			send(bot, q.Message.Chat.ID, "❌ Профилингизни яратиб бўлмади.\n\nИлтимос, /start ни қайта босинг.")
 			return
 		}
 		lSvc := legal.NewService(db)
 		if err := lSvc.AcceptActiveForTypes(ctx, userID, []string{legal.DocUserTerms, legal.DocPrivacyPolicyUser}, "", "telegram-bot"); err != nil {
 			log.Printf("rider: legal accept: %v", err)
-			send(bot, q.Message.Chat.ID, "Хатолик. Кейинроқ уриниб кўринг.")
+			send(bot, q.Message.Chat.ID, "❌ Қоидаларни қабул қилишда хатолик.\n\nИлтимос, бироздан сўнг қайта уриниб кўринг.")
 			return
 		}
 		send(bot, q.Message.Chat.ID, "✅ Қоидалар қабул қилинди.\n\nЭнди сиз бемалол буюртма беришингиз мумкин.")
@@ -402,7 +403,7 @@ func handleStart(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64, telegramID int6
 	code, err := utils.GenerateReferralCode(ctx, db)
 	if err != nil {
 		log.Printf("rider: generate referral code: %v", err)
-		send(bot, chatID, "Хатолик. Қайта уриниб кўринг.")
+		send(bot, chatID, "❌ Рўйхатдан ўтишда хатолик юз берди.\n\nИлтимос, бир неча сониядан сўнг /start ни қайта босинг.")
 		return
 	}
 	var refArg interface{}
@@ -415,7 +416,7 @@ func handleStart(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64, telegramID int6
 		telegramID, domain.RoleRider, code, refArg)
 	if err != nil {
 		log.Printf("rider: upsert user: %v", err)
-		send(bot, chatID, "Хатолик. Қайта уриниб кўринг.")
+		send(bot, chatID, "❌ Рўйхатдан ўтишда хатолик юз берди.\n\nИлтимос, бир неча сониядан сўнг /start ни қайта босинг.")
 		return
 	}
 	// User unblocked the bot and returned; allow future Telegram broadcasts again.
@@ -426,7 +427,7 @@ func handleStart(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64, telegramID int6
 	}
 	var userID int64
 	if err := db.QueryRowContext(ctx, `SELECT id FROM users WHERE telegram_id = ?1`, telegramID).Scan(&userID); err != nil || userID == 0 {
-		send(bot, chatID, "Хатолик.")
+		send(bot, chatID, "❌ Профилингиз топилмади.\n\n/start ни босиб қайтадан бошланг.")
 		return
 	}
 	if !legal.NewService(db).RiderHasActiveLegal(ctx, userID) {
@@ -469,7 +470,7 @@ func sendActivePrivacy(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64) {
 	ctx := context.Background()
 	_, content, err := legal.NewService(db).ActiveDocument(ctx, legal.DocPrivacyPolicyUser)
 	if err != nil {
-		send(bot, chatID, "Махфийлик сиёсати ҳозирча юкланмади. /start орқали қайта уриниб кўринг.")
+		send(bot, chatID, "⚠️ Махфийлик сиёсати ҳозирча юкланмади.\n\n/start орқали қайта уриниб кўринг.")
 		return
 	}
 	send(bot, chatID, content)
@@ -500,7 +501,7 @@ func SendMainMenuAfterFinish(bot *tgbotapi.BotAPI, chatID int64) {
 		),
 	)
 	kb.ResizeKeyboard = true
-	m := tgbotapi.NewMessage(chatID, "Сафар тугади. Янги такси чақириш учун тугмани босинг.")
+	m := tgbotapi.NewMessage(chatID, "✅ Сафар тугади.\n\nЯнги буюртма учун қуйидаги тугмани босинг.")
 	m.ReplyMarkup = kb
 	if _, err := bot.Send(m); err != nil {
 		log.Printf("rider: send main menu after finish: %v", err)
@@ -543,7 +544,7 @@ func handleTrackDriver(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, cha
 	var userID int64
 	err := db.QueryRowContext(context.Background(), `SELECT id FROM users WHERE telegram_id = ?1`, telegramID).Scan(&userID)
 	if err != nil || userID == 0 {
-		send(bot, chatID, "Аввал /start босинг.")
+		send(bot, chatID, "👋 Бошлаш учун /start буйруғини босинг.")
 		return
 	}
 	var tripID string
@@ -553,11 +554,11 @@ func handleTrackDriver(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, cha
 		ORDER BY id DESC LIMIT 1`,
 		userID, domain.TripStatusWaiting, domain.TripStatusArrived, domain.TripStatusStarted).Scan(&tripID)
 	if err != nil || tripID == "" {
-		send(bot, chatID, "Актив сафар топилмади.")
+		send(bot, chatID, "ℹ️ Ҳозирда фаол сафарингиз йўқ.")
 		return
 	}
 	if cfg == nil || cfg.RiderMapURL == "" {
-		send(bot, chatID, "Харита ҳозирча мавжуд эмас.")
+		send(bot, chatID, "⚠️ Харита ҳозирча мавжуд эмас.\n\nИлтимос, кейинроқ уриниб кўринг.")
 		return
 	}
 	url := strings.TrimSuffix(cfg.RiderMapURL, "/") + "?trip_id=" + tripID
@@ -621,7 +622,7 @@ func handlePhoneContact(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int
 	if err != nil {
 		log.Printf("rider: save phone: %v", err)
 	}
-	send(bot, chatID, "Раҳмат ✅ Энди менюдан «Такси чақириш» ни босинг.")
+	send(bot, chatID, "✅ Раҳмат! Телефон рақамингиз сақланди.\n\nЭнди «🚕 Такси чақириш» тугмасини босинг.")
 	sendMainMenu(bot, chatID)
 }
 
@@ -650,11 +651,11 @@ func handleLocation(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 		`SELECT id FROM users WHERE telegram_id = ?1`, telegramID).Scan(&userID)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			send(bot, chatID, "Аввал /start босинг.")
+			send(bot, chatID, "👋 Бошлаш учун /start буйруғини босинг.")
 			return
 		}
 		log.Printf("rider: get user: %v", err)
-		send(bot, chatID, "Хатолик. Қайта уриниб кўринг.")
+		send(bot, chatID, "❌ Маълумотларингизни олишда хатолик.\n\nИлтимос, бироздан сўнг қайта уриниб кўринг.")
 		return
 	}
 
@@ -672,7 +673,7 @@ func handleLocation(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 	// Rate limit: only 1 active (PENDING) ride request per rider
 	var existing int
 	if err := db.QueryRowContext(context.Background(), `SELECT 1 FROM ride_requests WHERE rider_user_id = ?1 AND status = ?2 LIMIT 1`, userID, domain.RequestStatusPending).Scan(&existing); err == nil {
-		send(bot, chatID, "Сизда аллақачон фаол сўров бор. Ҳайдовчи топилгунча ёки бекор қилингунча кутинг.")
+		send(bot, chatID, "ℹ️ Сизда аллақачон фаол сўров бор.\n\nҲайдовчи топилишини кутинг ёки «❌ Бекор қилиш» тугмасини босинг.")
 		return
 	}
 
@@ -684,8 +685,14 @@ func handleLocation(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
 		requestID.String(), userID, lat, lng, cfg.MatchRadiusKm, domain.RequestStatusPending, expiresAt, pickupGrid)
 	if err != nil {
+		// The check above is a read followed by a write, so a fast double-tap can
+		// slip past it; the unique index (migration 063) catches the rest.
+		if services.IsUniqueConstraintErr(err) {
+			send(bot, chatID, "ℹ️ Сизда аллақачон фаол сўров бор.\n\nҲайдовчи топилишини кутинг ёки «❌ Бекор қилиш» тугмасини босинг.")
+			return
+		}
 		log.Printf("rider: create request: %v", err)
-		send(bot, chatID, "Хатолик. Сўров юборилмади.")
+		send(bot, chatID, "❌ Сўров юборилмади. Илтимос, бироздан сўнг қайта уриниб кўринг.")
 		return
 	}
 
@@ -741,7 +748,7 @@ func handleDestinationPlaceCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *confi
 	var name string
 	var dropLat, dropLng float64
 	if err := db.QueryRowContext(context.Background(), `SELECT name, lat, lng FROM places WHERE id = ?1`, placeID).Scan(&name, &dropLat, &dropLng); err != nil {
-		send(bot, q.Message.Chat.ID, "Хатолик.")
+		send(bot, q.Message.Chat.ID, "❌ Танланган манзил топилмади.\n\nИлтимос, рўйхатдан бошқа манзилни танланг.")
 		return
 	}
 	estPrice := estimatePrice(context.Background(), db, cfg, pickupLat, pickupLng, dropLat, dropLng)
@@ -762,16 +769,16 @@ func handleDestinationPlaceCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *confi
 func handleDestinationWebAppData(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchService *services.MatchService, chatID int64, riderUserID int64, raw string) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		send(bot, chatID, "Хатолик.")
+		send(bot, chatID, "❌ Манзил маълумоти келмади.\n\nИлтимос, харитадан манзилни қайта танланг.")
 		return
 	}
 	var p destinationWebAppPayload
 	if err := json.Unmarshal([]byte(raw), &p); err != nil {
-		send(bot, chatID, "Хатолик. Манзил ўқилмади.")
+		send(bot, chatID, "❌ Манзилни ўқиб бўлмади.\n\nИлтимос, харитадан манзилни қайта танланг.")
 		return
 	}
 	if math.IsNaN(p.Lat) || math.IsNaN(p.Lng) || p.Lat == 0 || p.Lng == 0 {
-		send(bot, chatID, "Хатолик. Манзил нотўғри.")
+		send(bot, chatID, "❌ Манзил нотўғри танланган.\n\nИлтимос, харитадан аниқ нуқтани белгиланг.")
 		return
 	}
 	// Update the latest pending request that doesn't have a destination yet.
@@ -784,7 +791,23 @@ func handleDestinationWebAppData(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.C
 		ORDER BY created_at DESC LIMIT 1`,
 		riderUserID, domain.RequestStatusPending).Scan(&requestID, &pickupLat, &pickupLng)
 	if err != nil || requestID == "" {
-		send(bot, chatID, "Фаол сўров топилмади.")
+		// The Mini App writes the destination over HTTP (POST /rider/request/destination),
+		// which already replies with the price prompt. Its sendData then also reaches
+		// the bot here, where the request no longer matches "pending with no
+		// destination" — so this used to fire "no active request found" immediately
+		// after the price prompt, and riders believed the newer, contradictory
+		// message and started over into the duplicate-request block.
+		var pendingWithDrop int
+		if e := db.QueryRowContext(context.Background(), `
+			SELECT 1 FROM ride_requests
+			WHERE rider_user_id = ?1 AND status = ?2
+			  AND drop_lat IS NOT NULL AND drop_lng IS NOT NULL
+			LIMIT 1`,
+			riderUserID, domain.RequestStatusPending).Scan(&pendingWithDrop); e == nil {
+			// Destination already recorded by the HTTP path; it owns the reply.
+			return
+		}
+		send(bot, chatID, "ℹ️ Фаол сўровингиз топилмади.\n\n«🚕 Такси чақириш» орқали янги сўров юборинг.")
 		return
 	}
 	estPrice := estimatePrice(context.Background(), db, cfg, pickupLat, pickupLng, p.Lat, p.Lng)
@@ -803,7 +826,7 @@ func handleDestinationWebAppData(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.C
 }
 
 func sendRiderEstimateConfirm(bot *tgbotapi.BotAPI, chatID int64, requestID string, estPrice int64) {
-	text := fmt.Sprintf("💰 Тахминий нарх: %d\n\nТасдиқлайсизми?", estPrice)
+	text := fmt.Sprintf("💰 Тахминий нарх: %s сўм\n\nТасдиқлайсизми?", utils.FormatSoM(estPrice))
 	kb := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("✅ Тасдиқлаш", cbReqConfirm+requestID),
@@ -853,14 +876,20 @@ func handleRequestConfirmCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.
 		WHERE id = ?1 AND rider_user_id = ?2 AND expires_at > datetime('now')`,
 		requestID, riderUserID).Scan(&est, &st)
 	if err != nil || st != domain.RequestStatusPending || est <= 0 {
-		send(bot, q.Message.Chat.ID, "Хатолик. Қайта уриниб кўринг.")
+		send(bot, q.Message.Chat.ID, "⏳ Сўров муддати тугаган ёки нарх ҳисобланмаган.\n\n«🚕 Такси чақириш» орқали янги сўров юборинг.")
 		return
 	}
-	// Lock destination so it cannot be changed after confirmation.
+	// Lock destination so it cannot be changed after confirmation, and restart the
+	// dispatch window: expires_at was set when the destination was picked, so time
+	// spent reading the price estimate was being taken out of the search window.
+	confirmTTL := "+120 seconds"
+	if cfg != nil && cfg.RequestExpiresSeconds > 0 {
+		confirmTTL = fmt.Sprintf("+%d seconds", cfg.RequestExpiresSeconds)
+	}
 	_, _ = db.ExecContext(context.Background(), `
-		UPDATE ride_requests SET destination_confirmed = 1
+		UPDATE ride_requests SET destination_confirmed = 1, expires_at = datetime('now', ?4)
 		WHERE id = ?1 AND rider_user_id = ?2 AND status = ?3`,
-		requestID, riderUserID, domain.RequestStatusPending)
+		requestID, riderUserID, domain.RequestStatusPending, confirmTTL)
 	if matchService != nil {
 		if err := matchService.BroadcastRequest(context.Background(), requestID); err != nil {
 			log.Printf("rider: broadcast request: %v", err)
@@ -889,9 +918,9 @@ type destinationKbd struct {
 	InlineKeyboard [][]destinationBtn `json:"inline_keyboard"`
 }
 type destinationBtn struct {
-	Text         string               `json:"text"`
-	CallbackData string               `json:"callback_data,omitempty"`
-	WebApp       *destinationWebApp   `json:"web_app,omitempty"`
+	Text         string             `json:"text"`
+	CallbackData string             `json:"callback_data,omitempty"`
+	WebApp       *destinationWebApp `json:"web_app,omitempty"`
 }
 type destinationWebApp struct {
 	URL string `json:"url"`
@@ -912,7 +941,7 @@ func sendDestinationPage(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, c
 	var st string
 	if err := db.QueryRowContext(context.Background(), `SELECT pickup_lat, pickup_lng, status FROM ride_requests WHERE id = ?1 AND rider_user_id = ?2`, requestID, riderUserID).
 		Scan(&pickupLat, &pickupLng, &st); err != nil || st != domain.RequestStatusPending {
-		send(bot, chatID, "Хатолик.")
+		send(bot, chatID, "❌ Сўров топилмади ёки муддати тугаган.\n\n«🚕 Такси чақириш» орқали янги сўров юборинг.")
 		return
 	}
 	placeSvc := services.NewPlaceService(repositories.NewPlaceRepo(db))
@@ -1051,7 +1080,7 @@ func handleCancel(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 			return
 		}
 		log.Printf("rider: get user: %v", err)
-		send(bot, chatID, "Хатолик.")
+		send(bot, chatID, "❌ Маълумотларингизни олишда хатолик.\n\nИлтимос, қайта уриниб кўринг.")
 		return
 	}
 	// If rider has an active trip (WAITING or STARTED), cancel the trip first ("safarni bekor qilish").
@@ -1066,11 +1095,11 @@ func handleCancel(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 			result, err := tripService.CancelByRider(ctx, tripID, userID)
 			if err != nil {
 				log.Printf("rider: cancel trip: %v", err)
-				send(bot, chatID, "Хатолик.")
+				send(bot, chatID, "❌ Сафарни бекор қилиб бўлмади.\n\nИлтимос, қайта уриниб кўринг.")
 				return
 			}
 			if result != nil {
-				send(bot, chatID, "Сафар бекор қилинди.")
+				send(bot, chatID, "✅ Сафар бекор қилинди.")
 				if ensureRiderPhone(bot, db, chatID, telegramID) {
 					return
 				}
@@ -1086,23 +1115,23 @@ func handleCancel(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 		ORDER BY created_at DESC LIMIT 1`,
 		userID, domain.RequestStatusPending).Scan(&requestID); err != nil && err != sql.ErrNoRows {
 		log.Printf("rider: cancel request lookup: %v", err)
-		send(bot, chatID, "Хатолик.")
+		send(bot, chatID, "❌ Сўровни текширишда хатолик.\n\nИлтимос, қайта уриниб кўринг.")
 		return
 	}
 	if requestID == "" {
-		send(bot, chatID, "Бекор қилинадиган сўров топилмади.")
+		send(bot, chatID, "ℹ️ Бекор қилинадиган фаол сўров ёки сафар йўқ.")
 		return
 	}
 	res, err := db.ExecContext(ctx, `UPDATE ride_requests SET status = ?1 WHERE id = ?2 AND status = ?3`,
 		domain.RequestStatusCancelled, requestID, domain.RequestStatusPending)
 	if err != nil {
 		log.Printf("rider: cancel request: %v", err)
-		send(bot, chatID, "Хатолик.")
+		send(bot, chatID, "❌ Сўровни бекор қилиб бўлмади.\n\nИлтимос, қайта уриниб кўринг.")
 		return
 	}
 	rows, _ := res.RowsAffected()
 	if rows == 0 {
-		send(bot, chatID, "Бекор қилинадиган сўров топилмади.")
+		send(bot, chatID, "ℹ️ Бекор қилинадиган фаол сўров ёки сафар йўқ.")
 		return
 	}
 	// Close driver offers like the app cancel path: delete Telegram offer messages,
@@ -1110,7 +1139,7 @@ func handleCancel(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 	if matchService != nil {
 		matchService.CleanupCancelledRequestOffers(ctx, requestID)
 	}
-	send(bot, chatID, "Бекор қилинди.")
+	send(bot, chatID, "✅ Сўров бекор қилинди.")
 	if ensureRiderPhone(bot, db, chatID, telegramID) {
 		return
 	}
@@ -1134,7 +1163,7 @@ func pollAndNotifyRider(ctx context.Context, bot *tgbotapi.BotAPI, db *sql.DB, c
 func notifyTripUpdates(bot *tgbotapi.BotAPI, db *sql.DB, notified *notifiedState) {}
 
 func formatSummary(km float64, fareAmount int64) string {
-	return fmt.Sprintf("Сафар тугади.\n%s\nНарх: %d", formatKm(km), fareAmount)
+	return fmt.Sprintf("✅ Сафар тугади.\n\n📏 %s\n💰 Нарх: %s сўм", formatKm(km), utils.FormatSoM(fareAmount))
 }
 
 func formatKm(km float64) string {

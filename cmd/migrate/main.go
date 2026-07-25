@@ -10,14 +10,14 @@ import (
 	"strings"
 
 	"github.com/joho/godotenv"
-	_ "github.com/tursodatabase/libsql-client-go/libsql"
 	"github.com/pressly/goose/v3"
+	_ "github.com/tursodatabase/libsql-client-go/libsql"
 
 	_ "taxi-mvp/db/migrations"
-	"taxi-mvp/internal/db/legalrepair"
-	"taxi-mvp/internal/db/legalfingerrepair"
 	"taxi-mvp/internal/db/driverapprepair"
 	"taxi-mvp/internal/db/ledgerrepair"
+	"taxi-mvp/internal/db/legalfingerrepair"
+	"taxi-mvp/internal/db/legalrepair"
 )
 
 func main() {

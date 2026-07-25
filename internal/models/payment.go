@@ -20,7 +20,12 @@ type Payment struct {
 	Type       PaymentType `db:"type" json:"type"`
 	Note       string      `db:"note" json:"note"`
 	CreatedAt  time.Time   `db:"created_at" json:"created_at"`
-	TripID     *string     `db:"trip_id" json:"-"`                   // optional link to trip; not exposed in API
-	TotalPrice *int64      `db:"-" json:"total_price,omitempty"`    // trip total (fare) for trip-related payments; set from JOIN in ListPayments
+	TripID     *string     `db:"trip_id" json:"-"`               // optional link to trip; not exposed in API
+	TotalPrice *int64      `db:"-" json:"total_price,omitempty"` // trip total (fare) for trip-related payments; set from JOIN in ListPayments
+	// CommissionDue is the fee the platform earned on this trip and
+	// UncollectedAmount is the part of it the driver's wallets could not cover.
+	// Amount stays "what was actually taken", so revenue and receivables are
+	// separately answerable instead of being inferred from a JSON blob.
+	CommissionDue     int64 `db:"commission_due" json:"commission_due,omitempty"`
+	UncollectedAmount int64 `db:"uncollected_amount" json:"uncollected_amount,omitempty"`
 }
-

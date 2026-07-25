@@ -16,6 +16,7 @@ import (
 	"taxi-mvp/internal/config"
 	"taxi-mvp/internal/domain"
 	"taxi-mvp/internal/legal"
+	"taxi-mvp/internal/safe"
 	"taxi-mvp/internal/utils"
 	"taxi-mvp/internal/ws"
 )
@@ -23,8 +24,8 @@ import (
 const (
 	acceptCallbackPrefix  = "accept:"
 	defaultDriverCooldown = 5
-	dispatchBatchSize    = 3  // send request to N nearest drivers per batch
-	dispatchBatchWaitSec = 10 // wait this many seconds for any driver in the batch to accept before trying next batch
+	dispatchBatchSize     = 3  // send request to N nearest drivers per batch
+	dispatchBatchWaitSec  = 10 // wait this many seconds for any driver in the batch to accept before trying next batch
 	liveLocationOrderHint = "\n\n📍 Жонли локация ёқилган бўлса буюртмалар тезроқ келади."
 	// Live location considered active only when last_live_location_at within this many seconds (aligned with dispatch freshness).
 	liveLocationActiveSeconds = 120
@@ -109,14 +110,14 @@ func sampleString(ss []string, maxItems int) string {
 // formatOrderMessageToDriver builds the text sent to the driver for a new order.
 // IMPORTANT: destination details must never be included here; only pickup context and estimate.
 func formatOrderMessageToDriver(distKm float64, riderPhone string, estimatedPrice int64) string {
-	text := fmt.Sprintf("Янги сўров (%.1f км узоқда).", distKm)
+	text := fmt.Sprintf("🚕 Янги сўров (%.1f км узоқда).", distKm)
 	if riderPhone != "" {
 		text += "\n📞 Мижоз: " + riderPhone
 	}
 	if estimatedPrice > 0 {
-		text += fmt.Sprintf("\n💰 Тахминий нарх: %d", estimatedPrice)
+		text += fmt.Sprintf("\n💰 Тахминий нарх: %s сўм", utils.FormatSoM(estimatedPrice))
 	}
-	text += "\nҚабул қиласизми?"
+	text += "\n\nҚабул қиласизми?"
 	return text
 }
 
@@ -188,7 +189,7 @@ type driverCandidate struct {
 // context.Background(); dispatch must not be tied to a short-lived caller context.
 func (s *MatchService) StartPriorityDispatch(ctx context.Context, requestID string) {
 	_ = ctx
-	go s.runPriorityDispatch(context.Background(), requestID)
+	safe.Go("priority_dispatch", func() { s.runPriorityDispatch(context.Background(), requestID) })
 }
 
 // requestStillDispatchable returns true if the request is PENDING, not expired, and ready to dispatch.
@@ -265,6 +266,7 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 	argsTelegram := []interface{}{locationFreshSinceStr}
 	// Eligible if (fresh Telegram live) OR (fresh app GPS) OR (HTTP live path: last_seen_at fresh and coordinates present).
 	// Third arm avoids missing native drivers when last_live_location_at lagged but POST /driver/location updated last_seen_at.
+	cancelCooldownSQL := s.driverCancelCooldownSQL(ctx)
 	queryApp := `
 		SELECT d.user_id, u.telegram_id, d.last_lat, d.last_lng,
 		       d.app_lat, d.app_lng, d.app_last_seen_at, COALESCE(d.app_location_active, 0)
@@ -286,7 +288,7 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 		  AND d.car_type IS NOT NULL AND d.car_type != ''
 		  AND d.color IS NOT NULL AND d.color != ''
 		  AND d.plate IS NOT NULL AND d.plate != ''
-		  AND NOT EXISTS (SELECT 1 FROM trips t WHERE t.driver_user_id = d.user_id AND t.status IN ('WAITING','ARRIVED','STARTED'))`
+		  AND NOT EXISTS (SELECT 1 FROM trips t WHERE t.driver_user_id = d.user_id AND t.status IN ('WAITING','ARRIVED','STARTED'))` + cancelCooldownSQL
 
 	queryTelegramOnly := `
 		SELECT d.user_id, u.telegram_id, d.last_lat, d.last_lng
@@ -303,7 +305,7 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 		  AND d.car_type IS NOT NULL AND d.car_type != ''
 		  AND d.color IS NOT NULL AND d.color != ''
 		  AND d.plate IS NOT NULL AND d.plate != ''
-		  AND NOT EXISTS (SELECT 1 FROM trips t WHERE t.driver_user_id = d.user_id AND t.status IN ('WAITING','ARRIVED','STARTED'))`
+		  AND NOT EXISTS (SELECT 1 FROM trips t WHERE t.driver_user_id = d.user_id AND t.status IN ('WAITING','ARRIVED','STARTED'))` + cancelCooldownSQL
 
 	rows, err := s.db.QueryContext(ctx, queryApp, argsApp...)
 	appColsOK := true
@@ -377,6 +379,10 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 			DistKm:     distKm,
 		})
 	}
+	// A mid-stream failure (dropped Turso stream, SQLITE_BUSY) ends rows.Next()
+	// early and is otherwise indistinguishable from a legitimately short result,
+	// which would be logged below as "no eligible drivers" while drivers sat idle.
+	rowsErr := rows.Err()
 	// Audit: candidate drivers (always log for dispatch audit)
 	{
 		ids := make([]int64, 0, len(candidates))
@@ -389,7 +395,14 @@ func (s *MatchService) runPriorityDispatch(ctx context.Context, requestID string
 			log.Printf("dispatch_debug: request=%s candidate_drivers=%d ids_sample=%s", requestID, len(candidates), sampleInt64(ids, logSliceMaxItems))
 		}
 	}
+	if rowsErr != nil {
+		log.Printf("match_service: candidate query truncated for request %s after %d row(s): %v", requestID, sqlGridRows, rowsErr)
+	}
 	if len(candidates) == 0 {
+		if rowsErr != nil {
+			// Do not claim "no eligible drivers" when the query itself failed.
+			return
+		}
 		log.Printf("match_service: no eligible drivers for request %s (live location + balance%s, within radius)", requestID, balanceCond)
 		return
 	}
@@ -542,7 +555,19 @@ func (s *MatchService) PulseDriverOnlineFromHTTP(ctx context.Context, driverUser
 		return
 	}
 	nowStr := time.Now().UTC().Format("2006-01-02 15:04:05")
-	_, _ = s.db.ExecContext(ctx, `UPDATE drivers SET is_active = 1, manual_offline = 0, last_seen_at = ?1 WHERE user_id = ?2`, nowStr, driverUserID)
+	// manual_offline is NOT cleared here. A driver app reports location in the
+	// background, so clearing it on a location ping silently undid the OFFLINE
+	// toggle: a driver who ended their shift and drove home kept receiving orders.
+	// Coming back online is an explicit act — POST /driver/online, or sharing
+	// Telegram live location — not a side effect of the phone reporting where it is.
+	_, _ = s.db.ExecContext(ctx, `
+		UPDATE drivers SET is_active = 1, last_seen_at = ?1
+		WHERE user_id = ?2 AND COALESCE(manual_offline, 0) = 0`, nowStr, driverUserID)
+	var manualOffline int
+	_ = s.db.QueryRowContext(ctx, `SELECT COALESCE(manual_offline, 0) FROM drivers WHERE user_id = ?1`, driverUserID).Scan(&manualOffline)
+	if manualOffline == 1 {
+		return
+	}
 	s.SpawnNotifyDriverOfPendingRequests(auth.ContextWithDetachedActionSource(ctx), driverUserID)
 }
 
@@ -856,10 +881,10 @@ type AdminNearestDispatchDriver struct {
 // sqlAdminOfferDriverPredicates is the shared WHERE clause (after JOIN) for admin manual offers.
 // This must stay aligned with what the admin UI can select: map + GET /nearest-requests do not require
 // balance, legal acceptances, or fresh live location. Automatic dispatch still enforces those separately.
-func (s *MatchService) sqlAdminOfferDriverPredicates() string {
+func (s *MatchService) sqlAdminOfferDriverPredicates(ctx context.Context) string {
 	return `d.verification_status = 'approved'
 		  AND ((d.last_lat IS NOT NULL AND d.last_lng IS NOT NULL) OR (d.app_lat IS NOT NULL AND d.app_lng IS NOT NULL))
-		  AND NOT EXISTS (SELECT 1 FROM trips t WHERE t.driver_user_id = d.user_id AND t.status IN ('WAITING','ARRIVED','STARTED'))`
+		  AND NOT EXISTS (SELECT 1 FROM trips t WHERE t.driver_user_id = d.user_id AND t.status IN ('WAITING','ARRIVED','STARTED'))` + s.driverCancelCooldownSQL(ctx)
 }
 
 // AdminNearestDispatchDrivers returns drivers the admin may manually offer: approved, last known coordinates,
@@ -873,7 +898,7 @@ func (s *MatchService) AdminNearestDispatchDrivers(ctx context.Context, requestI
 		return nil, err
 	}
 
-	pred := s.sqlAdminOfferDriverPredicates()
+	pred := s.sqlAdminOfferDriverPredicates(ctx)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT d.user_id, u.telegram_id, d.last_lat, d.last_lng,
 		       d.app_lat, d.app_lng, d.app_last_seen_at, COALESCE(d.app_location_active, 0)
@@ -981,7 +1006,7 @@ func (s *MatchService) AdminSendOfferToDriver(ctx context.Context, requestID str
 		}
 	}
 
-	pred := s.sqlAdminOfferDriverPredicates()
+	pred := s.sqlAdminOfferDriverPredicates(ctx)
 	var telegramID int64
 	var lastLat, lastLng sql.NullFloat64
 	var appLat, appLng sql.NullFloat64
@@ -1061,6 +1086,9 @@ func (s *MatchService) AdminSendOfferToDriver(ctx context.Context, requestID str
 			}
 			return err
 		}
+		// Wake long-pollers, same as automatic dispatch. Without this an
+		// admin-pushed offer only reached the driver on their next timed poll.
+		ws.NotifyDispatchChangedBurst()
 		return nil
 	}
 	res, err := s.db.ExecContext(ctx, `
@@ -1075,4 +1103,39 @@ func (s *MatchService) AdminSendOfferToDriver(ctx context.Context, requestID str
 		return ErrAdminOfferExists
 	}
 	return nil
+}
+
+// sqlDriverNotOnCancelCooldownFragment excludes drivers serving a cancellation
+// cooldown.
+//
+// A driver who repeatedly accepts and then cancels strands riders who have
+// already been told a specific car is coming. Riders were penalised for
+// cancelling from the first occurrence; this is the missing other half, kept
+// deliberately gentler (a temporary dispatch pause, not a block).
+const sqlDriverNotOnCancelCooldownFragment = `
+		  AND NOT EXISTS (
+			SELECT 1 FROM driver_cancel_state dcs
+			WHERE dcs.driver_user_id = d.user_id
+			  AND dcs.cooldown_until IS NOT NULL
+			  AND dcs.cooldown_until > datetime('now')
+		  )`
+
+// driverCancelCooldownSQL returns the cooldown predicate, or an empty string on a
+// database where the guard table does not exist yet.
+//
+// SQLite fails to prepare a statement referencing a missing table, so embedding
+// the fragment unconditionally would break every dispatch query on a database
+// that has not run migration 066 — turning a supply-quality guard into a total
+// dispatch outage. Probed once per query build; sqlite_master lookups are cheap
+// and this keeps the schema check next to the thing that depends on it.
+func (s *MatchService) driverCancelCooldownSQL(ctx context.Context) string {
+	if s == nil || s.db == nil {
+		return ""
+	}
+	var n int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='driver_cancel_state'`).Scan(&n); err != nil || n == 0 {
+		return ""
+	}
+	return sqlDriverNotOnCancelCooldownFragment
 }

@@ -4,13 +4,16 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -37,6 +40,16 @@ const (
 	cbAccept            = "accept:"
 	cbDriverAcceptTerms = "driver_accept_terms"
 
+	// Trip lifecycle controls in the bot itself. Previously the only way to move a
+	// trip past WAITING was the Mini App, so a driver whose map failed to open —
+	// or who simply never opened it — could accept a ride and then had nothing to
+	// press: the trip stayed WAITING forever, the driver stayed excluded from
+	// dispatch, and only the rider could cancel (and was penalised for it).
+	cbTripArrived = "trip_arrived:"
+	cbTripStart   = "trip_start:"
+	cbTripFinish  = "trip_finish:"
+	cbTripCancel  = "trip_cancel:"
+
 	resumeDriverAccept = "driver_accept"
 	// resumeDriverRelive: driver was sharing live location when legal blocked them; user must re-share live in Telegram.
 	resumeDriverRelive = "driver_relive"
@@ -53,8 +66,6 @@ const (
 	// One-time warning when Live Location becomes inactive.
 	liveLocationInactiveWarningMessage = "📍 Жонли локация ўчди.\nБуюртмалар келмайди.\n\nҚайта ёқиш: " + liveLocationBilingualInstruction
 	// Live is on but driver cannot receive orders (e.g. low balance); once per cooldown.
-	offlineButLiveReminderMessage  = "📡 Жонли локация ёқилган.\n\nБуюртмалар олиш учун балансингиз етарли бўлиши керак. Балансни тўлдиринг."
-	insufficientBalanceMessage     = "Балансингиз етарли эмас. Сўровлар олиш учун балансни тўлдиринг."
 	// Registration: car types (Uzbekistan taxi market). "Бошқа" allows manual input.
 	carTypeBoshqa = "Бошқа"
 )
@@ -353,7 +364,7 @@ func handleLiveLocationInstruction(bot *tgbotapi.BotAPI, db *sql.DB, chatID, tel
 	ctx := context.Background()
 	var userID int64
 	if err := db.QueryRowContext(ctx, `SELECT id FROM users WHERE telegram_id = ?1`, telegramID).Scan(&userID); err != nil || userID == 0 {
-		send(bot, chatID, "Хатолик.")
+		send(bot, chatID, "❌ Профилингиз топилмади.\n\n/start ни босиб қайтадан бошланг.")
 		return
 	}
 	var verificationStatus sql.NullString
@@ -504,8 +515,8 @@ func formatStatusPanelText(ctx context.Context, db *sql.DB, cfg *config.Config, 
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "📊 Ҳайдовчи ҳолати\n\nҲолат: %s\nЛокация: %s\n\n", holat, locLine)
-	fmt.Fprintf(&b, "💰 Промо / платформа кредити: %d сўм\n(Реал пул эмас, нақдлаштирилмайди)\n\n", platformCredit)
-	fmt.Fprintf(&b, "💵 Ички пул баланси (top-up): %d сўм\nЖами: %d сўм", cashBal, balance)
+	fmt.Fprintf(&b, "💰 Промо / платформа кредити: %s сўм\n(Реал пул эмас, нақдлаштирилмайди)\n\n", utils.FormatSoM(platformCredit))
+	fmt.Fprintf(&b, "💵 Ички пул баланси (top-up): %s сўм\nЖами: %s сўм", utils.FormatSoM(cashBal), utils.FormatSoM(balance))
 	if !liveOK {
 		fmt.Fprintf(&b, "\n\n⚠️ Ишлаш учун жонли локацияни уланг.")
 	} else if !balOK {
@@ -649,7 +660,7 @@ func handleUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchSer
 		ctx := context.Background()
 		_, content, err := legal.NewService(db).ActiveDocument(ctx, legal.DocPrivacyPolicyDriver)
 		if err != nil {
-			send(bot, chatID, "Махфийлик сиёсати юкланмади.")
+			send(bot, chatID, "⚠️ Махфийлик сиёсати ҳозирча юкланмади.\n\nИлтимос, кейинроқ уриниб кўринг.")
 		} else {
 			send(bot, chatID, content)
 		}
@@ -716,7 +727,7 @@ func handleStart(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, chatID, t
 	code, err := utils.GenerateReferralCode(ctx, db)
 	if err != nil {
 		log.Printf("driver: generate referral code: %v", err)
-		send(bot, chatID, "Хатолик. Қайта уриниб кўринг.")
+		send(bot, chatID, "❌ Рўйхатдан ўтишда хатолик юз берди.\n\nИлтимос, бир неча сониядан сўнг /start ни қайта босинг.")
 		return
 	}
 	var refArg interface{}
@@ -734,7 +745,7 @@ func handleStart(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, chatID, t
 		telegramID, domain.RoleDriver, code, refArg).Scan(&userID)
 	if err != nil {
 		log.Printf("driver: upsert user: %v", err)
-		send(bot, chatID, "Хатолик. Қайта уриниб кўринг.")
+		send(bot, chatID, "❌ Рўйхатдан ўтишда хатолик юз берди.\n\nИлтимос, бир неча сониядан сўнг /start ни қайта босинг.")
 		return
 	}
 	// Driver referral row for accounting (reward on trip FINISH after 3 finished trips; see accounting.TryGrantReferralReward).
@@ -760,7 +771,7 @@ func handleStart(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, chatID, t
 		if step == "phone" {
 			sendApplicationPrompt(bot, db, chatID, userID, step)
 		} else {
-			send(bot, chatID, "Иловани тўлдиринг. Кейинги саволга жавоб юборинг.")
+			send(bot, chatID, "📝 Аризангиз тўлиқ эмас.\n\nЮқоридаги саволга жавоб юборинг.")
 		}
 		return
 	}
@@ -924,10 +935,10 @@ func sendApplicationPrompt(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64, drive
 		}
 		return
 	case "first_name":
-		send(bot, chatID, "Исмингизни киритинг")
+		send(bot, chatID, "👤 Исмингизни киритинг:")
 		return
 	case "last_name":
-		send(bot, chatID, "Фамилиянгизни киритинг")
+		send(bot, chatID, "👤 Фамилиянгизни киритинг:")
 		return
 	case "car_type":
 		text := "Машина турини танланг ёки «Бошқа» босинг ва ёзинг."
@@ -939,7 +950,7 @@ func sendApplicationPrompt(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64, drive
 		}
 		return
 	case "car_type_manual":
-		send(bot, chatID, "Машина моделини ёзинг.")
+		send(bot, chatID, "🚗 Машина моделини ёзинг (масалан: Cobalt):")
 		return
 	case "color":
 		text := "Машина рангини танланг ёки «Бошқа» босинг ва ёзинг."
@@ -951,7 +962,7 @@ func sendApplicationPrompt(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64, drive
 		}
 		return
 	case "color_manual":
-		send(bot, chatID, "Машина рангини ёзинг.")
+		send(bot, chatID, "🎨 Машина рангини ёзинг (масалан: оқ):")
 		return
 	case "plate":
 		text := "🚘 Давлат рақамингизни тўлиқ киритинг\n\nМасалан: 20N306ZB"
@@ -967,7 +978,7 @@ func sendApplicationPrompt(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64, drive
 		return
 	default:
 		_, _ = db.ExecContext(context.Background(), `UPDATE drivers SET application_step = ?1 WHERE user_id = ?2`, step, driverUserID)
-		send(bot, chatID, "Телефон рақамингизни юборинг.")
+		send(bot, chatID, "📞 Телефон рақамингизни юборинг (+998XXXXXXXXX):")
 	}
 }
 
@@ -1150,17 +1161,27 @@ func handleApplicationText(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID 
 
 	switch step {
 	case "phone":
-		// One driver per phone number (prevent multiple accounts for fake referrals).
-		var otherUserID int64
-		err := db.QueryRowContext(ctx, `SELECT user_id FROM drivers WHERE phone = ?1 AND user_id != ?2 LIMIT 1`, text, userID).Scan(&otherUserID)
-		if err == nil {
-			send(bot, chatID, "Бу телефон рақами аллақачон рўйхатдан ўтган. Бошқа рақамдан фойдаланинг.")
+		// Normalise and validate before storing. The unique index on drivers.phone
+		// exists to stop one person opening many accounts to farm referral promo,
+		// but this step accepted arbitrary free text — so "1", "a" and "x2" were all
+		// distinct, valid phone numbers as far as the constraint was concerned, and
+		// the guard cost nothing to bypass. Only a real Uzbek mobile is accepted now.
+		phone, ok := normalizeUzbekDriverPhone(text)
+		if !ok {
+			send(bot, chatID, "❌ Телефон рақами нотўғри.\n\nИлтимос, +998XXXXXXXXX кўринишида киритинг (масалан: +998901234567).")
 			return true
 		}
-		_, err = db.ExecContext(ctx, `UPDATE drivers SET phone = ?1, application_step = 'first_name' WHERE user_id = ?2`, text, userID)
+		// One driver per phone number (prevent multiple accounts for fake referrals).
+		var otherUserID int64
+		err := db.QueryRowContext(ctx, `SELECT user_id FROM drivers WHERE phone = ?1 AND user_id != ?2 LIMIT 1`, phone, userID).Scan(&otherUserID)
+		if err == nil {
+			send(bot, chatID, "❌ Бу телефон рақами аллақачон рўйхатдан ўтган.\n\nИлтимос, бошқа рақам киритинг.")
+			return true
+		}
+		_, err = db.ExecContext(ctx, `UPDATE drivers SET phone = ?1, application_step = 'first_name' WHERE user_id = ?2`, phone, userID)
 		if err != nil {
 			log.Printf("driver: save phone: %v", err)
-			_, _ = db.ExecContext(ctx, `UPDATE drivers SET phone = ?1 WHERE user_id = ?2`, text, userID)
+			_, _ = db.ExecContext(ctx, `UPDATE drivers SET phone = ?1 WHERE user_id = ?2`, phone, userID)
 		}
 		sendApplicationPrompt(bot, db, chatID, userID, "first_name")
 	case "first_name":
@@ -1180,7 +1201,7 @@ func handleApplicationText(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID 
 	case "car_type":
 		if text == carTypeBoshqa {
 			_, _ = db.ExecContext(ctx, `UPDATE drivers SET application_step = ?1 WHERE user_id = ?2`, "car_type_manual", userID)
-			send(bot, chatID, "Машина моделини ёзинг.")
+			send(bot, chatID, "🚗 Машина моделини ёзинг (масалан: Cobalt):")
 		} else {
 			_, err = db.ExecContext(ctx, `UPDATE drivers SET car_type = ?1, application_step = 'color' WHERE user_id = ?2`, text, userID)
 			if err != nil {
@@ -1197,7 +1218,7 @@ func handleApplicationText(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID 
 	case "color":
 		if text == carTypeBoshqa {
 			_, _ = db.ExecContext(ctx, `UPDATE drivers SET application_step = ?1 WHERE user_id = ?2`, "color_manual", userID)
-			send(bot, chatID, "Машина рангини ёзинг.")
+			send(bot, chatID, "🎨 Машина рангини ёзинг (масалан: оқ):")
 		} else {
 			_, err = db.ExecContext(ctx, `UPDATE drivers SET color = ?1, application_step = 'plate' WHERE user_id = ?2`, text, userID)
 			if err != nil {
@@ -1279,7 +1300,7 @@ func handleReferral(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) 
 	var userID int64
 	var referralCode sql.NullString
 	if err := db.QueryRowContext(ctx, `SELECT u.id, u.referral_code FROM users u WHERE u.telegram_id = ?1`, telegramID).Scan(&userID, &referralCode); err != nil || userID == 0 {
-		send(bot, chatID, "Аввал /start босинг.")
+		send(bot, chatID, "👋 Бошлаш учун /start буйруғини босинг.")
 		return
 	}
 	code := referralCode.String
@@ -1288,12 +1309,12 @@ func handleReferral(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) 
 		code, err = utils.GenerateReferralCode(ctx, db)
 		if err != nil {
 			log.Printf("driver: generate referral code for /referral: %v", err)
-			send(bot, chatID, "Хатолик. Қайта уриниб кўринг.")
+			send(bot, chatID, "❌ Реферал ҳаволани яратиб бўлмади.\n\nИлтимос, қайта уриниб кўринг.")
 			return
 		}
 		if _, err := db.ExecContext(ctx, `UPDATE users SET referral_code = ?1 WHERE id = ?2`, code, userID); err != nil {
 			log.Printf("driver: save referral code: %v", err)
-			send(bot, chatID, "Хатолик. Қайта уриниб кўринг.")
+			send(bot, chatID, "❌ Реферал ҳаволани сақлаб бўлмади.\n\nИлтимос, қайта уриниб кўринг.")
 			return
 		}
 	}
@@ -1317,7 +1338,7 @@ func handleBonuslar(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) 
 	var userID int64
 	var referralCode sql.NullString
 	if err := db.QueryRowContext(ctx, `SELECT u.id, u.referral_code FROM users u WHERE u.telegram_id = ?1`, telegramID).Scan(&userID, &referralCode); err != nil || userID == 0 {
-		send(bot, chatID, "Аввал /start босинг.")
+		send(bot, chatID, "👋 Бошлаш учун /start буйруғини босинг.")
 		return
 	}
 	code := referralCode.String
@@ -1326,12 +1347,12 @@ func handleBonuslar(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) 
 		code, err = utils.GenerateReferralCode(ctx, db)
 		if err != nil {
 			log.Printf("driver: generate referral code for /bonuslar: %v", err)
-			send(bot, chatID, "Хатолик. Қайта уриниб кўринг.")
+			send(bot, chatID, "❌ Реферал ҳаволани яратиб бўлмади.\n\nИлтимос, қайта уриниб кўринг.")
 			return
 		}
 		if _, err := db.ExecContext(ctx, `UPDATE users SET referral_code = ?1 WHERE id = ?2`, code, userID); err != nil {
 			log.Printf("driver: save referral code: %v", err)
-			send(bot, chatID, "Хатолик. Қайта уриниб кўринг.")
+			send(bot, chatID, "❌ Реферал ҳаволани сақлаб бўлмади.\n\nИлтимос, қайта уриниб кўринг.")
 			return
 		}
 	}
@@ -1343,7 +1364,7 @@ func handleBonuslar(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int64) 
 	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE referred_by = ?1 AND COALESCE(referral_stage2_reward_paid, 0) = 1`, code).Scan(&stage2Count)
 	// stage2_count = referred drivers for whom inviter referral reward was granted (3 finished trips).
 	totalEarnings := stage2Count * accounting.ReferralRewardPromoSoM
-	text := fmt.Sprintf("📊 Referral статистикаси\n\nТаклиф қилган ҳайдовчилар: %d\nПромо referral жами: %d сўм", referredCount, totalEarnings)
+	text := fmt.Sprintf("📊 Referral статистикаси\n\nТаклиф қилган ҳайдовчилар: %d\nПромо referral жами: %s сўм", referredCount, utils.FormatSoM(totalEarnings))
 	text += "\n\n🔗 Таклиф ҳаволаси: /referral"
 	kb := getDriverKeyboard(db, userID)
 	m := tgbotapi.NewMessage(chatID, text)
@@ -1366,7 +1387,7 @@ func handleLeaderboard(bot *tgbotapi.BotAPI, db *sql.DB, chatID, telegramID int6
 		LIMIT 10`)
 	if err != nil {
 		log.Printf("driver: leaderboard query: %v", err)
-		send(bot, chatID, "Хатолик. Қайта уриниб кўринг.")
+		send(bot, chatID, "❌ Рейтингни юклаб бўлмади.\n\nИлтимос, бироздан сўнг қайта уриниб кўринг.")
 		return
 	}
 	defer rows.Close()
@@ -1405,7 +1426,7 @@ func handleStatus(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, chatID, 
 	ctx := context.Background()
 	var userID int64
 	if err := db.QueryRowContext(ctx, `SELECT id FROM users WHERE telegram_id = ?1`, telegramID).Scan(&userID); err != nil || userID == 0 {
-		send(bot, chatID, "Аввал /start босинг.")
+		send(bot, chatID, "👋 Бошлаш учун /start буйруғини босинг.")
 		return
 	}
 	sendOrUpdatePinnedStatus(bot, db, cfg, chatID, userID)
@@ -1533,6 +1554,11 @@ func handleLiveLocationUpdate(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Conf
 	}
 
 	// No active trip: sharing live location means eligible drivers go online (balance + legal).
+	if !isDriverBalanceSufficient(ctx, db, userID, cfg) {
+		// Tell the driver why they are sharing location but receiving nothing.
+		// Rate-limited by the same cooldown as the other live-location reminders.
+		notifyInsufficientBalanceOnce(bot, db, chatID, userID)
+	}
 	if isDriverBalanceSufficient(ctx, db, userID, cfg) && driverHasAcceptedAgreement(ctx, db, userID) {
 		onlineNowStr := updateTime.UTC().Format("2006-01-02 15:04:05")
 		if stale {
@@ -1600,6 +1626,12 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 	telegramID := q.From.ID
 	data := q.Data
 
+	// Trip lifecycle controls (arrived / start / finish / cancel) live in the bot
+	// so the ride can be completed without the Mini App.
+	if handleTripControlCallback(bot, db, tripService, q, chatID, telegramID, data) {
+		return
+	}
+
 	if data == cbDriverAcceptTerms {
 		ctx := context.Background()
 		var userID int64
@@ -1611,7 +1643,7 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 		if err := lSvc.AcceptActiveForTypes(ctx, userID, []string{legal.DocDriverTerms, legal.DocPrivacyPolicyDriver}, "", "telegram-bot"); err != nil {
 			log.Printf("driver: legal accept user_id=%d: %v", userID, err)
 			_, _ = bot.Request(tgbotapi.NewCallback(q.ID, ""))
-			send(bot, chatID, "Хатолик. Кейинроқ уриниб кўринг.")
+			send(bot, chatID, "❌ Шартномани қабул қилишда хатолик.\n\nИлтимос, бироздан сўнг қайта уриниб кўринг.")
 			return
 		}
 		if err := legal.SyncDriverLegalPromptFingerprint(ctx, db, userID); err != nil {
@@ -1770,7 +1802,7 @@ func handleAccept(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, assignme
 	var userID int64
 	err := db.QueryRowContext(ctx, `SELECT id FROM users WHERE telegram_id = ?1`, telegramID).Scan(&userID)
 	if err != nil || userID == 0 {
-		send(bot, chatID, "Хатолик.")
+		send(bot, chatID, "❌ Профилингиз топилмади.\n\n/start ни босиб қайтадан бошланг.")
 		return
 	}
 	if !legal.NewService(db).DriverHasActiveLegal(ctx, userID) {
@@ -1785,17 +1817,17 @@ func handleAccept(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, assignme
 		return
 	}
 	if assignmentService == nil {
-		send(bot, chatID, "Хатолик.")
+		send(bot, chatID, "⚠️ Буюртма хизмати ҳозирча мавжуд эмас.\n\nИлтимос, бироздан сўнг қайта уриниб кўринг.")
 		return
 	}
 	assigned, tripID, err := assignmentService.TryAssign(ctx, requestID, userID)
 	if err != nil {
 		log.Printf("driver: TryAssign: %v", err)
-		send(bot, chatID, "Хатолик.")
+		send(bot, chatID, "❌ Буюртмани қабул қилишда хатолик.\n\nИлтимос, қайта уриниб кўринг.")
 		return
 	}
 	if !assigned {
-		send(bot, chatID, "Сўров аллақачон бошқаға берилган ёки бекор қилинган.")
+		send(bot, chatID, "ℹ️ Бу буюртмани қабул қилиб бўлмади.\n\nУ бошқа ҳайдовчига берилган, бекор қилинган ёки сизда ҳозир фаол сафар бор.")
 		return
 	}
 	if tripService != nil {
@@ -1806,6 +1838,9 @@ func handleAccept(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, assignme
 		return
 	}
 	sendWithOpenTripMapButton(bot, chatID, cfg, tripID, userID)
+	// The map button is a convenience; these controls are what actually let the
+	// driver complete the trip if the Mini App is unavailable.
+	sendTripControls(bot, chatID, tripID, domain.TripStatusWaiting)
 }
 
 // webAppKeyboard is used to send an inline button that opens the Telegram Mini App (web_app).
@@ -1833,12 +1868,12 @@ func sendWithOpenTripMapButton(bot *tgbotapi.BotAPI, chatID int64, cfg *config.C
 			{Text: "🗺️ Сафар харитасини очиш", WebApp: &webAppInfo{URL: webAppURL}},
 		}},
 	}
-	m := tgbotapi.NewMessage(chatID, "Қабул қилдингиз ✅ Харита очиш учун тугмани босинг.")
+	m := tgbotapi.NewMessage(chatID, "✅ Буюртма қабул қилинди!\n\nХаритани очиш учун тугмани босинг.")
 	m.ReplyMarkup = kb
 	if _, err := bot.Send(m); err != nil {
 		log.Printf("driver: send Open Trip Map button: %v", err)
 		// Fallback: send plain text with link
-		send(bot, chatID, "Қабул қилдингиз ✅ Харитани очиш: "+webAppURL)
+		send(bot, chatID, "✅ Буюртма қабул қилинди!\n\n🗺 Харитани очиш: "+webAppURL)
 	}
 }
 
@@ -1848,3 +1883,218 @@ func send(bot *tgbotapi.BotAPI, chatID int64, text string) {
 		log.Printf("driver: send to %d: %v", chatID, err)
 	}
 }
+
+// normalizeUzbekDriverPhone returns the E.164 form of an Uzbek mobile number.
+//
+// Accepts +998XXXXXXXXX, 998XXXXXXXXX and the 9-digit local form, ignoring
+// spaces, dashes and parentheses. Anything else is rejected: this is the only
+// thing making the drivers.phone unique index a real identity constraint rather
+// than a uniqueness check over arbitrary strings.
+func normalizeUzbekDriverPhone(s string) (string, bool) {
+	var digits strings.Builder
+	for _, r := range strings.TrimSpace(s) {
+		if r >= '0' && r <= '9' {
+			digits.WriteRune(r)
+		}
+	}
+	d := digits.String()
+	switch {
+	case len(d) == 9:
+		d = "998" + d
+	case len(d) == 12 && strings.HasPrefix(d, "998"):
+		// already full national form
+	default:
+		return "", false
+	}
+	// Uzbek mobile operator codes are 2 digits following the 998 country code.
+	if d[3] < '3' || d[3] > '9' {
+		return "", false
+	}
+	return "+" + d, true
+}
+
+// tripControlKeyboard returns the inline controls for the driver's current trip
+// stage, so the whole lifecycle is reachable from the bot without the Mini App.
+func tripControlKeyboard(tripID, status string) tgbotapi.InlineKeyboardMarkup {
+	var row []tgbotapi.InlineKeyboardButton
+	switch status {
+	case domain.TripStatusWaiting:
+		row = append(row,
+			tgbotapi.NewInlineKeyboardButtonData("📍 Етиб келдим", cbTripArrived+tripID),
+			tgbotapi.NewInlineKeyboardButtonData("▶️ Сафарни бошлаш", cbTripStart+tripID))
+	case domain.TripStatusArrived:
+		row = append(row, tgbotapi.NewInlineKeyboardButtonData("▶️ Сафарни бошлаш", cbTripStart+tripID))
+	case domain.TripStatusStarted:
+		row = append(row, tgbotapi.NewInlineKeyboardButtonData("🏁 Сафарни тугатиш", cbTripFinish+tripID))
+	}
+	rows := [][]tgbotapi.InlineKeyboardButton{}
+	if len(row) > 0 {
+		rows = append(rows, row)
+	}
+	if status != domain.TripStatusStarted {
+		// Cancelling mid-ride is not offered: the rider is already in the car.
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("❌ Бекор қилиш", cbTripCancel+tripID)))
+	}
+	return tgbotapi.NewInlineKeyboardMarkup(rows...)
+}
+
+func tripStageText(status string) string {
+	switch status {
+	case domain.TripStatusWaiting:
+		return "🚕 Буюртма қабул қилинди.\n\nМижоз олдига боринг ва етиб борганингизда «Етиб келдим» тугмасини босинг."
+	case domain.TripStatusArrived:
+		return "📍 Мижоз огоҳлантирилди.\n\nМижоз чиққач «Сафарни бошлаш» тугмасини босинг."
+	case domain.TripStatusStarted:
+		return "▶️ Сафар бошланди.\n\nМанзилга етганда «Сафарни тугатиш» тугмасини босинг."
+	}
+	return "🚕 Сафар ҳолати янгиланди."
+}
+
+// sendTripControls sends the stage text plus the matching inline controls.
+func sendTripControls(bot *tgbotapi.BotAPI, chatID int64, tripID, status string) {
+	m := tgbotapi.NewMessage(chatID, tripStageText(status))
+	m.ReplyMarkup = tripControlKeyboard(tripID, status)
+	if _, err := bot.Send(m); err != nil {
+		log.Printf("driver: send trip controls trip=%s status=%s: %v", tripID, status, err)
+	}
+}
+
+// handleTripControlCallback runs a trip lifecycle action pressed in the bot.
+// Returns true when data was one of the trip control callbacks.
+func handleTripControlCallback(bot *tgbotapi.BotAPI, db *sql.DB, tripService *services.TripService, q *tgbotapi.CallbackQuery, chatID, telegramID int64, data string) bool {
+	var action, tripID string
+	switch {
+	case strings.HasPrefix(data, cbTripArrived):
+		action, tripID = "arrived", strings.TrimPrefix(data, cbTripArrived)
+	case strings.HasPrefix(data, cbTripStart):
+		action, tripID = "start", strings.TrimPrefix(data, cbTripStart)
+	case strings.HasPrefix(data, cbTripFinish):
+		action, tripID = "finish", strings.TrimPrefix(data, cbTripFinish)
+	case strings.HasPrefix(data, cbTripCancel):
+		action, tripID = "cancel", strings.TrimPrefix(data, cbTripCancel)
+	default:
+		return false
+	}
+	_, _ = bot.Request(tgbotapi.NewCallback(q.ID, ""))
+
+	if tripService == nil || strings.TrimSpace(tripID) == "" {
+		send(bot, chatID, "❌ Амални бажариб бўлмади. Илтимос, кейинроқ уриниб кўринг.")
+		return true
+	}
+	ctx := context.Background()
+	var userID int64
+	if err := db.QueryRowContext(ctx, `SELECT id FROM users WHERE telegram_id = ?1`, telegramID).Scan(&userID); err != nil || userID == 0 {
+		send(bot, chatID, "❌ Профилингиз топилмади.\n\n/start ни босиб қайтадан бошланг.")
+		return true
+	}
+
+	var result *services.TripActionResult
+	var err error
+	switch action {
+	case "arrived":
+		result, err = tripService.MarkArrived(ctx, tripID, userID)
+	case "start":
+		result, err = tripService.StartTrip(ctx, tripID, userID)
+	case "finish":
+		result, err = tripService.FinishTrip(ctx, tripID, userID)
+	case "cancel":
+		result, err = tripService.CancelByDriver(ctx, tripID, userID)
+	}
+	if err != nil {
+		send(bot, chatID, tripActionErrorText(err))
+		return true
+	}
+	if result == nil {
+		send(bot, chatID, "❌ Амални бажариб бўлмади. Илтимос, қайта уриниб кўринг.")
+		return true
+	}
+	switch action {
+	case "cancel":
+		send(bot, chatID, "❌ Сафар бекор қилинди.\n\nЭслатма: буюртмани қабул қилиб, кейин тез-тез бекор қилиш вақтинча буюртма олмасликка олиб келади.")
+	case "finish":
+		// FinishTrip already sends the fare summary to the driver.
+	default:
+		sendTripControls(bot, chatID, tripID, result.Status)
+	}
+	return true
+}
+
+// tripActionErrorText maps domain errors to guidance the driver can act on.
+func tripActionErrorText(err error) string {
+	switch {
+	case errors.Is(err, domain.ErrLiveLocationInactive):
+		return "⚠️ Жонли локация ёқилмаган.\n\nИлтимос, 📎 → Location → «Share Live Location» орқали уланг ва қайта уриниб кўринг."
+	case errors.Is(err, domain.ErrDriverLocationStale):
+		return "⚠️ Локациянгиз эскирган.\n\nЖонли локация уланганини текшириб, қайта уриниб кўринг."
+	case errors.Is(err, domain.ErrTooFarFromPickup):
+		return "⚠️ Сиз мижоз манзилидан узоқдасиз.\n\nЕтиб борганингизда қайта уриниб кўринг."
+	case errors.Is(err, domain.ErrInvalidTransition):
+		return "ℹ️ Бу амал ҳозирги сафар ҳолатига мос эмас."
+	case errors.Is(err, domain.ErrTripNotFound):
+		return "❌ Сафар топилмади."
+	}
+	return "❌ Амални бажариб бўлмади. Илтимос, қайта уриниб кўринг."
+}
+
+// balanceTopUpHint tells the driver how to actually get back online.
+//
+// The balance warnings previously ended at "top up your balance" with no method:
+// there is no payment gateway and no self-service top-up, so the only route is a
+// human. SUPPORT_CONTACT should be set to whatever that route is (a Telegram
+// username or a phone number); without it the driver at least learns that
+// support is who to ask, rather than being left to guess.
+var balanceTopUpHint = buildBalanceTopUpHint()
+
+// Live location is on but the driver cannot receive orders (low balance).
+var offlineButLiveReminderMessage = "📡 Жонли локация ёқилган.\n\n⚠️ Лекин балансингиз етарли эмас, шунинг учун буюртмалар келмайди." + balanceTopUpHint
+
+// insufficientBalanceMessage is sent when a driver's wallet runs out, which is
+// the moment dispatch silently stops sending them orders. Previously this string
+// existed but was never sent anywhere: the driver's orders simply stopped with no
+// explanation, typically at the end of a long run of completed trips — the worst
+// possible churn moment.
+var insufficientBalanceMessage = "⚠️ Балансингиз тугади.\n\nШу сабабли янги буюртмалар келмайди." + balanceTopUpHint
+
+func buildBalanceTopUpHint() string {
+	contact := strings.TrimSpace(os.Getenv("SUPPORT_CONTACT"))
+	if contact == "" {
+		return "\n\n💳 Балансни тўлдириш учун администратор билан боғланинг."
+	}
+	return "\n\n💳 Балансни тўлдириш учун боғланинг: " + contact
+}
+
+// notifyInsufficientBalanceOnce sends the out-of-balance explanation, rate
+// limited per driver so a continuous live-location stream cannot spam them.
+func notifyInsufficientBalanceOnce(bot *tgbotapi.BotAPI, db *sql.DB, chatID, driverUserID int64) {
+	if bot == nil || db == nil {
+		return
+	}
+	insufficientBalanceNotifyMu.Lock()
+	last, seen := insufficientBalanceNotifiedAt[driverUserID]
+	now := time.Now()
+	if seen && now.Sub(last) < insufficientBalanceNotifyCooldown {
+		insufficientBalanceNotifyMu.Unlock()
+		return
+	}
+	if insufficientBalanceNotifiedAt == nil {
+		insufficientBalanceNotifiedAt = make(map[int64]time.Time)
+	}
+	insufficientBalanceNotifiedAt[driverUserID] = now
+	// Bounded: drop entries older than a day so this cannot grow forever.
+	for id, t := range insufficientBalanceNotifiedAt {
+		if now.Sub(t) > 24*time.Hour {
+			delete(insufficientBalanceNotifiedAt, id)
+		}
+	}
+	insufficientBalanceNotifyMu.Unlock()
+
+	send(bot, chatID, insufficientBalanceMessage)
+}
+
+const insufficientBalanceNotifyCooldown = 2 * time.Hour
+
+var (
+	insufficientBalanceNotifyMu   sync.Mutex
+	insufficientBalanceNotifiedAt = map[int64]time.Time{}
+)

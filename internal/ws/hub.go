@@ -24,8 +24,15 @@ type Event struct {
 	Type       string      `json:"type"`
 	TripID     string      `json:"trip_id,omitempty"`
 	TripStatus string      `json:"trip_status,omitempty"`
-	EmittedAt string      `json:"emitted_at,omitempty"` // RFC3339
+	EmittedAt  string      `json:"emitted_at,omitempty"` // RFC3339
 	Payload    interface{} `json:"payload,omitempty"`
+	// Seq is a per-trip monotonic sequence number.
+	//
+	// Delivery is best effort in both directions: the hub queue and each client
+	// buffer drop on overflow, so a terminal event like trip_finished can vanish
+	// with neither side knowing. A client that sees seq jump can tell it missed
+	// something and refetch GET /trip/:id instead of sitting on a stale state.
+	Seq int64 `json:"seq,omitempty"`
 }
 
 // client is a WebSocket connection subscribed to one or more trip IDs. userID is set when using auth (for disconnect logging).
@@ -40,12 +47,15 @@ type client struct {
 
 // Hub holds registered clients and broadcasts events by trip_id.
 type Hub struct {
-	mu             sync.RWMutex
-	tripToClients  map[string]map[*client]struct{}
-	clients        map[*client]struct{}
-	register       chan *client
-	unregister     chan *client
-	broadcast      chan broadcastReq
+	mu            sync.RWMutex
+	tripToClients map[string]map[*client]struct{}
+	clients       map[*client]struct{}
+	register      chan *client
+	unregister    chan *client
+	broadcast     chan broadcastReq
+
+	seqMu sync.Mutex
+	seq   map[string]int64 // trip_id -> last sequence number
 }
 
 type broadcastReq struct {
@@ -58,6 +68,7 @@ func NewHub() *Hub {
 	return &Hub{
 		tripToClients: make(map[string]map[*client]struct{}),
 		clients:       make(map[*client]struct{}),
+		seq:           make(map[string]int64),
 		register:      make(chan *client),
 		unregister:    make(chan *client),
 		broadcast:     make(chan broadcastReq, 64),
@@ -65,53 +76,67 @@ func NewHub() *Hub {
 }
 
 // Run runs the hub loop (blocking). Run in a goroutine.
+//
+// Each case delegates to a method that unlocks with defer. This loop is run
+// under supervision, so a panic while the lock is held must not leave it held —
+// the restarted loop would deadlock on its first Lock and every WebSocket
+// registration would block forever.
 func (h *Hub) Run() {
 	for {
 		select {
 		case c := <-h.register:
-			h.mu.Lock()
-			h.clients[c] = struct{}{}
-			for tripID := range c.tripIDs {
-				if h.tripToClients[tripID] == nil {
-					h.tripToClients[tripID] = make(map[*client]struct{})
-				}
-				h.tripToClients[tripID][c] = struct{}{}
-			}
-			h.mu.Unlock()
-
+			h.addClient(c)
 		case c := <-h.unregister:
-			h.mu.Lock()
-			if _, ok := h.clients[c]; ok {
-				delete(h.clients, c)
-				for tripID := range c.tripIDs {
-					delete(h.tripToClients[tripID], c)
-					if len(h.tripToClients[tripID]) == 0 {
-						delete(h.tripToClients, tripID)
-					}
-				}
-				close(c.send)
-			}
-			h.mu.Unlock()
-
+			h.removeClient(c)
 		case req := <-h.broadcast:
-			h.mu.RLock()
-			clients := h.tripToClients[req.tripID]
-			if clients == nil {
-				h.mu.RUnlock()
-				continue
-			}
-			msg, err := json.Marshal(req.event)
-			if err != nil {
-				h.mu.RUnlock()
-				continue
-			}
-			for c := range clients {
-				select {
-				case c.send <- msg:
-				default:
-				}
-			}
-			h.mu.RUnlock()
+			h.fanOut(req)
+		}
+	}
+}
+
+func (h *Hub) addClient(c *client) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.clients[c] = struct{}{}
+	for tripID := range c.tripIDs {
+		if h.tripToClients[tripID] == nil {
+			h.tripToClients[tripID] = make(map[*client]struct{})
+		}
+		h.tripToClients[tripID][c] = struct{}{}
+	}
+}
+
+func (h *Hub) removeClient(c *client) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, ok := h.clients[c]; !ok {
+		return
+	}
+	delete(h.clients, c)
+	for tripID := range c.tripIDs {
+		delete(h.tripToClients[tripID], c)
+		if len(h.tripToClients[tripID]) == 0 {
+			delete(h.tripToClients, tripID)
+		}
+	}
+	close(c.send)
+}
+
+func (h *Hub) fanOut(req broadcastReq) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	clients := h.tripToClients[req.tripID]
+	if clients == nil {
+		return
+	}
+	msg, err := json.Marshal(req.event)
+	if err != nil {
+		return
+	}
+	for c := range clients {
+		select {
+		case c.send <- msg:
+		default:
 		}
 	}
 }
@@ -125,6 +150,7 @@ func (h *Hub) BroadcastToTrip(tripID string, event Event) {
 	if event.EmittedAt == "" {
 		event.EmittedAt = time.Now().UTC().Format(time.RFC3339)
 	}
+	event.Seq = h.nextSeq(tripID)
 	select {
 	case h.broadcast <- broadcastReq{tripID: tripID, event: event}:
 	default:
@@ -160,4 +186,31 @@ func ConfigureCheckOrigin(allowedOrigins []string) {
 		_, ok := allow[origin]
 		return ok
 	}
+}
+
+// nextSeq returns the next per-trip sequence number.
+func (h *Hub) nextSeq(tripID string) int64 {
+	h.seqMu.Lock()
+	defer h.seqMu.Unlock()
+	if h.seq == nil {
+		h.seq = make(map[string]int64)
+	}
+	h.seq[tripID]++
+	return h.seq[tripID]
+}
+
+// ForgetTrip drops the sequence counter for a finished trip so the map does not
+// grow for the life of the process.
+func (h *Hub) ForgetTrip(tripID string) {
+	h.seqMu.Lock()
+	defer h.seqMu.Unlock()
+	delete(h.seq, tripID)
+}
+
+// lastSeq reports the current sequence number for a trip (0 if unknown).
+// Exposed for tests and diagnostics.
+func (h *Hub) lastSeq(tripID string) int64 {
+	h.seqMu.Lock()
+	defer h.seqMu.Unlock()
+	return h.seq[tripID]
 }

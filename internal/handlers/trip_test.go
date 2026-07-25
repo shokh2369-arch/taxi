@@ -7,12 +7,12 @@ import (
 
 func TestTripFareForResponse(t *testing.T) {
 	tests := []struct {
-		name          string
-		status        string
-		computedFare  int64 // fare from tiered/legacy for non-FINISHED
-		fareAmount    sql.NullInt64
-		wantFare      int64
-		wantPtr       bool // true if fareAmount pointer should be non-nil
+		name         string
+		status       string
+		computedFare int64 // fare from tiered/legacy for non-FINISHED
+		fareAmount   sql.NullInt64
+		wantFare     int64
+		wantPtr      bool // true if fareAmount pointer should be non-nil
 	}{
 		{
 			name:         "STARTED zero distance returns base fare, no stored amount",

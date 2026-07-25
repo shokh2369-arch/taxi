@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -62,16 +63,33 @@ func setupRiderAuthHandlerDB(t *testing.T, name string) *sql.DB {
 	return db
 }
 
-func newRiderAuthHandlerEngine(t *testing.T, db *sql.DB) (*gin.Engine, *services.RiderAuthService) {
+// newRiderAuthHandlerEngine builds the rider auth routes. With no cfg argument
+// it uses production defaults, which include the per-phone throttles; pass a cfg
+// to opt out where a test legitimately needs several codes in a row.
+func newRiderAuthHandlerEngine(t *testing.T, db *sql.DB, cfg ...services.RiderAuthConfig) (*gin.Engine, *services.RiderAuthService) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	codes := repositories.NewRiderLoginCodesRepo(db)
 	sessions := repositories.NewRiderAuthSessionsRepo(db)
 	tokens := services.NewRiderAuthTokenService(sessions, "test-rider-bot-token")
-	svc := services.NewRiderAuthService(db, codes, tokens, fakeRiderBotHandler{}, services.RiderAuthConfig{})
+	authCfg := services.RiderAuthConfig{}
+	if len(cfg) > 0 {
+		authCfg = cfg[0]
+	}
+	svc := services.NewRiderAuthService(db, codes, tokens, fakeRiderBotHandler{}, authCfg)
 	r := gin.New()
 	RegisterRiderAuthRoutes(r, RiderAuthDeps{Service: svc})
 	return r, svc
+}
+
+// riderAuthNoThrottle opts out of the per-phone limits for tests that need to
+// request more than one code for the same phone.
+func riderAuthNoThrottle() services.RiderAuthConfig {
+	return services.RiderAuthConfig{
+		PerPhoneCooldown:     services.RiderAuthThrottleOff,
+		PerPhoneHourlyMax:    services.RiderAuthThrottleOff,
+		PerPhoneHourlyWindow: services.RiderAuthThrottleOff,
+	}
 }
 
 func postJSON(r http.Handler, path string, body any, headers map[string]string) *httptest.ResponseRecorder {
@@ -147,13 +165,13 @@ func TestRiderAuth_RequestCode_TelegramNotLinked_409(t *testing.T) {
 	}
 }
 
-func TestRiderAuth_RequestCode_NoRateLimit_AllowsImmediateResend(t *testing.T) {
+func TestRiderAuth_RequestCode_ThrottleDisabled_AllowsImmediateResend(t *testing.T) {
 	db := setupRiderAuthHandlerDB(t, "rider_auth_h_rl")
 	defer db.Close()
 	if _, err := db.Exec(`INSERT INTO users (id, role, telegram_id, phone) VALUES (1, 'rider', 555, '+998901234567')`); err != nil {
 		t.Fatal(err)
 	}
-	r, _ := newRiderAuthHandlerEngine(t, db)
+	r, _ := newRiderAuthHandlerEngine(t, db, riderAuthNoThrottle())
 
 	if rr := postJSON(r, "/v1/rider/auth/request-code", map[string]string{"phone": "+998901234567"}, nil); rr.Code != http.StatusOK {
 		t.Fatalf("first status=%d body=%s", rr.Code, rr.Body.String())
@@ -164,6 +182,30 @@ func TestRiderAuth_RequestCode_NoRateLimit_AllowsImmediateResend(t *testing.T) {
 	}
 }
 
+// Regression guard: an unthrottled request-code lets an attacker who knows a
+// phone number pull fresh codes in a loop until they guess one, so the default
+// wiring (an empty RiderAuthConfig, as used in cmd/app) must rate limit.
+func TestRiderAuth_RequestCode_ThrottledByDefault(t *testing.T) {
+	db := setupRiderAuthHandlerDB(t, "rider_auth_h_rl_default")
+	defer db.Close()
+	if _, err := db.Exec(`INSERT INTO users (id, role, telegram_id, phone) VALUES (1, 'rider', 555, '+998901234567')`); err != nil {
+		t.Fatal(err)
+	}
+	r, _ := newRiderAuthHandlerEngine(t, db)
+
+	if rr := postJSON(r, "/v1/rider/auth/request-code", map[string]string{"phone": "+998901234567"}, nil); rr.Code != http.StatusOK {
+		t.Fatalf("first status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	rr := postJSON(r, "/v1/rider/auth/request-code", map[string]string{"phone": "+998901234567"}, nil)
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("second request should be throttled, got status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	code, _ := decodeErrEnvelope(t, rr)
+	if code != "code_recently_sent" {
+		t.Fatalf("code=%q body=%s", code, rr.Body.String())
+	}
+}
+
 func TestRiderAuth_VerifyCode_HappyPathReturnsTokens(t *testing.T) {
 	db := setupRiderAuthHandlerDB(t, "rider_auth_h_verify")
 	defer db.Close()
@@ -171,14 +213,14 @@ func TestRiderAuth_VerifyCode_HappyPathReturnsTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 	r, svc := newRiderAuthHandlerEngine(t, db)
-	svc.SetCodeGeneratorForTest(func() (string, error) { return "9988", nil })
+	svc.SetCodeGeneratorForTest(func() (string, error) { return "998877", nil })
 
 	if rr := postJSON(r, "/v1/rider/auth/request-code", map[string]string{"phone": "+998901234567"}, nil); rr.Code != http.StatusOK {
 		t.Fatalf("request-code status=%d", rr.Code)
 	}
 
 	rr := postJSON(r, "/v1/rider/auth/verify-code",
-		map[string]string{"phone": "+998901234567", "code": "9988"}, nil)
+		map[string]string{"phone": "+998901234567", "code": "998877"}, nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("verify-code status=%d body=%s", rr.Code, rr.Body.String())
 	}
@@ -213,13 +255,13 @@ func TestRiderAuth_RefreshAndLogoutFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	r, svc := newRiderAuthHandlerEngine(t, db)
-	svc.SetCodeGeneratorForTest(func() (string, error) { return "5544", nil })
+	svc.SetCodeGeneratorForTest(func() (string, error) { return "554433", nil })
 
 	if rr := postJSON(r, "/v1/rider/auth/request-code", map[string]string{"phone": "+998901234567"}, nil); rr.Code != http.StatusOK {
 		t.Fatalf("request-code status=%d", rr.Code)
 	}
 	rr := postJSON(r, "/v1/rider/auth/verify-code",
-		map[string]string{"phone": "+998901234567", "code": "5544"}, nil)
+		map[string]string{"phone": "+998901234567", "code": "554433"}, nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("verify-code status=%d body=%s", rr.Code, rr.Body.String())
 	}
@@ -258,5 +300,66 @@ func TestRiderAuth_RefreshAndLogoutFlow(t *testing.T) {
 		map[string]string{"refresh_token": rotated["refresh_token"]}, nil)
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("post-logout refresh status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+// The client drives its resend countdown from the Retry-After header, so the
+// header itself is contract, not just the JSON code.
+func TestRiderAuth_ThrottleSetsRetryAfterHeader(t *testing.T) {
+	db := setupRiderAuthHandlerDB(t, "rider_auth_retry_after")
+	defer db.Close()
+	if _, err := db.Exec(`INSERT INTO users (id, role, telegram_id, phone) VALUES (1, 'rider', 555, '+998901234567')`); err != nil {
+		t.Fatal(err)
+	}
+	r, _ := newRiderAuthHandlerEngine(t, db)
+
+	if rr := postJSON(r, "/v1/rider/auth/request-code", map[string]string{"phone": "+998901234567"}, nil); rr.Code != http.StatusOK {
+		t.Fatalf("first status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	rr := postJSON(r, "/v1/rider/auth/request-code", map[string]string{"phone": "+998901234567"}, nil)
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("status=%d, want 429", rr.Code)
+	}
+	raw := rr.Header().Get("Retry-After")
+	if raw == "" {
+		t.Fatal("no Retry-After header; the client countdown depends on it")
+	}
+	secs, err := strconv.Atoi(raw)
+	if err != nil {
+		t.Fatalf("Retry-After = %q, want an integer number of seconds", raw)
+	}
+	if secs < 1 || secs > 60 {
+		t.Errorf("Retry-After = %d, want between 1 and the 60s cooldown", secs)
+	}
+}
+
+// The hourly cap is a different condition from the per-code cooldown and the
+// client shows a different message for it, so it must report its own code.
+func TestRiderAuth_HourlyCapReturnsTooManyCodes(t *testing.T) {
+	db := setupRiderAuthHandlerDB(t, "rider_auth_hourly_cap")
+	defer db.Close()
+	if _, err := db.Exec(`INSERT INTO users (id, role, telegram_id, phone) VALUES (1, 'rider', 555, '+998901234567')`); err != nil {
+		t.Fatal(err)
+	}
+	// Cooldown off so the hourly cap is what trips; the cap itself stays at 5.
+	cfg := riderAuthNoThrottle()
+	cfg.PerPhoneCooldown = services.RiderAuthThrottleOff
+	cfg.PerPhoneHourlyMax = 0    // fall back to the default of 5
+	cfg.PerPhoneHourlyWindow = 0 // fall back to the default of 1h
+	r, _ := newRiderAuthHandlerEngine(t, db, cfg)
+
+	var last *httptest.ResponseRecorder
+	for i := 0; i < 7; i++ {
+		last = postJSON(r, "/v1/rider/auth/request-code", map[string]string{"phone": "+998901234567"}, nil)
+		if last.Code == http.StatusTooManyRequests {
+			break
+		}
+	}
+	if last.Code != http.StatusTooManyRequests {
+		t.Fatalf("the hourly cap never tripped; last status=%d body=%s", last.Code, last.Body.String())
+	}
+	code, _ := decodeErrEnvelope(t, last)
+	if code != "too_many_codes" {
+		t.Fatalf("code=%q, want too_many_codes (distinct from the per-code cooldown)", code)
 	}
 }

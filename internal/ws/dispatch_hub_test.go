@@ -1,67 +1,76 @@
 package ws
 
 import (
-	"net/http"
-	"net/http/httptest"
-	"strings"
+	"context"
+	"sync"
 	"testing"
 	"time"
-
-	"github.com/gorilla/websocket"
-	"taxi-mvp/internal/auth"
-	"taxi-mvp/internal/domain"
 )
 
-func TestDispatchHub_FanoutToTwoClients(t *testing.T) {
+// Every waiting driver must learn about a dispatch change, not just one.
+//
+// The wake channel was buffered-1 and signalled with a send, so a single receive
+// consumed the token: with N drivers long-polling, one woke and the rest waited
+// out their timer. That is why the long poll had to re-query every second and
+// why a "burst" of staggered pokes existed to paper over it.
+func TestWaitForDispatchChange_WakesAllWaiters(t *testing.T) {
 	h := NewDispatchHub()
-	go h.Run()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Mimic tryDriverID+driverAuth by injecting a driver into context.
-		r = r.WithContext(auth.WithUser(r.Context(), &auth.User{
-			UserID: 1,
-			Role:   domain.RoleDriver,
-		}))
-		ServeDriverDispatchWs(h, w, r)
-	}))
-	t.Cleanup(srv.Close)
+	const waiters = 25
+	var wg sync.WaitGroup
+	woke := make(chan struct{}, waiters)
 
-	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
-
-	dial := websocket.Dialer{}
-	c1, _, err := dial.Dial(wsURL, nil)
-	if err != nil {
-		t.Fatalf("dial c1: %v", err)
-	}
-	t.Cleanup(func() { _ = c1.Close() })
-	c2, _, err := dial.Dial(wsURL, nil)
-	if err != nil {
-		t.Fatalf("dial c2: %v", err)
-	}
-	t.Cleanup(func() { _ = c2.Close() })
-
-	readText := func(t *testing.T, c *websocket.Conn) string {
-		t.Helper()
-		_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
-		_, msg, err := c.ReadMessage()
-		if err != nil {
-			t.Fatalf("read: %v", err)
-		}
-		return string(msg)
+	for i := 0; i < waiters; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			start := time.Now()
+			h.WaitForDispatchChange(context.Background(), 5*time.Second)
+			// Woken by the signal, not by the timeout.
+			if time.Since(start) < 4*time.Second {
+				woke <- struct{}{}
+			}
+		}()
 	}
 
-	// hello on connect
-	_ = readText(t, c1)
-	_ = readText(t, c2)
+	// Give every goroutine time to enter the wait.
+	time.Sleep(200 * time.Millisecond)
+	h.signalPollWaiters()
 
-	h.NotifyDispatchChanged()
-
-	m1 := readText(t, c1)
-	m2 := readText(t, c2)
-	if !strings.Contains(m1, `"type":"dispatch_changed"`) {
-		t.Fatalf("c1 want dispatch_changed, got %s", m1)
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(6 * time.Second):
+		t.Fatal("waiters did not return")
 	}
-	if !strings.Contains(m2, `"type":"dispatch_changed"`) {
-		t.Fatalf("c2 want dispatch_changed, got %s", m2)
+
+	if got := len(woke); got != waiters {
+		t.Errorf("%d of %d waiters woke on a single signal; the rest waited out the timeout", got, waiters)
+	}
+}
+
+// A signal with nobody waiting must not leave a token that instantly wakes the
+// next caller with stale news.
+func TestWaitForDispatchChange_NoStaleWake(t *testing.T) {
+	h := NewDispatchHub()
+	h.signalPollWaiters() // nobody is waiting
+
+	start := time.Now()
+	h.WaitForDispatchChange(context.Background(), 300*time.Millisecond)
+	if elapsed := time.Since(start); elapsed < 250*time.Millisecond {
+		t.Errorf("waiter returned after %s; a signal sent while nobody waited must not be retained", elapsed)
+	}
+}
+
+func TestWaitForDispatchChange_RespectsContext(t *testing.T) {
+	h := NewDispatchHub()
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { time.Sleep(100 * time.Millisecond); cancel() }()
+
+	start := time.Now()
+	h.WaitForDispatchChange(ctx, 5*time.Second)
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("cancelling the request context should end the wait, took %s", elapsed)
 	}
 }

@@ -24,35 +24,105 @@ func TripFareForResponse(status string, fareAmount sql.NullInt64, computedFare i
 	return computedFare, nil
 }
 
-// writeTripError maps domain errors to HTTP status and JSON error response.
+// Stable machine codes for driver-facing 4xx responses.
+//
+// Clients were string-matching localized Uzbek and Russian sentences to tell
+// these apart, which breaks the moment any copy is reworded. `code` is the
+// contract; `message` is display text and may change freely.
+const (
+	CodePickupTooFar            = "PICKUP_TOO_FAR"
+	CodeLiveLocationInactive    = "LIVE_LOCATION_INACTIVE"
+	CodeDriverLocationStale     = "DRIVER_LOCATION_STALE"
+	CodeRequestUnavailable      = "REQUEST_UNAVAILABLE"
+	CodeDriverHasActiveTrip     = "DRIVER_HAS_ACTIVE_TRIP"
+	CodeNotFound                = "NOT_FOUND"
+	CodeInvalidTransition       = "INVALID_TRANSITION"
+	CodeLegalAcceptanceRequired = "LEGAL_ACCEPTANCE_REQUIRED"
+	CodeNotAssignedToTrip       = "NOT_ASSIGNED_TO_TRIP"
+	CodeInvalidBody             = "INVALID_BODY"
+	CodeInternalError           = "INTERNAL_ERROR"
+	CodeSessionRevoked          = "AUTH_SESSION_REVOKED"
+)
+
+// writeTripError maps domain errors to HTTP status, a stable code, and a
+// localized message. The legacy `error` field is preserved for older clients.
 func writeTripError(c *gin.Context, tripID string, err error) {
+	write := func(status int, code, message string) {
+		c.JSON(status, gin.H{
+			"ok":      false,
+			"code":    code,
+			"message": message,
+			"error":   message, // legacy field; clients should read `code`
+			"trip_id": tripID,
+		})
+	}
 	switch {
 	case errors.Is(err, domain.ErrTripNotFound):
-		c.JSON(http.StatusNotFound, gin.H{"ok": false, "error": "trip not found", "trip_id": tripID})
+		write(http.StatusNotFound, CodeNotFound, "trip not found")
 	case errors.Is(err, domain.ErrInvalidTransition):
-		c.JSON(http.StatusConflict, gin.H{"ok": false, "error": "invalid transition", "trip_id": tripID})
+		write(http.StatusConflict, CodeInvalidTransition, "invalid transition")
 	case errors.Is(err, domain.ErrAlreadyFinished), errors.Is(err, domain.ErrAlreadyCancelled):
-		c.JSON(http.StatusConflict, gin.H{"ok": false, "error": err.Error(), "trip_id": tripID})
+		write(http.StatusConflict, CodeInvalidTransition, err.Error())
 	case errors.Is(err, domain.ErrTooFarFromPickup):
-		c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "Мижозга ҳали етиб бормагансиз. Аввал олиб кетиш нуқтасига етиң.", "trip_id": tripID})
-	case errors.Is(err, domain.ErrDriverLocationStale), errors.Is(err, domain.ErrLiveLocationInactive):
-		c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "Жонли локациянгиз янгиланмаган ёки ўчирилган. Telegramда жонли локацияни ёқинг.", "trip_id": tripID})
+		write(http.StatusBadRequest, CodePickupTooFar, "Мижозга ҳали етиб бормагансиз. Аввал олиб кетиш нуқтасига етинг.")
+	case errors.Is(err, domain.ErrLiveLocationInactive):
+		write(http.StatusBadRequest, CodeLiveLocationInactive, "Жонли локация ёқилмаган. Telegramда жонли локацияни уланг.")
+	case errors.Is(err, domain.ErrDriverLocationStale):
+		write(http.StatusBadRequest, CodeDriverLocationStale, "Локациянгиз эскирган. Жонли локация уланганини текширинг.")
 	default:
-		c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": "operation failed", "trip_id": tripID})
+		write(http.StatusInternalServerError, CodeInternalError, "operation failed")
 	}
 }
 
-// writeTripResult writes success response: for noop {"ok": true, "result": "noop"}, for updated includes trip_id and status.
-func writeTripResult(c *gin.Context, tripID string, result *services.TripActionResult) {
-	if result == nil {
-		c.JSON(http.StatusOK, gin.H{"ok": true, "result": "noop"})
+// writeTripResult writes the success response for a trip action.
+//
+// The body carries the resulting trip inline (status, coordinates, fare,
+// rider phone) so a driver client never needs a follow-up GET /trip/:id to render
+// the next screen. That second sequential round trip was what made the
+// arrived/start/finish buttons feel slow.
+//
+// snap may be nil (the trip could not be re-read); the minimal shape is then
+// returned, since the state change itself already committed. Legacy fields
+// trip_id / status / result are unchanged for older clients.
+func writeTripResult(c *gin.Context, tripID string, result *services.TripActionResult, snap *DriverTripSnapshot) {
+	if result == nil || result.Result == "noop" {
+		body := gin.H{"ok": true, "result": "noop"}
+		if result != nil && result.Status != "" {
+			body["trip_id"] = tripID
+			body["status"] = result.Status
+		}
+		if snap != nil {
+			body["trip"] = snap
+			mergeTripSnapshotTopLevel(body, snap)
+		}
+		c.JSON(http.StatusOK, body)
 		return
 	}
-	if result.Result == "noop" {
-		c.JSON(http.StatusOK, gin.H{"ok": true, "result": "noop"})
-		return
+	body := gin.H{"ok": true, "trip_id": tripID, "status": result.Status, "result": result.Result}
+	if snap != nil {
+		body["trip"] = snap
+		mergeTripSnapshotTopLevel(body, snap)
 	}
-	c.JSON(http.StatusOK, gin.H{"ok": true, "trip_id": tripID, "status": result.Status, "result": result.Result})
+	c.JSON(http.StatusOK, body)
+}
+
+// mergeTripSnapshotTopLevel also exposes the snapshot fields at the top level,
+// so a client can read either `trip.fare_som` or `fare_som` without branching.
+func mergeTripSnapshotTopLevel(body gin.H, snap *DriverTripSnapshot) {
+	body["status"] = snap.Status
+	body["pickup_lat"] = snap.PickupLat
+	body["pickup_lng"] = snap.PickupLng
+	body["dropoff_lat"] = snap.DropoffLat
+	body["dropoff_lng"] = snap.DropoffLng
+	body["fare_som"] = snap.FareSom
+	body["distance_km"] = snap.DistanceKm
+	body["is_final_fare"] = snap.IsFinalFare
+	if snap.RiderPhone != "" {
+		body["rider_phone"] = snap.RiderPhone
+	}
+	if snap.RiderName != "" {
+		body["rider_name"] = snap.RiderName
+	}
 }
 
 // TripStartRequest body for POST /trip/start. driver_id comes from auth context.
@@ -101,16 +171,16 @@ type DriverLocationObject struct {
 // DriverObject is the canonical driver object for rider app /trip polling.
 // It intentionally includes lat/lng at top-level as an alias to keep older clients working.
 type DriverObject struct {
-	ID       string         `json:"id"`
-	Name     string         `json:"name,omitempty"`
-	Phone    string         `json:"phone,omitempty"`
-	Rating   *float64       `json:"rating,omitempty"`
-	PhotoURL string         `json:"photo_url,omitempty"`
-	Car      *DriverCar     `json:"car,omitempty"`
+	ID       string                `json:"id"`
+	Name     string                `json:"name,omitempty"`
+	Phone    string                `json:"phone,omitempty"`
+	Rating   *float64              `json:"rating,omitempty"`
+	PhotoURL string                `json:"photo_url,omitempty"`
+	Car      *DriverCar            `json:"car,omitempty"`
 	Location *DriverLocationObject `json:"location,omitempty"`
-	Lat      *float64       `json:"lat,omitempty"`
-	Lng      *float64       `json:"lng,omitempty"`
-	Heading  *int           `json:"heading,omitempty"`
+	Lat      *float64              `json:"lat,omitempty"`
+	Lng      *float64              `json:"lng,omitempty"`
+	Heading  *int                  `json:"heading,omitempty"`
 }
 
 // TripSummary is the standardized trip object for resync (nested in GET /trip/:id; rider and driver Mini App).
@@ -131,20 +201,20 @@ type TripInfoResponse struct {
 	Driver *DriverObject `json:"driver,omitempty"`
 
 	// Legacy fields kept for compatibility (Telegram mini app + older clients).
-	TripID     string       `json:"trip_id"`
-	DriverID   int64        `json:"driver_id,omitempty"`
-	Status     string       `json:"status"`
-	Pickup     LatLng       `json:"pickup"` // { lat, lng } for rider/driver map
-	Drop       LatLng       `json:"drop"`   // { lat, lng }
+	TripID   string `json:"trip_id"`
+	DriverID int64  `json:"driver_id,omitempty"`
+	Status   string `json:"status"`
+	Pickup   LatLng `json:"pickup"` // { lat, lng } for rider/driver map
+	Drop     LatLng `json:"drop"`   // { lat, lng }
 	// DriverLegacy previously used json tag "driver", which collided with the canonical Driver object
 	// above and made encoding/json drop BOTH fields. Legacy clients get lat/lng via driver_pos and via
 	// top-level lat/lng aliases inside the "driver" object.
-	DriverLegacy LatLng     `json:"driver_latlng"` // legacy alias for driver position (older clients)
-	DriverPos  LatLng       `json:"driver_pos"` // { lat, lng } from drivers.last_lat/lng (alias when driver is object)
-	DistanceKm float64      `json:"distance_km"`
-	Fare       int64        `json:"fare"`
-	Trip       *TripSummary `json:"trip,omitempty"`
-	DriverInfo *struct {
+	DriverLegacy LatLng       `json:"driver_latlng"` // legacy alias for driver position (older clients)
+	DriverPos    LatLng       `json:"driver_pos"`    // { lat, lng } from drivers.last_lat/lng (alias when driver is object)
+	DistanceKm   float64      `json:"distance_km"`
+	Fare         int64        `json:"fare"`
+	Trip         *TripSummary `json:"trip,omitempty"`
+	DriverInfo   *struct {
 		Phone   string `json:"phone,omitempty"`
 		CarType string `json:"car_type,omitempty"`
 		Color   string `json:"color,omitempty"`
@@ -160,7 +230,7 @@ type TripInfoResponse struct {
 }
 
 // TripStart calls TripService.StartTrip. Requires driver auth; driver may only start their assigned trip.
-func TripStart(db *sql.DB, tripSvc *services.TripService) gin.HandlerFunc {
+func TripStart(db *sql.DB, tripSvc *services.TripService, cfg *config.Config, fareSvc *services.FareService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		u := auth.UserFromContext(c.Request.Context())
 		if u == nil || u.Role != domain.RoleDriver {
@@ -187,7 +257,7 @@ func TripStart(db *sql.DB, tripSvc *services.TripService) gin.HandlerFunc {
 			writeTripError(c, req.TripID, err)
 			return
 		}
-		writeTripResult(c, req.TripID, result)
+		writeTripResult(c, req.TripID, result, loadDriverTripSnapshot(ctx, db, cfg, fareSvc, req.TripID))
 	}
 }
 
@@ -197,7 +267,7 @@ type TripArrivedRequest struct {
 }
 
 // TripArrived calls TripService.MarkArrived (driver at pickup). Requires driver auth.
-func TripArrived(db *sql.DB, tripSvc *services.TripService) gin.HandlerFunc {
+func TripArrived(db *sql.DB, tripSvc *services.TripService, cfg *config.Config, fareSvc *services.FareService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		u := auth.UserFromContext(c.Request.Context())
 		if u == nil || u.Role != domain.RoleDriver {
@@ -219,23 +289,28 @@ func TripArrived(db *sql.DB, tripSvc *services.TripService) gin.HandlerFunc {
 			c.JSON(http.StatusForbidden, gin.H{"error": "not assigned to this trip"})
 			return
 		}
-		opts := services.MarkArrivedOptions{}
-		// Native driver app auth (phone+OTP) sets TelegramUserID=0 and uses X-Driver-Id.
-		// For that flow, allow "Yetib keldim" without the pickup distance threshold.
-		if u.TelegramUserID == 0 {
-			opts.SkipPickupDistance = true
-		}
+		// "I have arrived" is the driver's own claim about their position, and the
+		// distance threshold is never authoritative anyway — the coordinates it
+		// checks are self-reported. Gating it only produced a split-brain state:
+		// the app showed ARRIVED while the server stayed WAITING, permanently,
+		// because the app deliberately ignores proximity rejections here.
+		//
+		// So arrival is not distance-gated for anyone. Live-location freshness is
+		// still required (an arrival from a driver with no recent location is
+		// meaningless), and /trip/start keeps its threshold because that is the
+		// point the metered fare begins.
+		opts := services.MarkArrivedOptions{SkipPickupDistance: true}
 		result, err := tripSvc.MarkArrivedWithOpts(ctx, req.TripID, u.UserID, opts)
 		if err != nil {
 			writeTripError(c, req.TripID, err)
 			return
 		}
-		writeTripResult(c, req.TripID, result)
+		writeTripResult(c, req.TripID, result, loadDriverTripSnapshot(ctx, db, cfg, fareSvc, req.TripID))
 	}
 }
 
 // TripFinish calls TripService.FinishTrip. Requires driver auth; driver may only finish their assigned trip.
-func TripFinish(db *sql.DB, tripSvc *services.TripService) gin.HandlerFunc {
+func TripFinish(db *sql.DB, tripSvc *services.TripService, cfg *config.Config, fareSvc *services.FareService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		u := auth.UserFromContext(c.Request.Context())
 		if u == nil || u.Role != domain.RoleDriver {
@@ -262,7 +337,7 @@ func TripFinish(db *sql.DB, tripSvc *services.TripService) gin.HandlerFunc {
 			writeTripError(c, req.TripID, err)
 			return
 		}
-		writeTripResult(c, req.TripID, result)
+		writeTripResult(c, req.TripID, result, loadDriverTripSnapshot(ctx, db, cfg, fareSvc, req.TripID))
 	}
 }
 
@@ -294,7 +369,9 @@ func TripCancelDriver(db *sql.DB, tripSvc *services.TripService) gin.HandlerFunc
 			writeTripError(c, req.TripID, err)
 			return
 		}
-		writeTripResult(c, req.TripID, result)
+		// No snapshot on cancel: the trip is terminal and its ride request may have
+		// been requeued to another driver, so there is nothing useful left to render.
+		writeTripResult(c, req.TripID, result, nil)
 	}
 }
 
@@ -326,7 +403,7 @@ func TripCancelRider(db *sql.DB, tripSvc *services.TripService) gin.HandlerFunc 
 			writeTripError(c, req.TripID, err)
 			return
 		}
-		writeTripResult(c, req.TripID, result)
+		writeTripResult(c, req.TripID, result, nil)
 	}
 }
 
@@ -447,6 +524,10 @@ func TripInfo(db *sql.DB, cfg *config.Config, fareSvc *services.FareService) gin
 			if phone == "" && driverUserPhone.Valid {
 				phone = strings.TrimSpace(driverUserPhone.String)
 			}
+			// Anonymous capability-URL reads get the map payload, not contact details.
+			if u == nil {
+				phone = ""
+			}
 
 			loc := (*DriverLocationObject)(nil)
 			// Prefer effective driver location (native app GPS if active+fresh), else Telegram last_lat/lng.
@@ -489,16 +570,16 @@ func TripInfo(db *sql.DB, cfg *config.Config, fareSvc *services.FareService) gin
 		}
 		fare, fareAmountPtr := TripFareForResponse(status, fareAmount, computedFare)
 		resp := TripInfoResponse{
-			ID:         tripID,
-			Driver:     driverObj,
-			TripID:     tripID,
-			Status:     status,
-			Pickup:     pickup,
-			Drop:       drop,
+			ID:           tripID,
+			Driver:       driverObj,
+			TripID:       tripID,
+			Status:       status,
+			Pickup:       pickup,
+			Drop:         drop,
 			DriverLegacy: driverPos,
-			DriverPos:  driverPos,
-			DistanceKm: distanceKm,
-			Fare:       fare,
+			DriverPos:    driverPos,
+			DistanceKm:   distanceKm,
+			Fare:         fare,
 			Trip: &TripSummary{
 				ID:         tripID,
 				Status:     status,
@@ -513,13 +594,20 @@ func TripInfo(db *sql.DB, cfg *config.Config, fareSvc *services.FareService) gin
 		if u == nil || u.Role == domain.RoleDriver {
 			resp.DriverID = effectiveDriverUserID
 		}
-		if riderPhone.Valid {
-			resp.RiderPhone = riderPhone.String
+		// Contact details are for participants only. An anonymous caller holding
+		// just the trip UUID gets the map payload (status, coordinates, fare) but
+		// never phone numbers or names: the UUID travels in tracking links, query
+		// strings and logs, so it is a weak secret to hang PII on — and it never
+		// expires, so a leaked id would otherwise expose both parties forever.
+		if u != nil {
+			if riderPhone.Valid {
+				resp.RiderPhone = riderPhone.String
+			}
+			if riderName.Valid {
+				resp.RiderName = riderName.String
+			}
 		}
-		if riderName.Valid {
-			resp.RiderName = riderName.String
-		}
-		if riderPhone.Valid && riderPhone.String != "" || riderName.Valid && riderName.String != "" {
+		if u != nil && (riderPhone.Valid && riderPhone.String != "" || riderName.Valid && riderName.String != "") {
 			resp.RiderInfo = &struct {
 				Phone string `json:"phone,omitempty"`
 				Name  string `json:"name,omitempty"`
@@ -537,6 +625,11 @@ func TripInfo(db *sql.DB, cfg *config.Config, fareSvc *services.FareService) gin
 			phone := strings.TrimSpace(driverPhone.String)
 			if phone == "" && driverUserPhone.Valid {
 				phone = strings.TrimSpace(driverUserPhone.String)
+			}
+			// Same rule as the rider side above: an anonymous tracking link gets the
+			// map payload (plate, car, colour) but not the driver's phone number.
+			if u == nil {
+				phone = ""
 			}
 			if phone != "" || strings.TrimSpace(driverCarType.String) != "" || strings.TrimSpace(driverColor.String) != "" || plate != "" {
 				resp.DriverInfo = &struct {

@@ -10,17 +10,17 @@ import (
 )
 
 type BroadcastCreateInput struct {
-	ID                   string
-	Title                string
-	Body                 string
-	CreatedByTelegramID  int64
-	Audience             string
-	CloudinaryPublicID   string
-	CloudinarySecureURL  string
-	MediaType            string
-	Width                int
-	Height               int
-	Format               string
+	ID                  string
+	Title               string
+	Body                string
+	CreatedByTelegramID int64
+	Audience            string
+	CloudinaryPublicID  string
+	CloudinarySecureURL string
+	MediaType           string
+	Width               int
+	Height              int
+	Format              string
 }
 
 func CreateBroadcastPost(ctx context.Context, db *sql.DB, in BroadcastCreateInput) (string, error) {
@@ -55,4 +55,3 @@ func CreateBroadcastPost(ctx context.Context, db *sql.DB, in BroadcastCreateInpu
 	}
 	return id, nil
 }
-

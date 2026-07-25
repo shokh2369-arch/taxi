@@ -131,21 +131,21 @@ func riderAppListTrips(deps RiderTripDeps) gin.HandlerFunc {
 				canStr = tripHistoryTimeToRFC3339(cancelledAt.String)
 			}
 			item := gin.H{
-				"id":            id,
-				"trip_id":       id,
-				"tripId":        id,
-				"status":        status,
-				"request_id":    requestID,
-				"requestId":     requestID,
-				"fare_amount":   fareAmount.Int64,
-				"fareAmount":    fareAmount.Int64,
-				"distance_m":    distanceM.Int64,
-				"distanceM":     distanceM.Int64,
-				"finished_at":   finStr,
-				"finishedAt":    finStr,
-				"cancelled_at":  canStr,
-				"cancelledAt":   canStr,
-				"_rowid":        rowid, // internal; strip before return
+				"id":           id,
+				"trip_id":      id,
+				"tripId":       id,
+				"status":       status,
+				"request_id":   requestID,
+				"requestId":    requestID,
+				"fare_amount":  fareAmount.Int64,
+				"fareAmount":   fareAmount.Int64,
+				"distance_m":   distanceM.Int64,
+				"distanceM":    distanceM.Int64,
+				"finished_at":  finStr,
+				"finishedAt":   finStr,
+				"cancelled_at": canStr,
+				"cancelledAt":  canStr,
+				"_rowid":       rowid, // internal; strip before return
 			}
 			if pickupLat.Valid && pickupLng.Valid {
 				p := pickupDrop{Lat: pickupLat.Float64, Lng: pickupLng.Float64}
@@ -331,4 +331,3 @@ func mapRiderTripCancelError(c *gin.Context, tripID string, err error) {
 		writeRiderAPIError(c, http.StatusInternalServerError, "internal_error", "Texnik xatolik.")
 	}
 }
-

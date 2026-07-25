@@ -103,10 +103,13 @@ func setupMarkArrivedTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
+// Reference the production strings rather than restating them: these tests are
+// about which message reaches whom, not about the exact wording, so rewording a
+// message should not fail them.
 const (
-	testRiderText = "✅ Ҳайдовчи сизнинг манзилингизга етиб келди.\n\nСафар бошлашга тайёр: ҳайдовчи билан учрашинг. Ҳайдовчи сафарни бошлагач, йўл давом этади."
-	testDriverText      = "✅ Мижозга етиб келдингиз. Йўловчига хабар юборилди. Сафарни бошлашингиз мумкин."
-	testDriverTextRetry = "Мижозга хабар етмади, қайта уриниб кўринг"
+	testRiderText       = arrivedRiderText
+	testDriverText      = arrivedDriverTextOK
+	testDriverTextRetry = arrivedDriverTextRetry
 )
 
 // pickLat/pickLng — driver same coords, fresh live location within 90s.
@@ -314,7 +317,7 @@ func TestMarkArrived_LogsArrivedNotifySummary(t *testing.T) {
 
 // flakyRiderBot fails Send for the first n attempts, then succeeds.
 type flakyRiderBot struct {
-	mu           sync.Mutex
+	mu            sync.Mutex
 	failRemaining int
 	attempts      int
 	fakeTelegramBot

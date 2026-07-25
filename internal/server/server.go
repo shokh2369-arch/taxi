@@ -1,9 +1,12 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"log"
+	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -12,6 +15,7 @@ import (
 	"taxi-mvp/internal/config"
 	"taxi-mvp/internal/handlers"
 	"taxi-mvp/internal/repositories"
+	"taxi-mvp/internal/safe"
 	"taxi-mvp/internal/services"
 	"taxi-mvp/internal/ws"
 )
@@ -72,15 +76,22 @@ func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc
 
 	ws.ConfigureCheckOrigin(cfg.WSAllowedOrigins)
 
-	healthHandler := func(c *gin.Context) {
-		// Keep health response extremely small and constant (external monitors rely on this).
-		// Do not touch DB, logs, or external services.
+	// "/" stays a constant so a bare root check is free.
+	rootHandler := func(c *gin.Context) {
 		c.Data(200, "text/plain; charset=utf-8", []byte("OK"))
 	}
-	r.GET("/health", healthHandler)
-	r.HEAD("/health", healthHandler)
-	r.GET("/", healthHandler)
-	r.HEAD("/", healthHandler)
+	r.GET("/", rootHandler)
+	r.HEAD("/", rootHandler)
+
+	// /health verifies the dependency the service cannot run without.
+	//
+	// It used to return a constant, which meant it could not fail: Render gates
+	// deploys and detects wedged instances with it, and the keepalive cron asserts
+	// it returns 200 — so the instance reported healthy with Turso unreachable.
+	// The DB check is cached briefly so a monitor polling every few seconds does
+	// not add load, and HEAD stays body-free for cheap probes.
+	r.GET("/health", healthHandler(db))
+	r.HEAD("/health", healthHandler(db))
 
 	driverSessions := repositories.NewDriverAuthSessionsRepo(db)
 	driverTokens := services.NewDriverAuthTokenService(driverSessions)
@@ -125,9 +136,13 @@ func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc
 	allowWSQueryCreds := cfg.DriverAuthDebug || cfg.EnableDriverIDHeader
 
 	// Driver dispatch websocket (best-effort poke). Optional global singleton used by publisher hooks.
+	// Supervised, not just recovered: Run is the only reader of register/unregister/broadcast, so if it
+	// stops, dispatch pokes are dropped silently, unregister never closes send channels, and the handler
+	// blocks forever once the register channel backs up. Its state is owned by this one goroutine and
+	// guarded by no mutex, so restarting it cannot leave a lock held.
 	dispatchHub := ws.NewDispatchHub()
 	ws.DispatchHubDefault = dispatchHub
-	go dispatchHub.Run()
+	safe.GoSupervised(context.Background(), "dispatch_hub", dispatchHub.Run)
 
 	if hub != nil {
 		r.GET("/ws", func(c *gin.Context) {
@@ -152,16 +167,18 @@ func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc
 	// Native driver app location (additive). Does not touch Telegram location fields.
 	r.POST("/driver/location/app", tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, handlers.DriverAppLocation(db, matchSvc))
 	r.POST("/driver/offline", tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, handlers.DriverManualOffline(db))
-	r.POST("/trip/start", tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, handlers.TripStart(db, tripSvc))
-	r.POST("/trip/arrived", tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, handlers.TripArrived(db, tripSvc))
-	r.POST("/trip/finish", tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, handlers.TripFinish(db, tripSvc))
+	r.POST("/driver/online", tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, handlers.DriverGoOnline(db))
+	r.POST("/trip/start", tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, handlers.TripStart(db, tripSvc, cfg, fareSvc))
+	r.POST("/trip/arrived", tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, handlers.TripArrived(db, tripSvc, cfg, fareSvc))
+	r.POST("/trip/finish", tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, handlers.TripFinish(db, tripSvc, cfg, fareSvc))
 	r.POST("/trip/cancel/driver", tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, handlers.TripCancelDriver(db, tripSvc))
 	r.GET("/driver/referral-link", tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, handlers.DriverReferralLink(db, driverBot))
 	r.GET("/driver/promo-program", tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, handlers.DriverPromoProgram(db))
+	r.GET("/driver/tariff", tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, handlers.DriverTariff(db, cfg, fareSvc))
 	r.GET("/driver/referral-status", tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, handlers.DriverReferralStatus(db))
-	r.GET("/driver/available-requests", tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, handlers.DriverAvailableRequests(db, cfg))
+	r.GET("/driver/available-requests", tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, handlers.DriverAvailableRequests(db, cfg, fareSvc))
 	r.GET("/driver/trips", tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, handlers.DriverTrips(db))
-	r.POST("/driver/accept-request", tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, handlers.DriverAcceptRequest(db, assignSvc, tripSvc))
+	r.POST("/driver/accept-request", tryDriverID, tryDriverBearer, driverAuth, driverActionSrc, handlers.DriverAcceptRequest(db, assignSvc, tripSvc, cfg, fareSvc))
 	r.POST("/trip/cancel/rider", riderAuth, handlers.TripCancelRider(db, tripSvc))
 	r.GET("/rider/referral-link", riderAuth, handlers.RiderReferralLink(db, riderBot))
 
@@ -217,5 +234,36 @@ func corsForMiniApp(allowedOrigin string) gin.HandlerFunc {
 			}
 		}
 		c.Next()
+	}
+}
+
+// healthCacheTTL bounds how often /health actually touches the database.
+const healthCacheTTL = 5 * time.Second
+
+// healthHandler reports whether the service can reach its database.
+func healthHandler(db *sql.DB) gin.HandlerFunc {
+	var (
+		mu        sync.Mutex
+		checkedAt time.Time
+		lastErr   error
+	)
+	return func(c *gin.Context) {
+		mu.Lock()
+		if time.Since(checkedAt) > healthCacheTTL {
+			ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+			var one int
+			lastErr = db.QueryRowContext(ctx, `SELECT 1`).Scan(&one)
+			cancel()
+			checkedAt = time.Now()
+		}
+		err := lastErr
+		mu.Unlock()
+
+		if err != nil {
+			log.Printf("health: database unreachable: %v", err)
+			c.Data(http.StatusServiceUnavailable, "text/plain; charset=utf-8", []byte("DB UNAVAILABLE"))
+			return
+		}
+		c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte("OK"))
 	}
 }

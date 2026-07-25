@@ -3,8 +3,11 @@ package ws
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"sync/atomic"
 	"time"
+
+	"taxi-mvp/internal/safe"
 )
 
 // DispatchHub is a best-effort pub/sub hub for driver dispatch pokes.
@@ -22,7 +25,10 @@ type DispatchHub struct {
 
 	version      atomic.Int64
 	updatedAtUTC atomic.Int64 // unix nano
-	wake         chan struct{} // signals GET /driver/available-requests long-poll waiters
+	// wake is closed (not sent to) to broadcast "dispatch changed" to every
+	// long-poll waiter, then replaced. Guarded by wakeMu.
+	wakeMu sync.RWMutex
+	wake   chan struct{} // signals GET /driver/available-requests long-poll waiters
 }
 
 // DispatchHubDefault is an optional global hub used by publisher hooks.
@@ -35,7 +41,7 @@ func NewDispatchHub() *DispatchHub {
 		unregister: make(chan *dispatchClient, 128),
 		broadcast:  make(chan []byte, 256),
 		clients:    make(map[*dispatchClient]struct{}),
-		wake:       make(chan struct{}, 1),
+		wake:       make(chan struct{}),
 	}
 }
 
@@ -93,23 +99,34 @@ func (h *DispatchHub) WaitForDispatchChange(ctx context.Context, maxWait time.Du
 	if h == nil || maxWait <= 0 {
 		return
 	}
+	// Snapshot the current generation channel, then wait for it to be closed.
+	// A close wakes every waiter; the previous buffered-1 send woke exactly one,
+	// so with N drivers long-polling only one learned about a new offer and the
+	// rest sat out their timer — which is why the poll loop had to re-query every
+	// second, and why the burst helper existed to fire several pokes in a row.
+	h.wakeMu.RLock()
+	wake := h.wake
+	h.wakeMu.RUnlock()
+
 	timer := time.NewTimer(maxWait)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
-	case <-h.wake:
+	case <-wake:
 	case <-timer.C:
 	}
 }
 
+// signalPollWaiters wakes every current waiter by closing the generation channel
+// and installing a fresh one for the next round.
 func (h *DispatchHub) signalPollWaiters() {
 	if h == nil {
 		return
 	}
-	select {
-	case h.wake <- struct{}{}:
-	default:
-	}
+	h.wakeMu.Lock()
+	close(h.wake)
+	h.wake = make(chan struct{})
+	h.wakeMu.Unlock()
 }
 
 // NotifyDispatchChanged is the global, best-effort publisher hook.
@@ -124,10 +141,10 @@ func NotifyDispatchChanged() {
 // non-blocking broadcast or full client buffer drops the first message (common under load).
 func NotifyDispatchChangedBurst() {
 	NotifyDispatchChanged()
-	go func() {
+	safe.Go("dispatch_changed_burst", func() {
 		time.Sleep(120 * time.Millisecond)
 		NotifyDispatchChanged()
 		time.Sleep(280 * time.Millisecond)
 		NotifyDispatchChanged()
-	}()
+	})
 }

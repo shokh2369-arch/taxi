@@ -33,11 +33,11 @@ func (s *FareService) GetFareSettings(ctx context.Context) (*models.FareSettings
 			pc = 5
 		}
 		return &models.FareSettings{
-			ID:               1,
-			BaseFare:         int64(s.cfg.StartingFee),
-			Tier0_1Km:        int64(s.cfg.PricePerKm),
-			Tier1_2Km:        int64(s.cfg.PricePerKm),
-			Tier2PlusKm:      int64(s.cfg.PricePerKm),
+			ID:                1,
+			BaseFare:          int64(s.cfg.StartingFee),
+			Tier0_1Km:         int64(s.cfg.PricePerKm),
+			Tier1_2Km:         int64(s.cfg.PricePerKm),
+			Tier2PlusKm:       int64(s.cfg.PricePerKm),
 			CommissionPercent: pc,
 		}, nil
 	}

@@ -1,0 +1,39 @@
+# Docker does not honour .gitignore. Without this file `COPY . .` would bake a
+# local .env (bot tokens, Turso auth token, Cloudinary secret) into the builder layer.
+.env
+.env.*
+*.env
+
+# VCS and local tooling
+.git
+.gitignore
+.dockerignore
+.cursor
+.vscode
+.idea
+
+# Build artifacts
+app.exe
+*.exe
+bin/
+dist/
+*.test
+*.out
+coverage*
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Docs and assets are not needed to build or run the service
+README.md
+PLAN.md
+docs/
+assets/
+docker-compose.yml
+render.yaml
+Makefile
+
+# OS noise
+.DS_Store

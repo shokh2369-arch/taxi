@@ -1,4 +1,3 @@
--- +goose Up
 -- Rebuild legal_* tables when an incompatible schema exists (e.g. legal_documents without
 -- document_type — causes "no such column: document_type" and failed accept flows).
 -- Drops acceptance/resume data; users and drivers must accept active documents again.
@@ -167,8 +166,3 @@ YettiQanot foydalanuvchi ma’lumotlarini xizmatni ta’minlash uchun qayta ishl
 
 UPDATE users SET terms_accepted = 0;
 UPDATE drivers SET terms_accepted = 0;
-
--- +goose Down
-DROP TABLE IF EXISTS legal_pending_resume;
-DROP TABLE IF EXISTS legal_acceptances;
-DROP TABLE IF EXISTS legal_documents;

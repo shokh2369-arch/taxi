@@ -1,5 +1,12 @@
 # Driver HTTP / WebSocket client (native / Flutter)
 
+> **Recent contract changes** (see `docs/DRIVER_CLIENT_PROMPT.md` for the client-side brief):
+> `POST /driver/online` is new and now the only in-app way to clear a manual OFFLINE;
+> trip actions and accept return the trip inline; every 4xx carries a stable `code`;
+> arrival is no longer distance-gated; `available-requests` supports `If-None-Match`
+> and returns `total_balance` / `promo_balance` / `cash_balance`; WebSocket events
+> carry a per-trip `seq`; driver login is single-session.
+
 This document describes the **stable wire contract** for clients that call the same Go API as the Telegram Mini App and driver bot (e.g. native or Flutter driver apps). It is **additive** to **`docs/AUTH.md`** and the main **`README.md`** HTTP table.
 
 ## Environment variables (relevant to drivers)
@@ -110,6 +117,27 @@ curl -sS -X POST -H "Content-Type: application/json" \
 
 ---
 
+## `POST /driver/online`
+
+**Purpose:** Clears a manual OFFLINE so the driver is eligible for dispatch again.
+
+Location pings deliberately do **not** clear `manual_offline`. A driver app reports
+position in the background, so treating any ping as "back on shift" made the OFFLINE
+toggle undo itself — a driver who finished work and drove home kept receiving orders.
+Going online is an explicit action.
+
+```
+POST /driver/online
+  200 { "ok": true, "manual_offline": false, "note": "..." }
+  401 { "error": "driver auth required" }
+```
+
+Idempotent. Going online does not by itself produce offers: the usual dispatch gates
+still apply (approved, legal accepted, positive balance, fresh location).
+
+Telegram live-location sharing also clears the flag, so a driver on an older build is
+not permanently stuck offline.
+
 ## `POST /driver/offline`
 
 **Auth:** Driver.
@@ -154,6 +182,41 @@ curl -sS -X POST -H "Content-Type: application/json" -H "X-Driver-Id: YOUR_ID" \
 ```
 
 ---
+
+## Error codes
+
+Every driver-facing 4xx carries a stable `code` alongside a localized `message`.
+**Match on `code`.** `message` is display text and may be reworded at any time; the
+legacy `error` field is retained only for older clients.
+
+| `code` | HTTP | Meaning |
+|---|---|---|
+| `PICKUP_TOO_FAR` | 400 | Too far from pickup. Only `/trip/start` enforces this. |
+| `LIVE_LOCATION_INACTIVE` | 400 | Live location not connected. |
+| `DRIVER_LOCATION_STALE` | 400 | Last known position is too old. |
+| `REQUEST_UNAVAILABLE` | 409 | Another driver took it, or it expired. |
+| `DRIVER_HAS_ACTIVE_TRIP` | 409 | Finish or cancel the current trip first. Includes `active_trip_id`. |
+| `INVALID_TRANSITION` | 409 | Action does not apply to the current status. |
+| `NOT_FOUND` | 404 | Unknown trip. |
+| `NOT_ASSIGNED_TO_TRIP` | 403 | Trip belongs to another driver. |
+| `INTERNAL_ERROR` | 500 | Unexpected failure. |
+
+### Pickup proximity
+
+`POST /trip/arrived` is **not** distance-gated for any client. Arrival is the driver's
+own claim about their position, and the coordinates checked are self-reported anyway,
+so gating it only produced a split-brain state — the app showing ARRIVED while the
+server stayed WAITING. Live-location freshness is still required.
+
+`POST /trip/start` keeps the threshold, because that is where the metered fare begins,
+and returns `PICKUP_TOO_FAR` when it fires.
+
+## Sessions
+
+Driver login is **single-session**: issuing a token revokes every previous session for
+that driver. Logging in on a second device invalidates the first, whose next request
+fails authentication — that failure is the signal to log out locally. Previously both
+sessions stayed valid and two devices posted location for the same driver.
 
 ## `GET /ws?trip_id=<uuid>`
 

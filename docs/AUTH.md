@@ -39,7 +39,7 @@
 ### Standalone / Flutter driver app (additive)
 
 - **Header (exact name):** `X-Driver-Id` — digits only: either internal **`users.id`** (same as `drivers.user_id`, admin dashboard user id) **or** the driver’s **Telegram numeric user id** (`users.telegram_id`). Lookup tries internal id first, then Telegram id. **`drivers.verification_status` must be `approved`** or the API returns **403** `{"error":"driver not approved"}` (not the initData error).
-- **Env:** **`X-Driver-Id` is on by default** (no env required). Set **`ENABLE_DRIVER_ID_HEADER=false`** (or **`0`**, **`no`**, **`off`**) on the server to require Telegram initData only. Optional **`DRIVER_AUTH_DEBUG=true`** logs `driver_header_path_enabled` and `x_driver_id_header_present` per request path only.
+- **Env:** **`X-Driver-Id` is OFF by default.** Set **`ENABLE_DRIVER_ID_HEADER=true`** (or `1`, `yes`, `on`) to enable it for local/dev only — `internal/config/config.go` defaults it to `false`. This document previously claimed the opposite; the code is authoritative, and enabling it in production would let anyone impersonate a driver by guessing a small sequential integer. Set **`ENABLE_DRIVER_ID_HEADER=false`** (or **`0`**, **`no`**, **`off`**) on the server to require Telegram initData only. Optional **`DRIVER_AUTH_DEBUG=true`** logs `driver_header_path_enabled` and `x_driver_id_header_present` per request path only.
 - **curl (approved driver, default config):** `curl -sS -H "X-Driver-Id: YOUR_ID" "$BASE/driver/promo-program"` → **200** JSON. **Header mode disabled** (`ENABLE_DRIVER_ID_HEADER=false`) with only header → **401** `missing or invalid Telegram init data`. **Unknown id** → **401** `unknown driver id...`. **Wrong format** → **401** `invalid X-Driver-Id...`.
 - **Telegram-only hardening:** set **`ENABLE_DRIVER_ID_HEADER=false`** so `X-Driver-Id` is ignored; Mini App / WebView must send **`X-Telegram-Init-Data`**.
 - **Security:** with header mode on (default), anyone who can guess or leak ids could impersonate a driver — use HTTPS, app attestation, network rules, monitoring, and edge rate limits where needed.
@@ -84,3 +84,15 @@ The backend sets the driver in the auth context so trip start/location/finish/ca
 1. `POST /driver/location` with header `X-Telegram-Init-Data` and/or **`X-Driver-Id`** (same as other driver routes) and body `{ "lat": 41.2, "lng": 69.3 }`.
 2. Optional: **`"timestamp": 1730000000`** (Unix **seconds**, GPS fix time). The server stores **`last_seen_at`** / **`last_live_location_at`** using **UTC wall clock** so a slightly old GPS timestamp cannot block updates.
 3. Middleware sets driver in context; handler uses `u.UserID` for DB update and AddPoint.
+
+
+## Driver sessions (single active session)
+
+Issuing a driver token revokes every previous session for that driver, so logging in
+on a second device invalidates the first. The old device's next request fails
+authentication; clients treat that as "log out locally". Before this, both sessions
+stayed valid and two devices posted location for the same driver with neither aware of
+the other.
+
+Rider refresh tokens rotate: `POST /v1/rider/auth/refresh` revokes the presented token
+and returns a new pair, so the client must persist the new refresh token.

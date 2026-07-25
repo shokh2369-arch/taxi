@@ -62,7 +62,7 @@ func applyStatements(ctx context.Context, db *sql.DB, sqlText string) error {
 	return nil
 }
 
-// splitSQLStatements splits on ';' outside single-quoted SQL strings ('' is escape).
+// splitSQLStatements splits on ';' outside single-quoted SQL strings (” is escape).
 func splitSQLStatements(sql string) []string {
 	sql = strings.TrimSpace(sql)
 	var out []string

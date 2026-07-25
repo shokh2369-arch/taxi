@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/google/uuid"
 	"taxi-mvp/internal/config"
 	"taxi-mvp/internal/domain"
 	"taxi-mvp/internal/legal"
@@ -37,10 +37,10 @@ func assignmentErrStr(err error) string {
 
 // AssignmentService assigns requests to drivers and runs the expiry worker.
 type AssignmentService struct {
-	db         *sql.DB
-	riderBot   *tgbotapi.BotAPI
-	driverBot  *tgbotapi.BotAPI
-	cfg        *config.Config
+	db        *sql.DB
+	riderBot  *tgbotapi.BotAPI
+	driverBot *tgbotapi.BotAPI
+	cfg       *config.Config
 }
 
 // NewAssignmentService returns an AssignmentService.
@@ -89,12 +89,29 @@ func (s *AssignmentService) TryAssign(ctx context.Context, requestID string, dri
 		domain.NotificationStatusAccepted, requestID, driverUserID)
 
 	tripID = uuid.New().String()
-	_, err = tx.ExecContext(ctx, `
+	// The compare-and-swap above stops two drivers taking the same request, but
+	// nothing stopped one driver taking two different requests: both offers pass
+	// the "no active trip" filter at offer time, and accepting them touches
+	// different ride_requests rows so the CAS never conflicts. The driver app
+	// shows only one assigned trip (LIMIT 1), so the second rider waits forever
+	// for a driver who is not coming. Re-check inside the transaction.
+	insertRes, err := tx.ExecContext(ctx, `
 		INSERT INTO trips (id, request_id, driver_user_id, rider_user_id, status)
-		VALUES (?1, ?2, ?3, ?4, ?5)`,
-		tripID, requestID, driverUserID, riderUserID, domain.TripStatusWaiting)
+		SELECT ?1, ?2, ?3, ?4, ?5
+		WHERE NOT EXISTS (
+			SELECT 1 FROM trips
+			WHERE driver_user_id = ?3 AND status IN (?6, ?7, ?8)
+		)`,
+		tripID, requestID, driverUserID, riderUserID, domain.TripStatusWaiting,
+		domain.TripStatusWaiting, domain.TripStatusArrived, domain.TripStatusStarted)
 	if err != nil {
 		return false, "", err
+	}
+	if inserted, _ := insertRes.RowsAffected(); inserted == 0 {
+		// Driver already has an active trip. Roll back so the request returns to
+		// PENDING and stays available to other drivers.
+		log.Printf("assignment_service: driver %d already has an active trip; request %s left pending", driverUserID, requestID)
+		return false, "", nil
 	}
 	if err := tx.Commit(); err != nil {
 		return false, "", err
@@ -182,6 +199,11 @@ func (s *AssignmentService) TryAssign(ctx context.Context, requestID string, dri
 			}
 		}
 	}
+	// Truncation here leaves other drivers with a live Accept button for a ride
+	// that is already taken; surface it rather than reporting a clean assign.
+	if err := notifRows.Err(); err != nil {
+		log.Printf("assignment_service: clear offer messages for request %s: %v", requestID, err)
+	}
 	return true, tripID, nil
 }
 
@@ -195,8 +217,43 @@ func (s *AssignmentService) RunExpiryWorker(ctx context.Context) {
 			return
 		case <-tick.C:
 			s.expireRequests(ctx)
+			s.expireAbandonedRequests(ctx)
 			ExpireStaleDriverQueueOffers(ctx, s.db, s.cfg)
 		}
+	}
+}
+
+// abandonedRequestTimeout is how long a PENDING request with no confirmed
+// destination may sit before it is retired. Generous, because a rider browsing
+// the destination list is legitimately mid-flow.
+const abandonedRequestTimeout = 30 * time.Minute
+
+// expireAbandonedRequests retires PENDING requests that never reached a
+// confirmed destination.
+//
+// expireRequests only touches requests that were actually dispatched (drop set
+// and destination_confirmed = 1). A rider who sent their pickup and then closed
+// Telegram left a PENDING row that nothing could ever clear — and because only
+// one PENDING request per rider is allowed, that one abandoned row blocked every
+// future order they tried to place, permanently, with the only escape being a
+// /cancel command they had no reason to know about.
+//
+// These are expired silently: they were never broadcast, so there is no "no
+// driver found" to report. The rider simply finds ordering works again.
+func (s *AssignmentService) expireAbandonedRequests(ctx context.Context) {
+	cutoff := time.Now().UTC().Add(-abandonedRequestTimeout).Format("2006-01-02 15:04:05")
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE ride_requests SET status = ?1
+		WHERE status = ?2
+		  AND COALESCE(destination_confirmed, 0) = 0
+		  AND created_at <= ?3`,
+		domain.RequestStatusExpired, domain.RequestStatusPending, cutoff)
+	if err != nil {
+		log.Printf("assignment_service: expire abandoned requests: %v", assignmentErrStr(err))
+		return
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("assignment_service: retired %d abandoned request(s) with no confirmed destination", n)
 	}
 }
 
@@ -257,7 +314,7 @@ func (s *AssignmentService) expireRequests(ctx context.Context) {
 		if err != nil || telegramID == 0 {
 			continue
 		}
-		msg := tgbotapi.NewMessage(telegramID, "Ҳайдовчи топилмади.")
+		msg := tgbotapi.NewMessage(telegramID, "😔 Ҳозирча бўш ҳайдовчи топилмади.\n\nБироздан сўнг «🚕 Янги такси чақириш» орқали қайта уриниб кўринг.")
 		msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
 			tgbotapi.NewInlineKeyboardRow(
 				tgbotapi.NewInlineKeyboardButtonData("Қайта қидириш", "search_again"),
@@ -287,33 +344,75 @@ func (s *AssignmentService) RunRadiusExpansionWorker(ctx context.Context, matchS
 	if matchSvc == nil {
 		return
 	}
-	expansionDelay := time.Duration(s.cfg.RadiusExpansionMinutes) * time.Minute
-	if expansionDelay <= 0 {
-		expansionDelay = 5 * time.Minute
+	// A request is widened once expansionDelay of its life has elapsed, which is
+	// the same as saying it has at most (ttl - expansionDelay) left to run.
+	ttl, expansionDelay := s.radiusExpansionWindow()
+	remainingAtExpansion := ttl - expansionDelay
+	if remainingAtExpansion < 0 {
+		remainingAtExpansion = 0
 	}
-	tick := time.NewTicker(1 * time.Minute)
+	// Must land inside a window measured in seconds, so tick faster than a minute.
+	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			s.expandRadiusAndRebroadcast(ctx, matchSvc, expansionDelay)
+			s.expandRadiusAndRebroadcast(ctx, matchSvc, remainingAtExpansion)
 		}
 	}
 }
 
-func (s *AssignmentService) expandRadiusAndRebroadcast(ctx context.Context, matchSvc *MatchService, expansionDelay time.Duration) {
-	cutoff := time.Now().Add(-expansionDelay)
+// radiusExpansionWindow returns the request TTL and how much of it elapses
+// before the search radius widens.
+//
+// RADIUS_EXPANSION_MINUTES defaults to 5 minutes while REQUEST_EXPIRES_SECONDS
+// defaults to 120, and the expansion query requires the request to still be
+// unexpired — so with shipped defaults the widened search could never run at
+// all, and riders in thin areas were told "no driver found" while drivers just
+// outside the initial radius were never asked. Clamp the delay to a fraction of
+// the actual TTL so expansion always gets a chance to fire.
+func (s *AssignmentService) radiusExpansionWindow() (ttl, delay time.Duration) {
+	ttl = 120 * time.Second
+	if s.cfg != nil && s.cfg.RequestExpiresSeconds > 0 {
+		ttl = time.Duration(s.cfg.RequestExpiresSeconds) * time.Second
+	}
+	maxDelay := ttl * 2 / 5 // widen once 40% of the window has elapsed
+
+	delay = maxDelay
+	if s.cfg != nil && s.cfg.RadiusExpansionMinutes > 0 {
+		configured := time.Duration(s.cfg.RadiusExpansionMinutes) * time.Minute
+		if configured <= maxDelay {
+			delay = configured
+		} else {
+			log.Printf("assignment_service: RADIUS_EXPANSION_MINUTES=%d (%s) exceeds the usable window for a %s request TTL; widening after %s instead",
+				s.cfg.RadiusExpansionMinutes, configured, ttl, maxDelay)
+		}
+	}
+	if delay < time.Second {
+		delay = time.Second
+	}
+	return ttl, delay
+}
+
+// expandRadiusAndRebroadcast widens requests that have at most
+// remainingAtExpansion of their TTL left.
+//
+// Life remaining is measured from expires_at rather than created_at: the TTL is
+// (re)set when the rider confirms, so created_at can be far older than the point
+// at which dispatch actually started.
+func (s *AssignmentService) expandRadiusAndRebroadcast(ctx context.Context, matchSvc *MatchService, remainingAtExpansion time.Duration) {
+	remaining := fmt.Sprintf("+%d seconds", int(remainingAtExpansion.Seconds()))
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id FROM ride_requests
 		WHERE status = ?1 AND expires_at > datetime('now')
 		  AND (radius_expanded_at IS NULL)
 		  AND radius_km < ?2
-		  AND created_at <= ?3
+		  AND expires_at <= datetime('now', ?3)
 		  AND drop_lat IS NOT NULL AND drop_lng IS NOT NULL
 		  AND COALESCE(destination_confirmed, 0) = 1`,
-		domain.RequestStatusPending, s.cfg.ExpandedRadiusKm, cutoff)
+		domain.RequestStatusPending, s.cfg.ExpandedRadiusKm, remaining)
 	if err != nil {
 		log.Printf("assignment_service: radius expansion query: %v", assignmentErrStr(err))
 		return

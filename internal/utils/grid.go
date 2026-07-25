@@ -32,4 +32,3 @@ func NeighborGridIDs(lat, lng float64) []string {
 	}
 	return out
 }
-

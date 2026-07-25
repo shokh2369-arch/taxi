@@ -1,5 +1,16 @@
 -- +goose Up
 -- +goose NO TRANSACTION
+--
+-- IDEMPOTENCY: this runs without a transaction, so an interruption (deploy
+-- timeout, OOM kill, a network blip to Turso — which is a remote database) used
+-- to leave legal_documents_old present and legal_documents half-built, with the
+-- version not recorded. The next boot re-ran statement one and failed with
+-- "table legal_documents_old already exists", and because the container runs
+-- `migrate -up && exec ./app`, migrate failing meant the app never started —
+-- a permanent crash-loop needing manual SQL against production.
+--
+-- Every statement below is now safe to re-run: guarded renames, IF NOT EXISTS
+-- creates, and INSERT OR IGNORE copies.
 -- Split privacy policy into rider/user vs driver versions.
 -- - Keeps legacy privacy_policy rows/acceptances for history.
 -- - Introduces privacy_policy_user and privacy_policy_driver as new document types.
@@ -10,9 +21,10 @@ PRAGMA foreign_keys=OFF;
 
 -- Rebuild legal_documents with expanded document_type CHECK.
 DROP INDEX IF EXISTS idx_legal_documents_one_active_per_type;
+DROP TABLE IF EXISTS legal_documents_old;
 ALTER TABLE legal_documents RENAME TO legal_documents_old;
 
-CREATE TABLE legal_documents (
+CREATE TABLE IF NOT EXISTS legal_documents (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   document_type TEXT NOT NULL CHECK (document_type IN (
     'driver_terms','user_terms','privacy_policy',
@@ -25,18 +37,19 @@ CREATE TABLE legal_documents (
   UNIQUE (document_type, version)
 );
 
-CREATE UNIQUE INDEX idx_legal_documents_one_active_per_type ON legal_documents(document_type) WHERE is_active = 1;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_legal_documents_one_active_per_type ON legal_documents(document_type) WHERE is_active = 1;
 
-INSERT INTO legal_documents (id, document_type, version, content, is_active, created_at)
+INSERT OR IGNORE INTO legal_documents (id, document_type, version, content, is_active, created_at)
 SELECT id, document_type, version, content, is_active, created_at
 FROM legal_documents_old;
 
 DROP TABLE legal_documents_old;
 
 -- Rebuild legal_acceptances with expanded document_type CHECK.
+DROP TABLE IF EXISTS legal_acceptances_old;
 ALTER TABLE legal_acceptances RENAME TO legal_acceptances_old;
 
-CREATE TABLE legal_acceptances (
+CREATE TABLE IF NOT EXISTS legal_acceptances (
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   document_type TEXT NOT NULL CHECK (document_type IN (
     'driver_terms','user_terms','privacy_policy',
@@ -49,7 +62,7 @@ CREATE TABLE legal_acceptances (
   PRIMARY KEY (user_id, document_type)
 );
 
-INSERT INTO legal_acceptances (user_id, document_type, version, accepted_at, client_ip, user_agent)
+INSERT OR IGNORE INTO legal_acceptances (user_id, document_type, version, accepted_at, client_ip, user_agent)
 SELECT user_id, document_type, version, accepted_at, client_ip, user_agent
 FROM legal_acceptances_old;
 
@@ -60,7 +73,9 @@ UPDATE legal_documents
 SET is_active = 0
 WHERE document_type = 'privacy_policy' AND is_active = 1;
 
-INSERT INTO legal_documents (document_type, version, content, is_active) VALUES
+-- OR IGNORE: re-running must not collide with the rows a partial run already
+-- seeded, nor with the one-active-per-type partial unique index.
+INSERT OR IGNORE INTO legal_documents (document_type, version, content, is_active) VALUES
 ('privacy_policy_user', 1,
 '📄 Maxfiylik siyosati
 

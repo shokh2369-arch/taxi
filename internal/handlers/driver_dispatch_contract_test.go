@@ -125,7 +125,7 @@ func TestDriverAvailableRequests_JSONContract(t *testing.T) {
 	c.Request = req
 	injectDriverContext(c, driverID)
 
-	DriverAvailableRequests(db, nil)(c)
+	DriverAvailableRequests(db, nil, nil)(c)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
@@ -181,7 +181,7 @@ func TestDriverAvailableRequests_JSONContract(t *testing.T) {
 	c2.Request = req2
 	injectDriverContext(c2, driverID)
 
-	DriverAvailableRequests(db, nil)(c2)
+	DriverAvailableRequests(db, nil, nil)(c2)
 	if w2.Code != http.StatusOK {
 		t.Fatalf("status = %d", w2.Code)
 	}
@@ -217,7 +217,7 @@ func TestDriverAcceptRequest_JSONContract(t *testing.T) {
 		c.Request.Header.Set("Content-Type", "application/json")
 		injectDriverContext(c, 1)
 
-		DriverAcceptRequest(db, nil, nil)(c)
+		DriverAcceptRequest(db, nil, nil, nil, nil)(c)
 		if w.Code != http.StatusOK {
 			t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 		}
@@ -239,7 +239,7 @@ func TestDriverAcceptRequest_JSONContract(t *testing.T) {
 		c.Request.Header.Set("Content-Type", "application/json")
 		injectDriverContext(c, 1)
 
-		DriverAcceptRequest(db, nil, nil)(c)
+		DriverAcceptRequest(db, nil, nil, nil, nil)(c)
 		if w.Code != http.StatusServiceUnavailable {
 			t.Fatalf("status = %d", w.Code)
 		}
@@ -261,7 +261,7 @@ func TestDriverAcceptRequest_JSONContract(t *testing.T) {
 		c.Request.Header.Set("Content-Type", "application/json")
 		injectDriverContext(c, 1)
 
-		DriverAcceptRequest(db, assignSvc, nil)(c)
+		DriverAcceptRequest(db, assignSvc, nil, nil, nil)(c)
 		if w.Code != http.StatusConflict {
 			t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 		}
@@ -289,7 +289,7 @@ func TestDriverAcceptRequest_JSONContract(t *testing.T) {
 		c.Request.Header.Set("Content-Type", "application/json")
 		injectDriverContext(c, 1)
 
-		DriverAcceptRequest(db, assignSvc, nil)(c)
+		DriverAcceptRequest(db, assignSvc, nil, nil, nil)(c)
 		if w.Code != http.StatusOK {
 			t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 		}
@@ -317,9 +317,132 @@ func TestDriverAcceptRequest_JSONContract(t *testing.T) {
 		c.Request = httptest.NewRequest(http.MethodPost, "/driver/accept-request", bytes.NewBufferString(`{}`))
 		c.Request.Header.Set("Content-Type", "application/json")
 		injectDriverContext(c, 1)
-		DriverAcceptRequest(db, nil, nil)(c)
+		DriverAcceptRequest(db, nil, nil, nil, nil)(c)
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d", w.Code)
 		}
 	})
+}
+
+// The reported "button changes then reverts" bug.
+//
+// assigned_trip was selected with LIMIT 1 and no ORDER BY, so when a driver held
+// more than one active trip SQLite could return either one — and the status the
+// app read flipped between polls. It was never replica lag: there is a single
+// Turso primary and no read cache. Ordering makes the answer stable, and
+// preferring the furthest-progressed trip means a just-tapped ARRIVED never reads
+// back as WAITING.
+func TestDriverAvailableRequests_AssignedTripIsStableAcrossPolls(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupDispatchContractDB(t)
+	defer db.Close()
+
+	// Legacy state: the same driver on two active trips at once.
+	if _, err := db.Exec(`INSERT INTO ride_requests (id, rider_user_id, status, pickup_lat, pickup_lng, radius_km, expires_at)
+		VALUES ('req-a', 55, 'ASSIGNED', 41.30, 69.28, 3, '2099-01-01 00:00:00'),
+		       ('req-b', 56, 'ASSIGNED', 41.31, 69.29, 3, '2099-01-01 00:00:00')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO trips (id, request_id, driver_user_id, rider_user_id, status) VALUES
+		('trip-waiting', 'req-a', 1, 55, 'WAITING'),
+		('trip-arrived', 'req-b', 1, 56, 'ARRIVED')`); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _ = db.Exec(`INSERT INTO users (id, telegram_id, role) VALUES (1, 100, 'driver'), (55, 550, 'rider'), (56, 560, 'rider')`)
+	_, _ = db.Exec(`INSERT INTO drivers (user_id, last_lat, last_lng, last_seen_at) VALUES (1, 41.0, 69.0, '2026-01-01 12:00:00')`)
+
+	poll := func() map[string]any {
+		t.Helper()
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodGet, "/driver/available-requests", nil).WithContext(context.Background())
+		injectDriverContext(c, 1)
+		DriverAvailableRequests(db, nil, nil)(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d body = %s", w.Code, w.Body.String())
+		}
+		var body map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		return body
+	}
+
+	var firstTrip, firstStatus string
+	for i := 0; i < 8; i++ {
+		body := poll()
+		assigned, ok := body["assigned_trip"].(map[string]any)
+		if !ok || assigned == nil {
+			t.Fatalf("poll %d: assigned_trip missing: %v", i, body["assigned_trip"])
+		}
+		tripID, _ := assigned["trip_id"].(string)
+		status, _ := assigned["status"].(string)
+		if i == 0 {
+			firstTrip, firstStatus = tripID, status
+			continue
+		}
+		if tripID != firstTrip || status != firstStatus {
+			t.Fatalf("poll %d returned %s/%s, first poll returned %s/%s — assigned_trip must not flip between polls",
+				i, tripID, status, firstTrip, firstStatus)
+		}
+	}
+
+	// The furthest-progressed trip wins, so a tapped ARRIVED is never masked by a
+	// stale WAITING row.
+	if firstStatus != "ARRIVED" {
+		t.Errorf("assigned_trip.status = %q, want ARRIVED (the further-progressed trip)", firstStatus)
+	}
+}
+
+// Conditional requests: this endpoint is polled every few seconds per online
+// driver and is usually unchanged, so an idle poll should cost a 304 not a body.
+func TestDriverAvailableRequests_ETagReturns304WhenUnchanged(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupDispatchContractDB(t)
+	defer db.Close()
+
+	_, _ = db.Exec(`INSERT INTO users (id, telegram_id, role) VALUES (1, 100, 'driver')`)
+	_, _ = db.Exec(`INSERT INTO drivers (user_id, last_lat, last_lng, last_seen_at) VALUES (1, 41.0, 69.0, '2026-01-01 12:00:00')`)
+
+	call := func(ifNoneMatch string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		req := httptest.NewRequest(http.MethodGet, "/driver/available-requests", nil).WithContext(context.Background())
+		if ifNoneMatch != "" {
+			req.Header.Set("If-None-Match", ifNoneMatch)
+		}
+		c.Request = req
+		injectDriverContext(c, 1)
+		DriverAvailableRequests(db, nil, nil)(c)
+		return w
+	}
+
+	first := call("")
+	if first.Code != http.StatusOK {
+		t.Fatalf("first call status = %d", first.Code)
+	}
+	etag := first.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("no ETag header on the first response")
+	}
+
+	second := call(etag)
+	if second.Code != http.StatusNotModified {
+		t.Fatalf("unchanged poll status = %d, want 304 (body was %d bytes)", second.Code, second.Body.Len())
+	}
+	if second.Body.Len() != 0 {
+		t.Errorf("304 must have an empty body, got %d bytes", second.Body.Len())
+	}
+
+	// A real change must break the ETag.
+	_, _ = db.Exec(`INSERT INTO ride_requests (id, rider_user_id, pickup_lat, pickup_lng, radius_km, status, expires_at)
+		VALUES ('req-new', 2, 41.01, 69.01, 3.0, 'PENDING', '2099-12-31 23:59:59')`)
+	_, _ = db.Exec(`INSERT INTO request_notifications (request_id, driver_user_id, chat_id, message_id, status)
+		VALUES ('req-new', 1, 0, 0, 'SENT')`)
+
+	third := call(etag)
+	if third.Code != http.StatusOK {
+		t.Fatalf("after a new offer the poll must return 200, got %d", third.Code)
+	}
 }

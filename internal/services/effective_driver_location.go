@@ -59,4 +59,3 @@ func GetEffectiveDriverLocationSource(driver EffectiveDriverLocation) string {
 	}
 	return "TELEGRAM"
 }
-

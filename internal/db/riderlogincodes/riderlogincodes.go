@@ -13,7 +13,7 @@ import (
 //
 // Why "rebuild on drift" is safe here:
 //
-//   - rider_login_codes only ever holds short-lived 4-digit OTPs (5-minute TTL).
+//   - rider_login_codes only ever holds short-lived 6-digit OTPs (5-minute TTL).
 //     Dropping it loses at most a few seconds of in-flight login codes; the
 //     rider client retries by tapping "Send code" again.
 //   - rider_auth_sessions holds refresh-token hashes. Dropping it forces every

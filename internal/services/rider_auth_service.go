@@ -6,11 +6,11 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"database/sql"
-	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
+	"math/big"
 	"strings"
 	"time"
 
@@ -60,32 +60,40 @@ type RiderAuthConfig struct {
 }
 
 // DefaultRiderAuthConfig matches the spec.
+//
+// The throttles are on by default. Without them the login code is a small
+// numeric secret with unlimited retries: an attacker who knows a phone number
+// can request fresh codes in a loop and walk the whole code space. Callers that
+// genuinely need no throttling must opt out explicitly with RiderAuthThrottleOff.
 func DefaultRiderAuthConfig() RiderAuthConfig {
 	return RiderAuthConfig{
 		CodeTTL:              5 * time.Minute,
-		// Rate limiting disabled by default (native app may handle UX-side retries).
-		// Set these explicitly in NewRiderAuthService if you want throttling.
-		PerPhoneCooldown:     0,
-		PerPhoneHourlyMax:    0,
-		PerPhoneHourlyWindow: 0,
+		PerPhoneCooldown:     60 * time.Second,
+		PerPhoneHourlyMax:    5,
+		PerPhoneHourlyWindow: time.Hour,
 		MaxAttempts:          5,
 	}
 }
 
+// RiderAuthThrottleOff disables a per-phone throttle when passed explicitly.
+// Zero means "not set" (the default applies), so this sentinel is the only way
+// to turn a limit off on purpose.
+const RiderAuthThrottleOff = -1
+
 // RiderAuthService implements the native rider login flow:
 //
-//	request-code  -> generate 4-digit OTP, persist hashed, deliver via rider bot
+//	request-code  -> generate 6-digit OTP, persist hashed, deliver via rider bot
 //	verify-code   -> compare hash, consume row, issue tokens
 //	refresh       -> rotate refresh token via RiderAuthTokenService
 //	logout        -> revoke all refresh tokens for the user
 type RiderAuthService struct {
-	db        *sql.DB
-	codes     *repositories.RiderLoginCodesRepo
-	tokens    *RiderAuthTokenService
-	bot       riderbot.LoginCodeSender
-	cfg       RiderAuthConfig
-	now       func() time.Time
-	randCode  func() (string, error) // override-able for tests
+	db       *sql.DB
+	codes    *repositories.RiderLoginCodesRepo
+	tokens   *RiderAuthTokenService
+	bot      riderbot.LoginCodeSender
+	cfg      RiderAuthConfig
+	now      func() time.Time
+	randCode func() (string, error) // override-able for tests
 }
 
 // NewRiderAuthService wires the service. Any of bot, codes, tokens may NOT
@@ -96,9 +104,27 @@ func NewRiderAuthService(db *sql.DB, codes *repositories.RiderLoginCodesRepo, to
 	if cfg.CodeTTL == 0 {
 		cfg.CodeTTL = def.CodeTTL
 	}
-	// Per-phone throttles are intentionally NOT defaulted here. Zero means disabled.
 	if cfg.MaxAttempts == 0 {
 		cfg.MaxAttempts = def.MaxAttempts
+	}
+	// Throttles default to on; RiderAuthThrottleOff opts out explicitly.
+	if cfg.PerPhoneCooldown == 0 {
+		cfg.PerPhoneCooldown = def.PerPhoneCooldown
+	}
+	if cfg.PerPhoneHourlyMax == 0 {
+		cfg.PerPhoneHourlyMax = def.PerPhoneHourlyMax
+	}
+	if cfg.PerPhoneHourlyWindow == 0 {
+		cfg.PerPhoneHourlyWindow = def.PerPhoneHourlyWindow
+	}
+	if cfg.PerPhoneCooldown == RiderAuthThrottleOff {
+		cfg.PerPhoneCooldown = 0
+	}
+	if cfg.PerPhoneHourlyMax == RiderAuthThrottleOff {
+		cfg.PerPhoneHourlyMax = 0
+	}
+	if cfg.PerPhoneHourlyWindow == RiderAuthThrottleOff {
+		cfg.PerPhoneHourlyWindow = 0
 	}
 	return &RiderAuthService{
 		db:       db,
@@ -107,7 +133,7 @@ func NewRiderAuthService(db *sql.DB, codes *repositories.RiderLoginCodesRepo, to
 		bot:      bot,
 		cfg:      cfg,
 		now:      time.Now,
-		randCode: generate4DigitCode,
+		randCode: generateLoginCode,
 	}
 }
 
@@ -138,7 +164,7 @@ type RequestCodeResult struct {
 //  2. Look up users.phone (rejects with ErrRiderAuthPhoneNotFound or
 //     ErrRiderAuthTelegramNotLink as appropriate).
 //  3. Apply per-phone rate limits.
-//  4. Generate a 4-digit code, persist sha256(salt + code).
+//  4. Generate a 6-digit code, persist sha256(salt + code).
 //  5. Send via the rider bot. On 403 (bot blocked), the row is invalidated
 //     and ErrRiderAuthBotBlocked is returned.
 //
@@ -154,7 +180,7 @@ func (s *RiderAuthService) RequestCode(ctx context.Context, rawPhone string) (*R
 	}
 	now := s.now().UTC()
 
-	// Optional rate limiting (disabled by default).
+	// Per-phone rate limiting (on by default; see DefaultRiderAuthConfig).
 	if s.cfg.PerPhoneCooldown > 0 {
 		last, err := s.codes.LastCreatedAtForPhone(ctx, phone)
 		if err != nil {
@@ -240,7 +266,7 @@ func (s *RiderAuthService) VerifyCode(ctx context.Context, rawPhone, rawCode str
 		return nil, ErrRiderAuthInvalidPhone
 	}
 	codeIn := strings.TrimSpace(rawCode)
-	if len(codeIn) != 4 || !isAllDigits(codeIn) {
+	if len(codeIn) != riderOTPDigits || !isAllDigits(codeIn) {
 		return nil, ErrRiderAuthInvalidCode
 	}
 	uid, tgID, err := s.lookupRiderByPhone(ctx, phone)
@@ -420,12 +446,23 @@ func maskPhone(p string) string {
 	return strings.Repeat("*", len(digits)-4) + digits[len(digits)-4:]
 }
 
-func generate4DigitCode() (string, error) {
-	var n uint32
-	if err := binary.Read(rand.Reader, binary.BigEndian, &n); err != nil {
+// riderOTPDigits is the login code length. Four digits gave only 10,000
+// possibilities, which a loop of request-code + 5 guesses can exhaust in
+// minutes. Generation and verification must both use this constant — a
+// mismatch rejects every real code while tests that inject a fixed code pass.
+const riderOTPDigits = 6
+
+// loginCodeSpace is the number of distinct login codes (10^riderOTPDigits).
+const loginCodeSpace = 1000000
+
+// generateLoginCode returns a zero-padded 6-digit code. rand.Int is used rather
+// than a modulo of a random word so the distribution is uniform.
+func generateLoginCode() (string, error) {
+	n, err := rand.Int(rand.Reader, big.NewInt(loginCodeSpace))
+	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("%04d", int(n%10000)), nil
+	return fmt.Sprintf("%06d", n.Int64()), nil
 }
 
 // generateSalt returns a 32-character hex string for per-row salting.

@@ -189,8 +189,23 @@ func (r *adminDriverRepo) SetDriverBalance(ctx context.Context, id int64, newBal
 // UpdateVerificationStatus sets verification_status. For "rejected", also clears document file_ids and sets application_step to restart doc upload.
 func (r *adminDriverRepo) UpdateVerificationStatus(ctx context.Context, driverUserID int64, status string) error {
 	if status == "rejected" {
+		// Documents are cleared so the driver re-submits, but keep a counter and a
+		// timestamp: without them a re-application looks identical to a first-time
+		// one, and a rejected applicant could cycle through indefinitely with each
+		// review starting from zero knowledge.
 		_, err := r.db.ExecContext(ctx, `
-			UPDATE drivers SET verification_status = 'rejected', license_photo_file_id = NULL, vehicle_doc_file_id = NULL, application_step = 'license_photo', application_admin_sent = 0 WHERE user_id = ?1`, driverUserID)
+			UPDATE drivers SET verification_status = 'rejected', license_photo_file_id = NULL, vehicle_doc_file_id = NULL,
+			                   application_step = 'license_photo', application_admin_sent = 0,
+			                   rejection_count = COALESCE(rejection_count, 0) + 1,
+			                   last_rejected_at = datetime('now')
+			WHERE user_id = ?1`, driverUserID)
+		if err != nil && isMissingColumnErr(err) {
+			// Database not migrated yet: fall back to the original behaviour.
+			_, err = r.db.ExecContext(ctx, `
+				UPDATE drivers SET verification_status = 'rejected', license_photo_file_id = NULL, vehicle_doc_file_id = NULL,
+				                   application_step = 'license_photo', application_admin_sent = 0
+				WHERE user_id = ?1`, driverUserID)
+		}
 		return err
 	}
 	_, err := r.db.ExecContext(ctx, `UPDATE drivers SET verification_status = ?1 WHERE user_id = ?2`, status, driverUserID)
@@ -203,4 +218,3 @@ func (r *adminDriverRepo) GetDriverTelegramID(ctx context.Context, driverUserID 
 	err := r.db.QueryRowContext(ctx, `SELECT u.telegram_id FROM users u JOIN drivers d ON d.user_id = u.id WHERE d.user_id = ?1`, driverUserID).Scan(&telegramID)
 	return telegramID, err
 }
-

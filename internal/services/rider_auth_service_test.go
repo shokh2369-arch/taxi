@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -101,9 +102,9 @@ func newRiderAuthSvc(t *testing.T, db *sql.DB, bot *fakeRiderBot, codeOverride s
 
 func TestNormalizeUzbekPhone(t *testing.T) {
 	cases := []struct {
-		in       string
-		want     string
-		wantOK   bool
+		in     string
+		want   string
+		wantOK bool
 	}{
 		{"+998901234567", "+998901234567", true},
 		{"998901234567", "+998901234567", true},
@@ -129,7 +130,7 @@ func TestRequestCode_DeliversCodeViaTelegram(t *testing.T) {
 	}
 
 	bot := &fakeRiderBot{}
-	svc := newRiderAuthSvc(t, db, bot, "1234")
+	svc := newRiderAuthSvc(t, db, bot, "123456")
 
 	res, err := svc.RequestCode(context.Background(), "+998901234567")
 	if err != nil {
@@ -148,7 +149,7 @@ func TestRequestCode_DeliversCodeViaTelegram(t *testing.T) {
 	if msg.ParseMode != "HTML" {
 		t.Fatalf("parse mode=%q want HTML", msg.ParseMode)
 	}
-	if !strings.Contains(msg.Text, "<code>1234</code>") {
+	if !strings.Contains(msg.Text, "<code>123456</code>") {
 		t.Fatalf("rendered message missing code: %q", msg.Text)
 	}
 
@@ -164,7 +165,7 @@ func TestRequestCode_PhoneNotRegistered(t *testing.T) {
 	db := setupRiderAuthDB(t, "rider_auth_no_phone")
 	defer db.Close()
 	bot := &fakeRiderBot{}
-	svc := newRiderAuthSvc(t, db, bot, "1234")
+	svc := newRiderAuthSvc(t, db, bot, "123456")
 
 	_, err := svc.RequestCode(context.Background(), "+998901234567")
 	if !errors.Is(err, ErrRiderAuthPhoneNotFound) {
@@ -182,7 +183,7 @@ func TestRequestCode_TelegramNotLinked(t *testing.T) {
 		t.Fatal(err)
 	}
 	bot := &fakeRiderBot{}
-	svc := newRiderAuthSvc(t, db, bot, "1234")
+	svc := newRiderAuthSvc(t, db, bot, "123456")
 
 	_, err := svc.RequestCode(context.Background(), "998901234567")
 	if !errors.Is(err, ErrRiderAuthTelegramNotLink) {
@@ -200,7 +201,7 @@ func TestRequestCode_RateLimitedWithin60s(t *testing.T) {
 		t.Fatal(err)
 	}
 	bot := &fakeRiderBot{}
-	svc := newRiderAuthSvc(t, db, bot, "1234")
+	svc := newRiderAuthSvc(t, db, bot, "123456")
 
 	if _, err := svc.RequestCode(context.Background(), "+998901234567"); err != nil {
 		t.Fatalf("first RequestCode: %v", err)
@@ -238,7 +239,7 @@ func TestRequestCode_HourlyCap(t *testing.T) {
 		}
 	}
 	bot := &fakeRiderBot{}
-	svc := newRiderAuthSvc(t, db, bot, "1234")
+	svc := newRiderAuthSvc(t, db, bot, "123456")
 
 	_, err := svc.RequestCode(context.Background(), "+998901234567")
 	if !errors.Is(err, ErrRiderAuthTooManyCodes) {
@@ -256,13 +257,13 @@ func TestVerifyCode_Success_IssuesTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 	bot := &fakeRiderBot{}
-	svc := newRiderAuthSvc(t, db, bot, "4321")
+	svc := newRiderAuthSvc(t, db, bot, "432198")
 
 	if _, err := svc.RequestCode(context.Background(), "+998901234567"); err != nil {
 		t.Fatal(err)
 	}
 
-	tokens, err := svc.VerifyCode(context.Background(), "998901234567", "4321")
+	tokens, err := svc.VerifyCode(context.Background(), "998901234567", "432198")
 	if err != nil {
 		t.Fatalf("VerifyCode: %v", err)
 	}
@@ -284,7 +285,7 @@ func TestVerifyCode_Success_IssuesTokens(t *testing.T) {
 	}
 
 	// Re-using the same code must fail (consumed).
-	if _, err := svc.VerifyCode(context.Background(), "+998901234567", "4321"); !errors.Is(err, ErrRiderAuthInvalidCode) {
+	if _, err := svc.VerifyCode(context.Background(), "+998901234567", "432198"); !errors.Is(err, ErrRiderAuthInvalidCode) {
 		t.Fatalf("re-use should fail with invalid_code, got %v", err)
 	}
 }
@@ -296,25 +297,25 @@ func TestVerifyCode_5WrongAttemptsConsumesAndReturnsTooMany(t *testing.T) {
 		t.Fatal(err)
 	}
 	bot := &fakeRiderBot{}
-	svc := newRiderAuthSvc(t, db, bot, "1111")
+	svc := newRiderAuthSvc(t, db, bot, "111122")
 
 	if _, err := svc.RequestCode(context.Background(), "+998901234567"); err != nil {
 		t.Fatal(err)
 	}
 
 	for i := 1; i <= 4; i++ {
-		_, err := svc.VerifyCode(context.Background(), "+998901234567", "0000")
+		_, err := svc.VerifyCode(context.Background(), "+998901234567", "000000")
 		if !errors.Is(err, ErrRiderAuthInvalidCode) {
 			t.Fatalf("attempt %d: want invalid_code got %v", i, err)
 		}
 	}
 	// 5th wrong attempt invalidates the code.
-	_, err := svc.VerifyCode(context.Background(), "+998901234567", "0000")
+	_, err := svc.VerifyCode(context.Background(), "+998901234567", "000000")
 	if !errors.Is(err, ErrRiderAuthTooManyAttempts) {
 		t.Fatalf("5th attempt: want too_many_attempts got %v", err)
 	}
 	// Now the right code must also fail because the row is consumed.
-	_, err = svc.VerifyCode(context.Background(), "+998901234567", "1111")
+	_, err = svc.VerifyCode(context.Background(), "+998901234567", "111122")
 	if !errors.Is(err, ErrRiderAuthInvalidCode) {
 		t.Fatalf("post-lockout right code: want invalid_code got %v", err)
 	}
@@ -329,7 +330,7 @@ func TestRequestCode_BotBlockedConsumesRow(t *testing.T) {
 	bot := &fakeRiderBot{
 		sendErr: &tgbotapi.Error{Code: 403, Message: "Forbidden: bot was blocked by the user"},
 	}
-	svc := newRiderAuthSvc(t, db, bot, "1234")
+	svc := newRiderAuthSvc(t, db, bot, "123456")
 
 	_, err := svc.RequestCode(context.Background(), "+998901234567")
 	if !errors.Is(err, ErrRiderAuthBotBlocked) {
@@ -350,12 +351,12 @@ func TestRefresh_RotatesAndOldRefreshIsRevoked(t *testing.T) {
 		t.Fatal(err)
 	}
 	bot := &fakeRiderBot{}
-	svc := newRiderAuthSvc(t, db, bot, "4321")
+	svc := newRiderAuthSvc(t, db, bot, "432198")
 
 	if _, err := svc.RequestCode(context.Background(), "+998901234567"); err != nil {
 		t.Fatal(err)
 	}
-	first, err := svc.VerifyCode(context.Background(), "+998901234567", "4321")
+	first, err := svc.VerifyCode(context.Background(), "+998901234567", "432198")
 	if err != nil {
 		t.Fatalf("VerifyCode: %v", err)
 	}
@@ -384,12 +385,12 @@ func TestLogout_RevokesRefreshAndAccessIsParseable(t *testing.T) {
 		t.Fatal(err)
 	}
 	bot := &fakeRiderBot{}
-	svc := newRiderAuthSvc(t, db, bot, "4321")
+	svc := newRiderAuthSvc(t, db, bot, "432198")
 
 	if _, err := svc.RequestCode(context.Background(), "+998901234567"); err != nil {
 		t.Fatal(err)
 	}
-	tokens, err := svc.VerifyCode(context.Background(), "+998901234567", "4321")
+	tokens, err := svc.VerifyCode(context.Background(), "+998901234567", "432198")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -416,7 +417,7 @@ func TestRequestCode_InvalidPhoneIsRejected(t *testing.T) {
 	db := setupRiderAuthDB(t, "rider_auth_bad_phone")
 	defer db.Close()
 	bot := &fakeRiderBot{}
-	svc := newRiderAuthSvc(t, db, bot, "1234")
+	svc := newRiderAuthSvc(t, db, bot, "123456")
 
 	_, err := svc.RequestCode(context.Background(), "abc")
 	if !errors.Is(err, ErrRiderAuthInvalidPhone) {
@@ -439,4 +440,50 @@ func TestMaskPhone(t *testing.T) {
 			t.Errorf("maskPhone(%q)=%q want %q", in, got, want)
 		}
 	}
+}
+
+// Round-trip with the REAL code generator, no override.
+//
+// Every other test in this file injects a fixed code, so all of them kept
+// passing when generation moved to 6 digits while VerifyCode still required
+// exactly 4 — which made native rider login impossible for every real user.
+// This test is the one that fails if the two ever disagree again.
+func TestRequestThenVerify_UsesRealGeneratedCode(t *testing.T) {
+	db := setupRiderAuthDB(t, "rider_auth_roundtrip")
+	defer db.Close()
+	if _, err := db.Exec(`INSERT INTO users (id, role, telegram_id, phone) VALUES (1, 'rider', 555, '+998901234567')`); err != nil {
+		t.Fatal(err)
+	}
+
+	bot := &fakeRiderBot{}
+	svc := newRiderAuthSvc(t, db, bot, "") // no override: real generateLoginCode
+
+	if _, err := svc.RequestCode(context.Background(), "+998901234567"); err != nil {
+		t.Fatalf("RequestCode: %v", err)
+	}
+	if len(bot.sent) != 1 {
+		t.Fatalf("sent=%d want 1", len(bot.sent))
+	}
+
+	code := extractOTPFromMessage(t, bot.sent[0].Text)
+	if len(code) != riderOTPDigits {
+		t.Fatalf("generated code %q has %d digits, want %d", code, len(code), riderOTPDigits)
+	}
+
+	tokens, err := svc.VerifyCode(context.Background(), "+998901234567", code)
+	if err != nil {
+		t.Fatalf("VerifyCode rejected the code the service itself generated (%q): %v", code, err)
+	}
+	if tokens == nil || tokens.AccessToken == "" || tokens.RefreshToken == "" {
+		t.Fatalf("tokens=%+v, want a populated token pair", tokens)
+	}
+}
+
+func extractOTPFromMessage(t *testing.T, text string) string {
+	t.Helper()
+	m := regexp.MustCompile(`<code>(\d+)</code>`).FindStringSubmatch(text)
+	if m == nil {
+		t.Fatalf("no code found in delivered message: %q", text)
+	}
+	return m[1]
 }

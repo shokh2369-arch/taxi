@@ -6,6 +6,13 @@ services:
     env: docker
     # Critical: only 1 instance — Telegram allows one getUpdates connection per bot
     numInstances: 1
+    # Riders and drivers are in Uzbekistan; Frankfurt is the closest Render region
+    # and removes most of the origin leg of every request. Changing this recreates
+    # the service, so the public URL changes — update KEEPALIVE_URL and the client
+    # base URLs at the same time.
+    region: frankfurt
+    # Lets Render gate deploys on readiness and detect a wedged instance.
+    healthCheckPath: /health
     envVars:
       - key: RIDER_BOT_TOKEN
         sync: false
@@ -23,13 +30,43 @@ services:
         sync: false
       - key: CLOUDINARY_API_SECRET
         sync: false
+      # Admin surface. Leave blank to keep the admin HTTP API and admin bot
+      # disabled — the code fails closed and simply does not mount those routes.
+      - key: ADMIN_API_TOKEN
+        sync: false
+      - key: ADMIN_BOT_TOKEN
+        sync: false
+      - key: ADMIN_ID
+        sync: false
+      # Browser origins allowed to open a WebSocket. Falls back to WEBAPP_URL's
+      # origin when unset; native (originless) clients are always allowed.
+      - key: WS_ALLOWED_ORIGINS
+        sync: false
+      # Shown to a driver whose balance has run out, since there is no
+      # self-service top-up. A Telegram username (@support) or a phone number.
+      # Without it the driver is told to contact "the administrator" with no
+      # way to reach one.
+      - key: SUPPORT_CONTACT
+        sync: false
 
-  # Wake free-tier web service on a interval. Uses Python urllib (no curl); produces ~no stdout (avoids "Output too large").
-  # Must match your web service’s public URL (Dashboard → service → URL), not necessarily the `name:` field above.
-  # Cron jobs may require a paid Render plan — if so, use an external pinger with the curl one-liner in README instead.
+  # Keeps the web service warm. Render spins an idle free/starter instance down
+  # after ~15 minutes, and the next request then pays a 30–60s cold start — which
+  # is what "the app froze" reports usually are.
+  #
+  # This URL is the thing that actually matters and it is easy to get wrong: it
+  # must be the service's real public URL from Dashboard → service → URL, which
+  # is NOT derived from the `name:` field above. A stale value here means the
+  # cron happily pings a service that no longer exists while the live one sleeps,
+  # and nothing reports an error because the assert passes against whatever
+  # answers. Set KEEPALIVE_URL and check it after any service rename or recreate.
+  #
+  # Cron jobs may require a paid Render plan — if so, use an external pinger.
   - type: cron
     name: taxi-service-keepalive
     runtime: python
     schedule: "*/10 * * * *"
     buildCommand: "true"
-    startCommand: python -c "import urllib.request as u; r=u.urlopen('https://taxi-1-kpkh.onrender.com/health'); assert r.getcode()==200"
+    envVars:
+      - key: KEEPALIVE_URL
+        sync: false
+    startCommand: python -c "import os,urllib.request as u; url=os.environ['KEEPALIVE_URL']; r=u.urlopen(url+'/health'); assert r.getcode()==200, (url, r.getcode())"

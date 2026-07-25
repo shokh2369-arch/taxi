@@ -16,11 +16,11 @@ const (
 
 // Trip status (trips.status).
 const (
-	TripStatusWaiting         = "WAITING"
-	TripStatusArrived         = "ARRIVED"
-	TripStatusStarted         = "STARTED"
-	TripStatusFinished        = "FINISHED"
-	TripStatusCancelled       = "CANCELLED"
+	TripStatusWaiting           = "WAITING"
+	TripStatusArrived           = "ARRIVED"
+	TripStatusStarted           = "STARTED"
+	TripStatusFinished          = "FINISHED"
+	TripStatusCancelled         = "CANCELLED"
 	TripStatusCancelledByDriver = "CANCELLED_BY_DRIVER"
 	TripStatusCancelledByRider  = "CANCELLED_BY_RIDER"
 )
