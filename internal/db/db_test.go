@@ -68,6 +68,31 @@ func TestSessionPragmasAlwaysSetBusyTimeout(t *testing.T) {
 	}
 }
 
+func TestIsRemoteLibSQL(t *testing.T) {
+	remote := []string{
+		"libsql://my-db.turso.io",
+		"libsql://my-db.turso.io?authToken=x",
+		"wss://my-db.turso.io",
+		"https://my-db.turso.io",
+		"HTTP://example.com",
+	}
+	for _, u := range remote {
+		if !isRemoteLibSQL(u) {
+			t.Errorf("isRemoteLibSQL(%q) = false, want true", u)
+		}
+	}
+	local := []string{
+		"file:local.db",
+		":memory:",
+		"file:memdb?mode=memory&cache=shared",
+	}
+	for _, u := range local {
+		if isRemoteLibSQL(u) {
+			t.Errorf("isRemoteLibSQL(%q) = true, want false", u)
+		}
+	}
+}
+
 // foreign_keys is opt-in: enabling it wholesale on a schema backfilled without
 // enforcement could start rejecting writes that succeed today.
 func TestForeignKeysOffByDefaultAndOptIn(t *testing.T) {

@@ -52,22 +52,20 @@ func Open(databaseURL string) (*sql.DB, error) {
 // happened to hand out, leaving every other connection at the driver default.
 // Falls back to a plain open if the driver cannot be wrapped.
 //
-// IMPORTANT — this does NOT work against remote Turso/libSQL. The hrana v2
-// connection implements driver.SessionResetter as closeStream(), which drops the
-// server-side stream, and database/sql calls ResetSession every time a pooled
-// connection is handed back out. A pragma therefore survives exactly one
-// checkout and the next statement runs on a fresh session at driver defaults.
-// It works only for drivers that keep the session across reuse, such as the
-// local modernc.org/sqlite used in tests. Getting busy_timeout or foreign_keys
-// to stick on Turso needs driver or DSN support, not this wrapper — see
-// isRemoteLibSQL below for the warning we emit instead of pretending otherwise.
+// IMPORTANT — remote Turso/libSQL (hrana) rejects PRAGMA busy_timeout /
+// foreign_keys ("SQL not allowed statement"). A failed Exec also closes the
+// stream, so "best effort" pragma application leaves a bad connection in the
+// pool and breaks the next statement (startup repairs → fatal). Session
+// pragmas are therefore skipped entirely for remote URLs; see isRemoteLibSQL.
 func openWithSessionPragmas(databaseURL string) (*sql.DB, error) {
 	if isRemoteLibSQL(databaseURL) {
 		if envBool("DB_FOREIGN_KEYS", false) {
-			log.Printf("db: WARNING DB_FOREIGN_KEYS=true has no reliable effect on remote libSQL — " +
-				"the session is reset on every pooled connection reuse, so enforcement would be " +
-				"intermittent. Treat foreign keys as OFF.")
+			log.Printf("db: WARNING DB_FOREIGN_KEYS=true has no effect on remote libSQL — " +
+				"session pragmas are not applied (Turso rejects them). Treat foreign keys as OFF.")
 		}
+		// Plain open: no pragmaConnector. Turso rejects busy_timeout and a failed
+		// Exec leaves the hrana stream closed ("driver: bad connection").
+		return sql.Open("libsql", databaseURL)
 	}
 	return openPragmaDB("libsql", databaseURL, sessionPragmas())
 }
