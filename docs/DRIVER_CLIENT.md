@@ -225,7 +225,7 @@ sessions stayed valid and two devices posted location for the same driver.
 
 1. Read **`X-Telegram-Init-Data`** header, or query **`init_data`** if the header is empty.
 2. If initData is **non-empty**: verify with **driver** bot token, then **rider** bot token; resolve user + role.
-3. **Else** read a bearer token from **`Authorization: Bearer`** (or query **`?access_token=`** when query credentials are allowed): tried first as a **driver OTP session token**, then as a **native rider JWT**.
+3. **Else** read a bearer token from **`Authorization: Bearer`** or query **`?access_token=`**: tried first as a **driver OTP session token**, then as a **native rider JWT**. The query token remains available in hardened mode because browser/Flutter WebSocket APIs may not support custom upgrade headers.
 4. **Else** if **`ENABLE_DRIVER_ID_HEADER`** is **true**: require **`X-Driver-Id`** and resolve an **approved** driver (same rules as HTTP).
 5. **Else**: **401** `missing init data`.
 

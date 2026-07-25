@@ -2,6 +2,7 @@ package ws
 
 import (
 	"database/sql"
+	"log"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -26,24 +27,24 @@ const headerInitData = "X-Telegram-Init-Data"
 // ServeWsOpts configures WebSocket auth credential sources.
 type ServeWsOpts struct {
 	EnableDriverIDHeader bool
-	// AllowQueryCreds enables init_data / access_token / driver_id query fallbacks
-	// (local/dev only; prefer headers in production).
+	// AllowQueryCreds enables init_data / driver_id query fallbacks
+	// (local/dev only). access_token is always accepted because browser and
+	// Flutter WebSocket APIs may not support custom upgrade headers.
 	AllowQueryCreds bool
 	DriverTokens    auth.DriverTokenVerifier
 }
 
 // riderAccessTokenFromRequest returns the native rider JWT from Authorization: Bearer
-// or, when allowQuery is true, from query access_token.
-func riderAccessTokenFromRequest(r *http.Request, allowQuery bool) string {
+// or from query access_token. Query tokens are supported in hardened mode because
+// browser and Flutter WebSocket clients cannot reliably set upgrade headers.
+// HTTP access logs intentionally omit query strings.
+func riderAccessTokenFromRequest(r *http.Request) string {
 	h := strings.TrimSpace(r.Header.Get("Authorization"))
 	token := strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
 	if token != "" {
 		return token
 	}
-	if allowQuery {
-		return strings.TrimSpace(r.URL.Query().Get("access_token"))
-	}
-	return ""
+	return strings.TrimSpace(r.URL.Query().Get("access_token"))
 }
 
 func initDataFromRequest(r *http.Request, allowQuery bool) string {
@@ -63,6 +64,7 @@ func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	}
 	conn, err := Upgrader.Upgrade(w, r, nil)
 	if err != nil {
+		log.Printf("ws: upgrade failed path=%s reason=%v", r.URL.Path, err)
 		return
 	}
 	client := &client{
@@ -79,7 +81,7 @@ func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 // ServeWsWithAuth requires Telegram Mini App auth; only rider or assigned driver of the trip may subscribe.
 // When enableDriverIDHeader is true and init data is absent, accepts header X-Driver-Id (internal driver user id) for drivers only.
 // When riderAuth is non-nil, also accepts the native rider access JWT via Authorization: Bearer
-// (and ?access_token= only when opts.AllowQueryCreds).
+// or ?access_token=. Query bearer tokens remain available when ID/query debug auth is disabled.
 func ServeWsWithAuth(hub *Hub, db *sql.DB, driverBotToken, riderBotToken string, opts ServeWsOpts, riderAuth RiderAccessTokenVerifier, w http.ResponseWriter, r *http.Request) {
 	tripID := strings.TrimSpace(r.URL.Query().Get("trip_id"))
 	if tripID == "" {
@@ -111,7 +113,7 @@ func ServeWsWithAuth(hub *Hub, db *sql.DB, driverBotToken, riderBotToken string,
 			w.Write([]byte(`{"error":"user not found"}`))
 			return
 		}
-	} else if token := riderAccessTokenFromRequest(r, opts.AllowQueryCreds); token != "" {
+	} else if token := riderAccessTokenFromRequest(r); token != "" {
 		// Prefer opaque driver session, then rider JWT (same Authorization header).
 		if opts.DriverTokens != nil {
 			if uid, err := opts.DriverTokens.Verify(ctx, token); err == nil && uid > 0 {
@@ -205,6 +207,7 @@ func ServeWsWithAuth(hub *Hub, db *sql.DB, driverBotToken, riderBotToken string,
 	}
 	conn, err := Upgrader.Upgrade(w, r, nil)
 	if err != nil {
+		log.Printf("ws: upgrade failed path=%s trip_id=%s reason=%v", r.URL.Path, tripID, err)
 		return
 	}
 	client := &client{

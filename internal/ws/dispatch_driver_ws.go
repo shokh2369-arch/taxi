@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"log"
 	"net/http"
 	"time"
 
@@ -32,6 +33,7 @@ func ServeDriverDispatchWs(hub *DispatchHub, w http.ResponseWriter, r *http.Requ
 
 	conn, err := Upgrader.Upgrade(w, r, nil)
 	if err != nil {
+		log.Printf("ws: upgrade failed path=%s reason=%v", r.URL.Path, err)
 		return
 	}
 
