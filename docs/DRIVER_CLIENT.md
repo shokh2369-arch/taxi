@@ -231,6 +231,8 @@ sessions stayed valid and two devices posted location for the same driver.
 
 > **Native driver apps:** when `ENABLE_DRIVER_ID_HEADER` is off (hardened production), `X-Driver-Id` on the upgrade request is ignored and the connection gets **401**. Connect as
 > `wss://<host>/ws?trip_id=<uuid>&access_token=<driver bearer token>` (or set the `Authorization` header if your WebSocket client supports it).
+>
+> A plain HTTP `GET` (no `Connection: Upgrade`) returns **400** with `websocket: the client is not using the websocket protocol` — use a real WebSocket client, not Dio/`http.get`.
 
 Then **`AuthorizeTripAccess`**: only the **assigned driver** or the **rider** for that trip may subscribe.
 

@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -21,6 +22,10 @@ import (
 	"taxi-mvp/internal/utils"
 	"taxi-mvp/internal/ws"
 )
+
+// Cap each Turso round-trip so a wedged connection fails fast instead of
+// waiting for the mobile client's ~15s timeout and then returning 500.
+const availableRequestsQueryTimeout = 8 * time.Second
 
 // OpenAPI (informal) — Driver dispatch HTTP
 //
@@ -73,22 +78,32 @@ func DriverAvailableRequests(db *sql.DB, cfg *config.Config, fareSvc *services.F
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "driver auth required"})
 			return
 		}
-		ctx := c.Request.Context()
+		reqCtx := c.Request.Context()
 		driverID := u.UserID
 
 		var lastLat, lastLng sql.NullFloat64
 		var appLat, appLng sql.NullFloat64
 		var appLast sql.NullString
 		var appActive sql.NullInt64
-		err := db.QueryRowContext(ctx, `
+		locCtx, locCancel := context.WithTimeout(reqCtx, availableRequestsQueryTimeout)
+		err := db.QueryRowContext(locCtx, `
 			SELECT last_lat, last_lng, app_lat, app_lng, app_last_seen_at, COALESCE(app_location_active, 0)
 			FROM drivers WHERE user_id = ?1`, driverID).Scan(&lastLat, &lastLng, &appLat, &appLng, &appLast, &appActive)
-		if err != nil && strings.Contains(strings.ToLower(err.Error()), "no such column") {
+		locCancel()
+		if err != nil && isMissingColumnErrHandlers(err) {
 			// Backward compatible: DB not migrated yet; fall back to Telegram-only fields.
-			_ = db.QueryRowContext(ctx, `SELECT last_lat, last_lng FROM drivers WHERE user_id = ?1`, driverID).Scan(&lastLat, &lastLng)
+			fbCtx, fbCancel := context.WithTimeout(reqCtx, availableRequestsQueryTimeout)
+			_ = db.QueryRowContext(fbCtx, `SELECT last_lat, last_lng FROM drivers WHERE user_id = ?1`, driverID).Scan(&lastLat, &lastLng)
+			fbCancel()
 			appLat, appLng = sql.NullFloat64{}, sql.NullFloat64{}
 			appLast = sql.NullString{}
 			appActive = sql.NullInt64{Int64: 0, Valid: true}
+			err = nil
+		}
+		if err != nil {
+			if writeAvailableRequestsErr(c, driverID, "driver_location", err) {
+				return
+			}
 		}
 		loc := services.EffectiveDriverLocation{
 			AppLat:            appLat,
@@ -114,6 +129,8 @@ func DriverAvailableRequests(db *sql.DB, cfg *config.Config, fareSvc *services.F
 		}
 
 		queryOffers := func() ([]DriverAvailableOffer, error) {
+			qCtx, cancel := context.WithTimeout(reqCtx, availableRequestsQueryTimeout)
+			defer cancel()
 			qNew := `
 				SELECT r.id, COALESCE(t.id, ''), r.pickup_lat, r.pickup_lng, r.radius_km, COALESCE(r.estimated_price, 0), COALESCE(r.expires_at,'')
 				FROM request_notifications n
@@ -130,11 +147,11 @@ func DriverAvailableRequests(db *sql.DB, cfg *config.Config, fareSvc *services.F
 				WHERE n.driver_user_id = ?1 AND n.status = ?2
 				  AND r.status = ?3 AND r.expires_at > datetime('now')
 				  AND n.created_at > datetime('now', ?4)`
-			rows, err := db.QueryContext(ctx, qNew, driverID, domain.NotificationStatusSent, domain.RequestStatusPending, offerVisibleModifier)
+			rows, err := db.QueryContext(qCtx, qNew, driverID, domain.NotificationStatusSent, domain.RequestStatusPending, offerVisibleModifier)
 			newColsOK := true
-			if err != nil && strings.Contains(strings.ToLower(err.Error()), "no such column") {
+			if err != nil && isMissingColumnErrHandlers(err) {
 				newColsOK = false
-				rows, err = db.QueryContext(ctx, qLegacy, driverID, domain.NotificationStatusSent, domain.RequestStatusPending, offerVisibleModifier)
+				rows, err = db.QueryContext(qCtx, qLegacy, driverID, domain.NotificationStatusSent, domain.RequestStatusPending, offerVisibleModifier)
 			}
 			if err != nil {
 				return nil, err
@@ -168,14 +185,16 @@ func DriverAvailableRequests(db *sql.DB, cfg *config.Config, fareSvc *services.F
 
 		offers, err := queryOffers()
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "query failed"})
-			return
+			if writeAvailableRequestsErr(c, driverID, "offers", err) {
+				return
+			}
+			offers = nil
 		}
 		if waitSec > 0 && len(offers) == 0 {
 			deadline := time.Now().Add(time.Duration(waitSec) * time.Second)
 			hub := ws.DispatchHubDefault
 			for time.Now().Before(deadline) && len(offers) == 0 {
-				if err := ctx.Err(); err != nil {
+				if err := reqCtx.Err(); err != nil {
 					break
 				}
 				// The 1-second cap existed because the dispatch wake reached only one
@@ -189,17 +208,20 @@ func DriverAvailableRequests(db *sql.DB, cfg *config.Config, fareSvc *services.F
 					waitSlice = 5 * time.Second
 				}
 				if hub != nil {
-					hub.WaitForDispatchChange(ctx, waitSlice)
+					hub.WaitForDispatchChange(reqCtx, waitSlice)
 				} else {
 					select {
-					case <-ctx.Done():
+					case <-reqCtx.Done():
 					case <-time.After(200 * time.Millisecond):
 					}
 				}
 				offers, err = queryOffers()
 				if err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"error": "query failed"})
-					return
+					if writeAvailableRequestsErr(c, driverID, "offers_wait", err) {
+						return
+					}
+					offers = nil
+					break
 				}
 			}
 		}
@@ -217,7 +239,8 @@ func DriverAvailableRequests(db *sql.DB, cfg *config.Config, fareSvc *services.F
 		// reads back as WAITING.
 		var assigned *DriverAssignedTripStub
 		var tripID, status string
-		err = db.QueryRowContext(ctx, `
+		assignCtx, assignCancel := context.WithTimeout(reqCtx, availableRequestsQueryTimeout)
+		err = db.QueryRowContext(assignCtx, `
 			SELECT t.id, t.status FROM trips t
 			JOIN ride_requests r ON r.id = t.request_id
 			WHERE t.driver_user_id = ?1 AND t.status IN ('WAITING','ARRIVED','STARTED')
@@ -230,24 +253,29 @@ func DriverAvailableRequests(db *sql.DB, cfg *config.Config, fareSvc *services.F
 			         t.id
 			LIMIT 1`,
 			driverID, domain.RequestStatusAssigned).Scan(&tripID, &status)
+		assignCancel()
 		if err == nil && tripID != "" {
 			assigned = &DriverAssignedTripStub{TripID: tripID, Status: status}
+		} else if err != nil && !errors.Is(err, sql.ErrNoRows) && writeAvailableRequestsErr(c, driverID, "assigned_trip", err) {
+			return
 		}
 
 		// A driver should never have more than one active trip. If legacy rows put
 		// them in that state, say so rather than silently picking one.
 		var activeCount int
-		if err := db.QueryRowContext(ctx, `
+		countCtx, countCancel := context.WithTimeout(reqCtx, availableRequestsQueryTimeout)
+		if err := db.QueryRowContext(countCtx, `
 			SELECT COUNT(*) FROM trips
 			WHERE driver_user_id = ?1 AND status IN ('WAITING','ARRIVED','STARTED')`,
 			driverID).Scan(&activeCount); err == nil && activeCount > 1 {
 			log.Printf("driver_dispatch: driver %d has %d active trips; serving %s (%s)", driverID, activeCount, tripID, status)
 		}
+		countCancel()
 
 		// Stable balance shape. Clients were scrapping a long list of aliases to
 		// find these; total/promo/cash in so'm is the contract from here on.
-		bal := loadDriverBalance(ctx, db, driverID)
-		tariff := driverTariffFromSettings(ctx, cfg, fareSvc)
+		bal := loadDriverBalance(reqCtx, db, driverID)
+		tariff := driverTariffFromSettings(reqCtx, cfg, fareSvc)
 
 		resp := gin.H{
 			"assigned_trip":      assigned,
@@ -297,6 +325,24 @@ func formatExpiresAtRFC3339(raw string) string {
 		return raw
 	}
 	return t.UTC().Format(time.RFC3339)
+}
+
+// writeAvailableRequestsErr logs the real Turso/SQL error. Returns true when the
+// handler should stop (client gone or hard failure). Client disconnects are not
+// reported as HTTP 500 — that was the ~14s "query failed" noise under poll races.
+func writeAvailableRequestsErr(c *gin.Context, driverID int64, step string, err error) bool {
+	if err == nil {
+		return false
+	}
+	// Client hung up mid-poll (or replaced the long-poll) — do not surface as 500.
+	if errors.Is(err, context.Canceled) || errors.Is(c.Request.Context().Err(), context.Canceled) {
+		log.Printf("driver_available_requests: driver=%d step=%s canceled: %v", driverID, step, err)
+		c.Abort()
+		return true
+	}
+	log.Printf("driver_available_requests: driver=%d step=%s err=%v", driverID, step, err)
+	c.JSON(http.StatusInternalServerError, gin.H{"error": "query failed"})
+	return true
 }
 
 // DriverAcceptRequest delegates to AssignmentService.TryAssign (same as driver bot accept). Schedules start reminder on success.

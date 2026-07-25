@@ -94,6 +94,28 @@ switch to a real long poll (up to `wait_sec=25`) and drop the extra polling. Tha
 is a meaningful battery and data saving for a driver on shift all day, and it
 reduces backend cost.
 
+**Do not overlap long-polls.** Cancel the previous request before starting the
+next one, and do not also fire a second short poll every 2s on the same endpoint
+while a `wait_sec` request is in flight — that races and used to surface as
+intermittent HTTP 500 after ~14s.
+
+## 6b. WebSocket must be a real WebSocket, with bearer token
+
+`GET /ws/driver-dispatch` and `GET /ws?trip_id=...` return:
+
+- **401** if only `X-Driver-Id` is sent while `ENABLE_DRIVER_ID_HEADER=false`
+- **400** `'upgrade' token not found in 'Connection' header` if the app hits the
+  URL with plain `http.get` / Dio instead of a WebSocket client
+
+Connect with a WebSocket library (`web_socket_channel`, `IOWebSocketChannel`, etc.):
+
+```text
+wss://<host>/ws/driver-dispatch?access_token=<driver bearer token>
+wss://<host>/ws?trip_id=<uuid>&access_token=<driver bearer token>
+```
+
+Do not use `http.get` against `/ws`. Do not rely on `X-Driver-Id` alone.
+
 ## 7. `GET /trip/:id` returns less to unauthenticated callers
 
 The endpoint still answers without credentials, but no longer returns rider or
