@@ -3,7 +3,9 @@ package ws
 import (
 	"encoding/json"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -198,26 +200,74 @@ var Upgrader = websocket.Upgrader{
 }
 
 // ConfigureCheckOrigin sets Upgrader.CheckOrigin from an allowlist.
-// Empty Origin (native apps / non-browser) is allowed. Browser Origins must match.
+//
+// Allowed:
+//   - empty Origin (native Flutter/iOS/Android clients that omit it)
+//   - exact match in allowedOrigins
+//   - "*" in allowedOrigins → allow any Origin (parity with HTTP CORS *)
+//   - Origin whose host matches the request Host (Flutter/Dart WebSocket
+//     stacks often set Origin to the API base URL itself; WEBAPP_URL alone
+//     would reject those and yield 403 "request origin not allowed")
+//
+// Rejected origins are logged with the Origin value so misconfigured
+// WS_ALLOWED_ORIGINS is diagnosable from production tails.
 func ConfigureCheckOrigin(allowedOrigins []string) {
 	allow := make(map[string]struct{}, len(allowedOrigins))
+	allowAll := false
 	for _, o := range allowedOrigins {
 		o = strings.TrimRight(strings.TrimSpace(o), "/")
-		if o != "" {
-			allow[o] = struct{}{}
+		if o == "" {
+			continue
 		}
+		if o == "*" {
+			allowAll = true
+			continue
+		}
+		allow[o] = struct{}{}
 	}
 	Upgrader.CheckOrigin = func(r *http.Request) bool {
 		origin := strings.TrimRight(strings.TrimSpace(r.Header.Get("Origin")), "/")
 		if origin == "" {
 			return true
 		}
-		if len(allow) == 0 {
-			return false
+		if allowAll {
+			return true
 		}
-		_, ok := allow[origin]
-		return ok
+		if _, ok := allow[origin]; ok {
+			return true
+		}
+		if originHostMatchesRequest(origin, r.Host) {
+			return true
+		}
+		log.Printf("ws: CheckOrigin rejected origin=%q host=%q path=%s allowlist_size=%d",
+			origin, r.Host, r.URL.Path, len(allow))
+		return false
 	}
+}
+
+// originHostMatchesRequest reports whether origin's host equals the request host
+// (case-insensitive). Accepts either bare hostname or host:port on either side.
+func originHostMatchesRequest(origin, reqHost string) bool {
+	reqHost = strings.TrimSpace(reqHost)
+	if origin == "" || reqHost == "" {
+		return false
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	originHost := u.Hostname()
+	reqHostname := reqHost
+	if h, _, err := net.SplitHostPort(reqHost); err == nil {
+		reqHostname = h
+	}
+	// Strip brackets from IPv6 hostnames for EqualFold.
+	originHost = strings.TrimPrefix(strings.TrimSuffix(originHost, "]"), "[")
+	reqHostname = strings.TrimPrefix(strings.TrimSuffix(reqHostname, "]"), "[")
+	if originHost != "" && strings.EqualFold(originHost, reqHostname) {
+		return true
+	}
+	return strings.EqualFold(u.Host, reqHost)
 }
 
 // nextSeq returns the next per-trip sequence number.

@@ -38,8 +38,9 @@ services:
         sync: false
       - key: ADMIN_ID
         sync: false
-      # Browser origins allowed to open a WebSocket. Falls back to WEBAPP_URL's
-      # origin when unset; native (originless) clients are always allowed.
+      # Browser origins allowed to open a WebSocket. Comma-separated, or "*" for
+      # any. When unset: WEBAPP_URL origin + RENDER_EXTERNAL_URL. Empty Origin
+      # (native apps) and Origin matching the API Host are always allowed.
       - key: WS_ALLOWED_ORIGINS
         sync: false
       # Shown to a driver whose balance has run out, since there is no

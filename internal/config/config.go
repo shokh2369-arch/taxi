@@ -130,7 +130,8 @@ func envTruthy(key string, defaultVal bool) bool {
 }
 
 // parseWSAllowedOrigins returns origins from WS_ALLOWED_ORIGINS (comma-separated),
-// or the scheme+host of webAppURL when the env is empty.
+// or a sensible default: WEBAPP_URL origin + RENDER_EXTERNAL_URL when present.
+// Use "*" to allow any Origin (matches HTTP CORS *).
 func parseWSAllowedOrigins(webAppURL string) []string {
 	raw := strings.TrimSpace(os.Getenv("WS_ALLOWED_ORIGINS"))
 	if raw != "" {
@@ -146,10 +147,24 @@ func parseWSAllowedOrigins(webAppURL string) []string {
 			return out
 		}
 	}
-	if o := originFromURL(webAppURL); o != "" {
-		return []string{o}
+	seen := map[string]struct{}{}
+	var out []string
+	add := func(o string) {
+		o = strings.TrimRight(strings.TrimSpace(o), "/")
+		if o == "" {
+			return
+		}
+		if _, ok := seen[o]; ok {
+			return
+		}
+		seen[o] = struct{}{}
+		out = append(out, o)
 	}
-	return nil
+	add(originFromURL(webAppURL))
+	// Render sets this to the public https://…onrender.com URL. Flutter WS
+	// clients often send that as Origin; without it CheckOrigin 403s.
+	add(originFromURL(os.Getenv("RENDER_EXTERNAL_URL")))
+	return out
 }
 
 func originFromURL(raw string) string {
