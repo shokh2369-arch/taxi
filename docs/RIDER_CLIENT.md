@@ -74,6 +74,26 @@ Error codes: `legal_required`, `phone_required`, `abuse_blocked`,
 `duplicate_pending`, `invalid_coordinates`, `invalid_state`, `not_found`,
 `not_your_request`.
 
+A destination within ~100 m of the pickup is rejected with `400
+invalid_coordinates` (degenerate order guard — mirrors the client-side check).
+
+Account deletion (Google Play compliance) and WS tickets:
+
+```
+DELETE /v1/rider/account          Authorization: Bearer <access_token>
+  200 {"ok":true}        // phone/name/Telegram link erased, all sessions revoked,
+                         // pending request cancelled; trips are kept anonymized
+  409 invalid_state      // a trip is WAITING/ARRIVED/STARTED — finish/cancel first
+
+POST /v1/rider/ws-ticket          Authorization: Bearer <access_token>
+  200 {"ticket":"...","expires_in":60}
+```
+
+`ws-ticket` is for web builds: open the socket as
+`GET /ws?trip_id=<uuid>&ticket=<ticket>` so the long-lived JWT never appears in
+a URL. Tickets are one-time and expire in 60 s — request one right before each
+connect (including reconnects). `?access_token=` keeps working unchanged.
+
 `client_request_id` is accepted but **not persisted**, so it does not deduplicate
 retries. Rely on `duplicate_pending` instead (task 5).
 

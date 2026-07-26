@@ -141,6 +141,38 @@ func (h *Hub) fanOut(req broadcastReq) {
 	}
 }
 
+// NotifySessionRevoked sends {"type":"session_revoked"} to every connection of
+// the given user and closes them shortly after (single-session driver login:
+// the old device must learn it was signed out without waiting for its next
+// HTTP call). Best-effort like all hub delivery.
+func (h *Hub) NotifySessionRevoked(userID int64) {
+	if h == nil || userID <= 0 {
+		return
+	}
+	msg, err := json.Marshal(Event{Type: "session_revoked", EmittedAt: time.Now().UTC().Format(time.RFC3339)})
+	if err != nil {
+		return
+	}
+	h.mu.RLock()
+	targets := make([]*client, 0, 2)
+	for c := range h.clients {
+		if c.userID == userID {
+			targets = append(targets, c)
+		}
+	}
+	h.mu.RUnlock()
+	for _, c := range targets {
+		select {
+		case c.send <- msg:
+		default:
+		}
+		if c.conn != nil {
+			conn := c.conn
+			time.AfterFunc(500*time.Millisecond, func() { _ = conn.Close() })
+		}
+	}
+}
+
 // BroadcastToTrip sends an event to all clients subscribed to the trip. Sets EmittedAt if empty.
 func (h *Hub) BroadcastToTrip(tripID string, event Event) {
 	if tripID == "" {

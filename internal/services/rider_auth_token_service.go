@@ -94,6 +94,13 @@ func (s *RiderAuthTokenService) Issue(ctx context.Context, userID int64) (*Rider
 // Refresh validates the refresh token and rotates it: the presented token is
 // revoked and a brand-new pair is returned. Returns an error for unknown,
 // revoked, or expired tokens.
+//
+// Rotation is atomic (RotateByRefreshHash): the old token is revoked in the
+// same transaction that stores its replacement, so a mid-rotation failure
+// leaves the old token valid. Two concurrent refreshes with the same token
+// serialize on the conditional revoke — the first wins, the second gets
+// ErrRiderSessionNotFound (→ 401 invalid_refresh_token) and the winner's
+// pair stays valid.
 func (s *RiderAuthTokenService) Refresh(ctx context.Context, refreshToken string) (*RiderAuthTokens, error) {
 	refreshToken = strings.TrimSpace(refreshToken)
 	if refreshToken == "" {
@@ -101,16 +108,32 @@ func (s *RiderAuthTokenService) Refresh(ctx context.Context, refreshToken string
 	}
 	now := s.now().UTC()
 	hash := sha256Hex(refreshToken)
+	// Cheap pre-read: resolves the user id for signing and rejects unknown /
+	// expired tokens before doing any write. The rotate below re-checks the
+	// same conditions atomically, so this read carries no authority.
 	row, err := s.sessions.GetByRefreshHash(ctx, hash, now.Unix())
 	if err != nil {
 		return nil, err
 	}
-	// Rotate: revoke the old hash before issuing a new one. Even if Issue
-	// fails, the old refresh token is gone — the client must re-login.
-	if _, err := s.sessions.RevokeByRefreshHash(ctx, hash); err != nil {
+	// Everything fallible happens before the transaction commits: sign the
+	// access token and generate the replacement refresh token up front.
+	access, err := s.signAccess(row.UserID, now)
+	if err != nil {
 		return nil, err
 	}
-	return s.Issue(ctx, row.UserID)
+	refresh, err := generateOpaqueToken(32)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.sessions.RotateByRefreshHash(ctx, hash, now.Unix(), sha256Hex(refresh), now.Add(s.refreshTTL).Unix()); err != nil {
+		return nil, err
+	}
+	return &RiderAuthTokens{
+		AccessToken:  access,
+		RefreshToken: refresh,
+		ExpiresIn:    int(s.accessTTL.Seconds()),
+		TokenType:    "Bearer",
+	}, nil
 }
 
 // VerifyAccess parses an access token and returns the user id if the

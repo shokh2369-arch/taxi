@@ -34,6 +34,10 @@ var (
 	ErrRiderRequestMatchUnavailable = errors.New("rider_request: dispatch service unavailable")
 )
 
+// minTripDistanceMeters rejects degenerate orders where the drop is effectively
+// the pickup (mis-taps). Matches the ~100 m guard the rider app applies client-side.
+const minTripDistanceMeters = 100.0
+
 // RiderRequestAppService implements the same DB progression as the Telegram
 // rider bot (internal/bot/rider/bot.go): pickup INSERT → destination UPDATE
 // + server estimated_price → destination_confirmed + MatchService.BroadcastRequest.
@@ -159,6 +163,12 @@ func (s *RiderRequestAppService) SetDestination(ctx context.Context, riderUserID
 	}
 	if status != domain.RequestStatusPending {
 		return 0, ErrRiderRequestConflictState
+	}
+	// Degenerate order guard: a drop within ~100 m of pickup is a mis-tap, not
+	// a trip — it would dispatch a driver for a 0 so'm-distance ride. The app
+	// blocks this client-side too, but the server must not rely on that.
+	if utils.HaversineMeters(pickupLat, pickupLng, dropLat, dropLng) < minTripDistanceMeters {
+		return 0, ErrRiderRequestInvalidCoords
 	}
 
 	var confirmed int

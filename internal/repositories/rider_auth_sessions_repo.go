@@ -77,6 +77,49 @@ func (r *RiderAuthSessionsRepo) RevokeByRefreshHash(ctx context.Context, refresh
 	return n, nil
 }
 
+// RotateByRefreshHash atomically revokes the presented refresh token and
+// inserts its replacement in one transaction. Returns the session's user id.
+//
+// The conditional UPDATE doubles as winner selection for concurrent refreshes
+// with the same token: exactly one caller flips revoked 0→1 and proceeds;
+// every other caller affects 0 rows and gets ErrRiderSessionNotFound (→ 401).
+// Any failure after the UPDATE rolls the whole transaction back, so the old
+// refresh token is only ever revoked once its replacement is durably stored.
+func (r *RiderAuthSessionsRepo) RotateByRefreshHash(ctx context.Context, oldHash string, nowUnix int64, newHash string, newExpiresAt int64) (int64, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE rider_auth_sessions SET revoked = 1
+		WHERE refresh_hash = ?1 AND revoked = 0 AND refresh_expires_at > ?2`,
+		oldHash, nowUnix)
+	if err != nil {
+		return 0, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return 0, ErrRiderSessionNotFound
+	}
+	var userID int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT user_id FROM rider_auth_sessions WHERE refresh_hash = ?1 LIMIT 1`,
+		oldHash).Scan(&userID); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO rider_auth_sessions (user_id, refresh_hash, refresh_expires_at)
+		VALUES (?1, ?2, ?3)`,
+		userID, newHash, newExpiresAt); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return userID, nil
+}
+
 // RevokeAllForUser marks every active session for the given user as revoked.
 // Used by /v1/rider/auth/logout where we only know the user id (from access JWT).
 func (r *RiderAuthSessionsRepo) RevokeAllForUser(ctx context.Context, userID int64) (int64, error) {

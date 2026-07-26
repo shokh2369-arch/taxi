@@ -361,7 +361,7 @@ func TripCancelDriver(db *sql.DB, tripSvc *services.TripService) gin.HandlerFunc
 			return
 		}
 		if !ok {
-			c.JSON(http.StatusForbidden, gin.H{"error": "not assigned to this trip"})
+			c.JSON(http.StatusForbidden, gin.H{"ok": false, "code": "NOT_ASSIGNED_TO_TRIP", "error": "not assigned to this trip"})
 			return
 		}
 		result, err := tripSvc.CancelByDriver(ctx, req.TripID, u.UserID)

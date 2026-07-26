@@ -24,6 +24,12 @@ type RiderAccessTokenVerifier interface {
 
 const headerInitData = "X-Telegram-Init-Data"
 
+// RiderWSTicketRedeemer redeems a one-time WS ticket issued by
+// POST /v1/rider/ws-ticket (services.RiderWSTicketService).
+type RiderWSTicketRedeemer interface {
+	Redeem(ticket string) (int64, bool)
+}
+
 // ServeWsOpts configures WebSocket auth credential sources.
 type ServeWsOpts struct {
 	EnableDriverIDHeader bool
@@ -32,6 +38,9 @@ type ServeWsOpts struct {
 	// Flutter WebSocket APIs may not support custom upgrade headers.
 	AllowQueryCreds bool
 	DriverTokens    auth.DriverTokenVerifier
+	// RiderTickets redeems ?ticket= one-time credentials (web token hygiene:
+	// keeps long-lived JWTs out of URLs). Optional.
+	RiderTickets RiderWSTicketRedeemer
 }
 
 // riderAccessTokenFromRequest returns the native rider JWT from Authorization: Bearer
@@ -113,6 +122,18 @@ func ServeWsWithAuth(hub *Hub, db *sql.DB, driverBotToken, riderBotToken string,
 			w.Write([]byte(`{"error":"user not found"}`))
 			return
 		}
+	} else if ticket := strings.TrimSpace(r.URL.Query().Get("ticket")); ticket != "" && opts.RiderTickets != nil {
+		// One-time ticket (rider web builds). Redeemed exactly once; role is
+		// fixed to rider because only RequireRiderBearerAuth can issue one.
+		uid, ok := opts.RiderTickets.Redeem(ticket)
+		if !ok || uid <= 0 {
+			logger.AuthFailure("invalid ws ticket")
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error":"invalid token"}`))
+			return
+		}
+		userID = uid
+		role = domain.RoleRider
 	} else if token := riderAccessTokenFromRequest(r); token != "" {
 		// Prefer opaque driver session, then rider JWT (same Authorization header).
 		if opts.DriverTokens != nil {
@@ -189,6 +210,9 @@ func ServeWsWithAuth(hub *Hub, db *sql.DB, driverBotToken, riderBotToken string,
 		}
 	} else {
 		logger.AuthFailure("missing init data")
+		// No credential found at all — log which sources were present (flags only)
+		// so a stale client is identifiable from production logs.
+		log.Printf("ws: trip ws auth missing path=%s %s", r.URL.Path, authPresenceSummary(r))
 		w.WriteHeader(http.StatusUnauthorized)
 		w.Write([]byte(`{"error":"missing init data"}`))
 		return

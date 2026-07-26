@@ -15,6 +15,9 @@ type dispatchClient struct {
 	hub  *DispatchHub
 	conn *websocket.Conn
 	send chan []byte
+	// userID is the authenticated driver, so a new login on another device can
+	// target this socket with session_revoked.
+	userID int64
 }
 
 // ServeDriverDispatchWs upgrades to a driver-only websocket and streams dispatch poke events.
@@ -26,6 +29,10 @@ type dispatchClient struct {
 func ServeDriverDispatchWs(hub *DispatchHub, w http.ResponseWriter, r *http.Request) {
 	u := auth.UserFromContext(r.Context())
 	if u == nil || u.Role != domain.RoleDriver {
+		// Presence flags only (no values): shows whether the client attached any
+		// usable credential — the difference between "update the app to send
+		// ?access_token=" and "token sent but rejected".
+		log.Printf("ws: driver dispatch auth failed path=%s %s", r.URL.Path, authPresenceSummary(r))
 		w.WriteHeader(http.StatusUnauthorized)
 		w.Write([]byte(`{"error":"driver auth required"}`))
 		return
@@ -38,9 +45,10 @@ func ServeDriverDispatchWs(hub *DispatchHub, w http.ResponseWriter, r *http.Requ
 	}
 
 	c := &dispatchClient{
-		hub:  hub,
-		conn: conn,
-		send: make(chan []byte, 128),
+		hub:    hub,
+		conn:   conn,
+		send:   make(chan []byte, 128),
+		userID: u.UserID,
 	}
 
 	if c.hub != nil {

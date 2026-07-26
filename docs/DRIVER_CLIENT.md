@@ -200,6 +200,8 @@ legacy `error` field is retained only for older clients.
 | `INVALID_TRANSITION` | 409 | Action does not apply to the current status. |
 | `NOT_FOUND` | 404 | Unknown trip. |
 | `NOT_ASSIGNED_TO_TRIP` | 403 | Trip belongs to another driver. |
+| `AUTH_SESSION_EXPIRED` | 401 | The presented driver session token is expired, revoked, or replaced by a login on another device. Sign the device out. |
+| `DRIVER_NOT_APPROVED` | 403 | Valid session but `drivers.verification_status` is not approved (also returned by OTP endpoints for registered-but-pending phones; unknown phones get `DRIVER_NOT_REGISTERED`). |
 | `INTERNAL_ERROR` | 500 | Unexpected failure. |
 
 ### Pickup proximity
@@ -291,6 +293,7 @@ wss://<host>/ws/driver-dispatch?access_token=<driver bearer token>
 |---------|------|
 | `{ "type": "hello" }` | On connect |
 | `{ "type": "dispatch_changed", "emitted_at": "RFC3339" }` | An offer was created / taken / expired — refetch `available-requests` |
+| `{ "type": "session_revoked" }` | A login on another device revoked this session; the socket closes right after. Sign out locally (HTTP calls will 401 `AUTH_SESSION_EXPIRED`). Sent on `GET /ws` trip sockets too. |
 
 This socket is best-effort; treat it as a hint and keep the long-poll (`wait_sec=25`) as fallback.
 

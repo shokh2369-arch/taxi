@@ -195,9 +195,16 @@ func mapRiderAuthError(c *gin.Context, err error) {
 		if secs < 1 {
 			secs = 1
 		}
+		// Retry-After header is the primary signal; retry_after_seconds in the
+		// body is the fallback for web clients, where CORS may hide the header.
 		c.Writer.Header().Set("Retry-After", itoa(secs))
-		writeRiderAuthError(c, http.StatusTooManyRequests, "code_recently_sent",
-			"Kod yaqinda yuborildi. "+itoa(secs)+" soniyadan so‘ng qayta urinib ko‘ring.")
+		c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
+			"error": gin.H{
+				"code":                "code_recently_sent",
+				"message":             "Kod yaqinda yuborildi. " + itoa(secs) + " soniyadan so‘ng qayta urinib ko‘ring.",
+				"retry_after_seconds": secs,
+			},
+		})
 		return
 	}
 	switch {
@@ -224,8 +231,11 @@ func mapRiderAuthError(c *gin.Context, err error) {
 	case errors.Is(err, services.ErrRiderAuthInvalidCode):
 		writeRiderAuthError(c, http.StatusBadRequest, "invalid_code",
 			"Kod noto‘g‘ri yoki muddati tugagan. Qaytadan kod so‘rang.")
+	// 400, not 429: the app contract (docs/RIDER_CLIENT.md §2) groups
+	// too_many_attempts with invalid_code — the code is consumed and the fix
+	// is requesting a new one, not waiting.
 	case errors.Is(err, services.ErrRiderAuthTooManyAttempts):
-		writeRiderAuthError(c, http.StatusTooManyRequests, "too_many_attempts",
+		writeRiderAuthError(c, http.StatusBadRequest, "too_many_attempts",
 			"Kod ko‘p marta noto‘g‘ri kiritildi. Iltimos, yangi kod so‘rang.")
 	default:
 		writeRiderAuthError(c, http.StatusInternalServerError, "internal_error",

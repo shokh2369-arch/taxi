@@ -21,14 +21,18 @@ const (
 	// driverAuthMaxFailedAttempts is how many wrong guesses consume a login code.
 	driverAuthMaxFailedAttempts = 5
 	errDriverAuthNotRegistered  = "DRIVER_NOT_REGISTERED"
-	errDriverAuthInvalidCode    = "INVALID_CODE"
-	errDriverAuthRateLimited    = "RATE_LIMITED"
-	errDriverAuthNoTelegram     = "NO_TELEGRAM"
-	errDriverAuthTelegramFail   = "TELEGRAM_SEND_FAILED"
-	errDriverAuthInvalidPhone   = "INVALID_PHONE"
-	errDriverAuthInvalidBody    = "INVALID_BODY"
-	errDriverAuthInternal       = "INTERNAL_ERROR"
-	errDriverAuthTelegramDown   = "TELEGRAM_UNAVAILABLE"
+	// errDriverAuthNotApproved distinguishes "registered but pending approval"
+	// from "unknown phone": the app routes the former to a waiting screen, the
+	// latter to the Telegram registration bot.
+	errDriverAuthNotApproved  = "DRIVER_NOT_APPROVED"
+	errDriverAuthInvalidCode  = "INVALID_CODE"
+	errDriverAuthRateLimited  = "RATE_LIMITED"
+	errDriverAuthNoTelegram   = "NO_TELEGRAM"
+	errDriverAuthTelegramFail = "TELEGRAM_SEND_FAILED"
+	errDriverAuthInvalidPhone = "INVALID_PHONE"
+	errDriverAuthInvalidBody  = "INVALID_BODY"
+	errDriverAuthInternal     = "INTERNAL_ERROR"
+	errDriverAuthTelegramDown = "TELEGRAM_UNAVAILABLE"
 )
 
 func writeAPIError(c *gin.Context, status int, code, message string) {
@@ -67,6 +71,13 @@ func normalizePhoneDigits(s string) string {
 		return "998" + d
 	}
 	return d
+}
+
+// isUzbekMobileDigits reports whether normalized digits form a full Uzbek
+// mobile number (998 + 9 digits). Anything else is INVALID_PHONE up front, so
+// a malformed number cannot masquerade as "driver not registered".
+func isUzbekMobileDigits(digits string) bool {
+	return len(digits) == 12 && strings.HasPrefix(digits, "998")
 }
 
 // maskPhoneDigits keeps only the last 4 digits for logging. Rejected logins are
@@ -151,7 +162,7 @@ func DriverAuthRequestCode(db *sql.DB, driverBot telegramSender) gin.HandlerFunc
 			return
 		}
 		digits := normalizePhoneDigits(body.Phone)
-		if digits == "" {
+		if !isUzbekMobileDigits(digits) {
 			writeAPIError(c, http.StatusBadRequest, errDriverAuthInvalidPhone, "invalid phone")
 			return
 		}
@@ -171,9 +182,15 @@ func DriverAuthRequestCode(db *sql.DB, driverBot telegramSender) gin.HandlerFunc
 				hasDriver = lookup.HasDriverRow
 				uid = lookup.UserID
 			}
+			code := errDriverAuthNotRegistered
+			msg := "driver not registered"
+			if hasDriver {
+				code = errDriverAuthNotApproved
+				msg = "driver registration pending approval"
+			}
 			log.Printf("driver_auth_request_code_reject phone=%s user_found=%v selected_user_id=%d role=%s has_driver_row=%v verification_status=%s driver_approved=%v status=%d code=%s",
-				maskPhoneDigits(digits), err != sql.ErrNoRows, uid, role, hasDriver, verStr, isApprovedDriver(lookup), http.StatusForbidden, errDriverAuthNotRegistered)
-			writeAPIError(c, http.StatusForbidden, errDriverAuthNotRegistered, "driver not registered or not approved")
+				maskPhoneDigits(digits), err != sql.ErrNoRows, uid, role, hasDriver, verStr, isApprovedDriver(lookup), http.StatusForbidden, code)
+			writeAPIError(c, http.StatusForbidden, code, msg)
 			return
 		}
 		if err != nil {
@@ -258,7 +275,13 @@ func DriverAuthVerifyCode(db *sql.DB, tokens *services.DriverAuthTokenService) g
 		ctx := c.Request.Context()
 		lookup, err := lookupDriverByPhoneDigits(ctx, db, digits)
 		if err == sql.ErrNoRows || !isApprovedDriver(lookup) {
-			writeAPIError(c, http.StatusForbidden, errDriverAuthNotRegistered, "driver not registered or not approved")
+			code := errDriverAuthNotRegistered
+			msg := "driver not registered"
+			if lookup != nil && lookup.HasDriverRow {
+				code = errDriverAuthNotApproved
+				msg = "driver registration pending approval"
+			}
+			writeAPIError(c, http.StatusForbidden, code, msg)
 			return
 		}
 		if err != nil {

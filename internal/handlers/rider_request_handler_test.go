@@ -269,6 +269,53 @@ func TestRiderRequest_HappyPath_CreateDestinationConfirm(t *testing.T) {
 	}
 }
 
+// A drop within ~100 m of pickup is a mis-tap, not a trip: the server must
+// reject it with a structured invalid_coordinates even though the app also
+// blocks it client-side.
+func TestRiderRequest_DestinationTooCloseToPickup_400(t *testing.T) {
+	db := setupRiderRequestHandlerDB(t, "rider_req_too_close")
+	defer db.Close()
+	seedRiderLegalAndUser(t, db, 1)
+	r, token := newRiderRequestTestEngine(t, db)
+	h := map[string]string{"Authorization": "Bearer " + token}
+
+	rr := postJSON(r, "/v1/rider/requests", map[string]any{"pickup_lat": 41.3, "pickup_lng": 69.28}, h)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("create status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var createOut struct {
+		RequestID string `json:"request_id"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &createOut); err != nil || createOut.RequestID == "" {
+		t.Fatalf("decode create: %v body=%s", err, rr.Body.String())
+	}
+
+	// ~55 m north of pickup (0.0005° latitude).
+	path := "/v1/rider/requests/" + createOut.RequestID + "/destination"
+	rr2 := postJSON(r, path, map[string]any{
+		"drop_lat": 41.3005, "drop_lng": 69.28, "drop_name": "Same corner",
+	}, h)
+	if rr2.Code != http.StatusBadRequest {
+		t.Fatalf("too-close destination status=%d want 400 body=%s", rr2.Code, rr2.Body.String())
+	}
+	var errOut struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rr2.Body.Bytes(), &errOut); err != nil || errOut.Error.Code != "invalid_coordinates" {
+		t.Fatalf("want error.code=invalid_coordinates got %s", rr2.Body.String())
+	}
+
+	// The request must remain usable: a real destination still succeeds.
+	rr3 := postJSON(r, path, map[string]any{
+		"drop_lat": 41.31, "drop_lng": 69.29, "drop_name": "Real",
+	}, h)
+	if rr3.Code != http.StatusOK {
+		t.Fatalf("real destination after rejection status=%d body=%s", rr3.Code, rr3.Body.String())
+	}
+}
+
 func TestRiderRequest_CamelCaseBody_EstimatedPriceAlias(t *testing.T) {
 	db := setupRiderRequestHandlerDB(t, "rider_req_camel")
 	defer db.Close()

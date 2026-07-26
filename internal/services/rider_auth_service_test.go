@@ -376,6 +376,62 @@ func TestRefresh_RotatesAndOldRefreshIsRevoked(t *testing.T) {
 	if _, err := svc.Refresh(context.Background(), first.RefreshToken); err == nil {
 		t.Fatalf("old refresh must fail after rotation")
 	}
+
+	// The rotation losing must not have hurt the winner: the rotated pair
+	// still refreshes fine.
+	if _, err := svc.Refresh(context.Background(), rotated.RefreshToken); err != nil {
+		t.Fatalf("winner's pair must remain valid, got %v", err)
+	}
+}
+
+// TestRefresh_ConcurrentSameToken exercises the concurrent-refresh race the
+// app contract calls out: two refreshes with the same token — exactly one
+// wins, the loser fails (→ 401 invalid_refresh_token upstream), and the
+// winner's new pair must remain usable.
+func TestRefresh_ConcurrentSameToken(t *testing.T) {
+	db := setupRiderAuthDB(t, "rider_auth_refresh_race")
+	defer db.Close()
+	if _, err := db.Exec(`INSERT INTO users (id, role, telegram_id, phone) VALUES (7, 'rider', 555, '+998901234567')`); err != nil {
+		t.Fatal(err)
+	}
+	bot := &fakeRiderBot{}
+	svc := newRiderAuthSvc(t, db, bot, "432198")
+
+	if _, err := svc.RequestCode(context.Background(), "+998901234567"); err != nil {
+		t.Fatal(err)
+	}
+	first, err := svc.VerifyCode(context.Background(), "+998901234567", "432198")
+	if err != nil {
+		t.Fatalf("VerifyCode: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	results := make([]*RiderAuthTokens, 2)
+	errs := make([]error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(slot int) {
+			defer wg.Done()
+			results[slot], errs[slot] = svc.Refresh(context.Background(), first.RefreshToken)
+		}(i)
+	}
+	wg.Wait()
+
+	var winner *RiderAuthTokens
+	successes := 0
+	for i := range results {
+		if errs[i] == nil {
+			successes++
+			winner = results[i]
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("concurrent refresh: want exactly 1 winner, got %d (errs=%v)", successes, errs)
+	}
+	// The loser must not have invalidated the winner's session.
+	if _, err := svc.Refresh(context.Background(), winner.RefreshToken); err != nil {
+		t.Fatalf("winner's rotated pair must stay valid, got %v", err)
+	}
 }
 
 func TestLogout_RevokesRefreshAndAccessIsParseable(t *testing.T) {

@@ -110,6 +110,14 @@ func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc
 		handlers.RegisterRiderNotificationRoutes(r, handlers.RiderNotificationDeps{
 			DB: db, RiderAuthSvc: riderAuthSvc,
 		})
+		handlers.RegisterRiderAccountRoutes(r, db, riderAuthSvc)
+	}
+	// One-time WS tickets (web token hygiene). Issued only to authenticated
+	// riders; redeemed by GET /ws below.
+	var riderWSTickets *services.RiderWSTicketService
+	if riderAuthSvc != nil {
+		riderWSTickets = services.NewRiderWSTicketService()
+		handlers.RegisterRiderWSTicketRoutes(r, db, riderAuthSvc, riderWSTickets)
 	}
 	if riderAuthSvc != nil && riderReqSvc != nil {
 		handlers.RegisterRiderRequestRoutes(r, handlers.RiderRequestDeps{
@@ -144,12 +152,20 @@ func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc
 	ws.DispatchHubDefault = dispatchHub
 	safe.GoSupervised(context.Background(), "dispatch_hub", dispatchHub.Run)
 
+	// Single-session driver login: when a new login revokes the old sessions,
+	// push session_revoked to the old device's live sockets and close them.
+	driverTokens.OnSessionsRevoked = func(userID int64) {
+		dispatchHub.NotifySessionRevoked(userID)
+		hub.NotifySessionRevoked(userID) // nil-safe
+	}
+
 	if hub != nil {
 		r.GET("/ws", func(c *gin.Context) {
 			ws.ServeWsWithAuth(hub, db, cfg.DriverBotToken, cfg.RiderBotToken, ws.ServeWsOpts{
 				EnableDriverIDHeader: cfg.EnableDriverIDHeader,
 				AllowQueryCreds:      allowWSQueryCreds,
 				DriverTokens:         driverTokens,
+				RiderTickets:         riderWSTickets,
 			}, riderAuthSvc, c.Writer, c.Request)
 		})
 	}
@@ -207,8 +223,10 @@ func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc
 func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
-		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Telegram-Init-Data, X-Driver-Id, X-Driver-Session")
+		// Without this a browser client cannot read the 429 rate-limit countdown.
+		c.Writer.Header().Set("Access-Control-Expose-Headers", "Retry-After")
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)
 			return

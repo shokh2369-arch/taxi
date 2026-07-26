@@ -16,8 +16,14 @@ type DriverTokenVerifier interface {
 }
 
 // TryDriverBearerAuth sets the driver from Authorization: Bearer or X-Driver-Session
-// when a valid opaque OTP session token is presented. On missing or invalid token,
+// when a valid opaque OTP session token is presented. On a missing token it
 // continues so rider Bearer / initData / X-Driver-Id can run.
+//
+// A token that unambiguously claims a DRIVER session (X-Driver-Session header,
+// or a dot-free opaque token in Authorization/access_token — rider JWTs always
+// contain dots) but fails verification aborts with 401 AUTH_SESSION_EXPIRED:
+// that is the stable signal the app uses to sign the device out, e.g. after a
+// login on another device revoked this session (single-session).
 func TryDriverBearerAuth(db *sql.DB, tokens DriverTokenVerifier) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if tokens == nil || db == nil {
@@ -35,6 +41,17 @@ func TryDriverBearerAuth(db *sql.DB, tokens DriverTokenVerifier) gin.HandlerFunc
 		}
 		userID, err := tokens.Verify(c.Request.Context(), raw)
 		if err != nil || userID <= 0 {
+			if !strings.Contains(raw, ".") {
+				// Opaque driver-session shape: expired, revoked, or replaced.
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+					"ok":      false,
+					"code":    "AUTH_SESSION_EXPIRED",
+					"error":   "AUTH_SESSION_EXPIRED",
+					"message": "session expired or signed in on another device",
+				})
+				return
+			}
+			// JWT-shaped token: not a driver session — let rider auth try it.
 			c.Next()
 			return
 		}
@@ -42,7 +59,12 @@ func TryDriverBearerAuth(db *sql.DB, tokens DriverTokenVerifier) gin.HandlerFunc
 		err = db.QueryRowContext(c.Request.Context(), `
 			SELECT verification_status FROM drivers WHERE user_id = ?1`, userID).Scan(&ver)
 		if err != nil || !strings.EqualFold(strings.TrimSpace(ver.String), "approved") {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "driver not approved"})
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"ok":      false,
+				"code":    "DRIVER_NOT_APPROVED",
+				"error":   "driver not approved",
+				"message": "driver registration pending approval",
+			})
 			return
 		}
 		c.Request = c.Request.WithContext(WithUser(c.Request.Context(), &User{

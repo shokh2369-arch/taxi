@@ -20,6 +20,9 @@ type DispatchHub struct {
 	register   chan *dispatchClient
 	unregister chan *dispatchClient
 	broadcast  chan []byte
+	// revokeUser carries a driver user id whose sockets must receive
+	// {"type":"session_revoked"} and then be closed (single-session login).
+	revokeUser chan int64
 
 	clients map[*dispatchClient]struct{}
 
@@ -40,6 +43,7 @@ func NewDispatchHub() *DispatchHub {
 		register:   make(chan *dispatchClient, 128),
 		unregister: make(chan *dispatchClient, 128),
 		broadcast:  make(chan []byte, 256),
+		revokeUser: make(chan int64, 16),
 		clients:    make(map[*dispatchClient]struct{}),
 		wake:       make(chan struct{}),
 	}
@@ -63,7 +67,46 @@ func (h *DispatchHub) Run() {
 					// Best-effort: drop for slow clients.
 				}
 			}
+		case uid := <-h.revokeUser:
+			msg := []byte(`{"type":"session_revoked"}`)
+			for c := range h.clients {
+				if c.userID != uid {
+					continue
+				}
+				select {
+				case c.send <- msg:
+				default:
+				}
+				// Give the write pump a beat to flush the frame, then close.
+				// The read pump then errors out and unregisters the client.
+				// Best-effort by design: even if both miss, the device's next
+				// HTTP call gets 401 and logs itself out.
+				closeDispatchClientSoon(c)
+			}
 		}
+	}
+}
+
+// closeDispatchClientSoon closes the client's connection shortly after the
+// session_revoked frame was queued, without blocking the hub loop.
+func closeDispatchClientSoon(c *dispatchClient) {
+	if c == nil || c.conn == nil {
+		return
+	}
+	conn := c.conn
+	time.AfterFunc(500*time.Millisecond, func() { _ = conn.Close() })
+}
+
+// NotifySessionRevoked pokes every socket of the given driver with
+// {"type":"session_revoked"} and closes it. Safe from any goroutine; never blocks.
+func (h *DispatchHub) NotifySessionRevoked(userID int64) {
+	if h == nil || userID <= 0 {
+		return
+	}
+	select {
+	case h.revokeUser <- userID:
+	default:
+		// Hub under backpressure — the HTTP-401 fallback still signs the device out.
 	}
 }
 
