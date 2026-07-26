@@ -205,6 +205,8 @@ var Upgrader = websocket.Upgrader{
 //   - empty Origin (native Flutter/iOS/Android clients that omit it)
 //   - exact match in allowedOrigins
 //   - "*" in allowedOrigins → allow any Origin (parity with HTTP CORS *)
+//   - loopback Origin (localhost, 127.0.0.0/8, ::1), used by packaged
+//     Flutter/Capacitor WebViews whose local asset server opens the socket
 //   - Origin whose host matches the request Host (Flutter/Dart WebSocket
 //     stacks often set Origin to the API base URL itself; WEBAPP_URL alone
 //     would reject those and yield 403 "request origin not allowed")
@@ -236,6 +238,9 @@ func ConfigureCheckOrigin(allowedOrigins []string) {
 		if _, ok := allow[origin]; ok {
 			return true
 		}
+		if isLoopbackOrigin(origin) {
+			return true
+		}
 		if originHostMatchesRequest(origin, r.Host) {
 			return true
 		}
@@ -243,6 +248,19 @@ func ConfigureCheckOrigin(allowedOrigins []string) {
 			origin, r.Host, r.URL.Path, len(allow))
 		return false
 	}
+}
+
+func isLoopbackOrigin(origin string) bool {
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	host := u.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // originHostMatchesRequest reports whether origin's host equals the request host

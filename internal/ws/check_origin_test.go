@@ -37,6 +37,23 @@ func TestConfigureCheckOrigin_SameHostAsAPI(t *testing.T) {
 	}
 }
 
+func TestConfigureCheckOrigin_LoopbackWebViewAllowed(t *testing.T) {
+	origins := []string{
+		"http://127.0.0.1:8101",
+		"http://localhost:8101",
+		"http://[::1]:8101",
+	}
+	for _, origin := range origins {
+		ConfigureCheckOrigin([]string{"https://mini.example"})
+		req := httptest.NewRequest(http.MethodGet, "/ws/driver-dispatch", nil)
+		req.Header.Set("Origin", origin)
+		req.Host = "taxi-2r2j.onrender.com"
+		if !Upgrader.CheckOrigin(req) {
+			t.Errorf("loopback WebView Origin %q must be accepted", origin)
+		}
+	}
+}
+
 func TestConfigureCheckOrigin_RejectForeign(t *testing.T) {
 	ConfigureCheckOrigin([]string{"https://mini.example"})
 	req := httptest.NewRequest(http.MethodGet, "/ws/driver-dispatch", nil)
@@ -54,6 +71,25 @@ func TestConfigureCheckOrigin_StarAllowsAny(t *testing.T) {
 	req.Host = "api.example.com"
 	if !Upgrader.CheckOrigin(req) {
 		t.Fatal("* must allow any Origin")
+	}
+}
+
+func TestIsLoopbackOrigin(t *testing.T) {
+	cases := []struct {
+		origin string
+		want   bool
+	}{
+		{"http://127.0.0.1:8101", true},
+		{"http://127.42.0.1:8101", true},
+		{"http://localhost:8101", true},
+		{"http://[::1]:8101", true},
+		{"https://api.example.com", false},
+		{"not-an-origin", false},
+	}
+	for _, tc := range cases {
+		if got := isLoopbackOrigin(tc.origin); got != tc.want {
+			t.Errorf("isLoopbackOrigin(%q)=%v want %v", tc.origin, got, tc.want)
+		}
 	}
 }
 
