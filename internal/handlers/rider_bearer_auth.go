@@ -36,19 +36,20 @@ func RequireRiderBearerAuth(svc *services.RiderAuthService, db *sql.DB) gin.Hand
 			c.Abort()
 			return
 		}
-		var role string
-		if err := db.QueryRowContext(c.Request.Context(), `SELECT role FROM users WHERE id = ?1`, userID).Scan(&role); err != nil {
+		// Existence only — do not gate on users.role. The same phone/Telegram row
+		// is often flipped to role=driver when the person also opens the driver bot
+		// (UPSERT overwrites role). Rider OTP still issues tokens for that row;
+		// requiring role=rider then 403s every /v1/rider/* call after a successful
+		// refresh (matches production: refresh 200 → trips/active 403).
+		// Credential type is the authority here, same as driver OTP ignoring role.
+		var exists int
+		if err := db.QueryRowContext(c.Request.Context(), `SELECT 1 FROM users WHERE id = ?1`, userID).Scan(&exists); err != nil {
 			if err == sql.ErrNoRows {
 				writeRiderAPIError(c, http.StatusForbidden, "forbidden", "Foydalanuvchi topilmadi.")
 				c.Abort()
 				return
 			}
 			writeRiderAPIError(c, http.StatusInternalServerError, "internal_error", "Texnik xatolik.")
-			c.Abort()
-			return
-		}
-		if strings.TrimSpace(role) != domain.RoleRider {
-			writeRiderAPIError(c, http.StatusForbidden, "forbidden", "Bu amal faqat yo‘lovchilar uchun.")
 			c.Abort()
 			return
 		}

@@ -524,3 +524,23 @@ func TestRiderRequest_DuplicatePendingIdentifiesBlockingRequest(t *testing.T) {
 		t.Error("a freshly created request has no confirmed destination; the flag should be false")
 	}
 }
+
+// Dual-bot users often end up with users.role=driver after the driver bot UPSERT.
+// Rider OTP still issues tokens for that row; bearer auth must not 403 them.
+func TestRiderRequest_AllowsRoleDriverWithRiderBearer(t *testing.T) {
+	db := setupRiderRequestHandlerDB(t, "rider_req_role_driver")
+	defer db.Close()
+	seedRiderLegalAndUser(t, db, 1)
+	if _, err := db.Exec(`UPDATE users SET role = 'driver' WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	r, token := newRiderRequestTestEngine(t, db)
+	h := map[string]string{"Authorization": "Bearer " + token}
+
+	rr := postJSON(r, "/v1/rider/requests", map[string]any{
+		"pickup_lat": 41.3, "pickup_lng": 69.28,
+	}, h)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s (role=driver must not 403 on valid rider JWT)", rr.Code, rr.Body.String())
+	}
+}

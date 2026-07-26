@@ -65,15 +65,16 @@ func (s *RiderAuthService) DeleteAccount(ctx context.Context, userID int64) erro
 
 	var phone sql.NullString
 	if err := tx.QueryRowContext(ctx, `
-		SELECT phone FROM users WHERE id = ?1 AND role = 'rider'`, userID).Scan(&phone); err != nil {
-		// Unknown id or a non-rider account: nothing to delete via this flow.
+		SELECT phone FROM users WHERE id = ?1`, userID).Scan(&phone); err != nil {
+		// Unknown id: nothing to delete via this flow.
 		return ErrRiderAuthInternal
 	}
 
 	// Sever identity. -id is unique per row, so repeated deletions cannot collide.
+	// Do not require users.role=rider — dual-bot accounts often have role=driver.
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE users SET phone = NULL, name = NULL, telegram_id = -id
-		WHERE id = ?1 AND role = 'rider'`, userID); err != nil {
+		WHERE id = ?1`, userID); err != nil {
 		return ErrRiderAuthInternal
 	}
 	if phone.Valid && strings.TrimSpace(phone.String) != "" {

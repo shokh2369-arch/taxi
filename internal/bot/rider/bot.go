@@ -303,7 +303,8 @@ func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, cfg *config.Config, matchS
 		telegramID := q.From.ID
 		_, _ = db.ExecContext(ctx, `
 			INSERT INTO users (telegram_id, role) VALUES (?1, ?2)
-			ON CONFLICT (telegram_id) DO UPDATE SET role = excluded.role`,
+			ON CONFLICT (telegram_id) DO UPDATE SET
+				role = CASE WHEN users.role = 'driver' THEN users.role ELSE excluded.role END`,
 			telegramID, domain.RoleRider)
 		var userID int64
 		if err := db.QueryRowContext(ctx, `SELECT id FROM users WHERE telegram_id = ?1`, telegramID).Scan(&userID); err != nil || userID == 0 {
@@ -412,7 +413,8 @@ func handleStart(bot *tgbotapi.BotAPI, db *sql.DB, chatID int64, telegramID int6
 	}
 	_, err = db.ExecContext(ctx, `
 		INSERT INTO users (telegram_id, role, referral_code, referred_by) VALUES (?1, ?2, ?3, ?4)
-		ON CONFLICT (telegram_id) DO UPDATE SET role = excluded.role`,
+		ON CONFLICT (telegram_id) DO UPDATE SET
+			role = CASE WHEN users.role = 'driver' THEN users.role ELSE excluded.role END`,
 		telegramID, domain.RoleRider, code, refArg)
 	if err != nil {
 		log.Printf("rider: upsert user: %v", err)

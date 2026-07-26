@@ -155,7 +155,10 @@ func ServeWsWithAuth(hub *Hub, db *sql.DB, driverBotToken, riderBotToken string,
 				w.Write([]byte(`{"error":"invalid token"}`))
 				return
 			}
-			if err := db.QueryRowContext(ctx, `SELECT role FROM users WHERE id = ?1`, userID).Scan(&role); err != nil {
+			// Existence only — do not require users.role=rider (dual bot users
+			// often have role=driver after the driver bot UPSERT).
+			var exists int
+			if err := db.QueryRowContext(ctx, `SELECT 1 FROM users WHERE id = ?1`, userID).Scan(&exists); err != nil {
 				if err == sql.ErrNoRows {
 					logger.AuthFailure("user not found")
 					w.WriteHeader(http.StatusUnauthorized)
@@ -165,12 +168,7 @@ func ServeWsWithAuth(hub *Hub, db *sql.DB, driverBotToken, riderBotToken string,
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
-			if strings.TrimSpace(role) != domain.RoleRider {
-				logger.AuthFailure("rider role required for bearer ws")
-				w.WriteHeader(http.StatusForbidden)
-				w.Write([]byte(`{"error":"forbidden"}`))
-				return
-			}
+			role = domain.RoleRider
 		}
 		if userID == 0 {
 			logger.AuthFailure("invalid bearer token")

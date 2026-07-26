@@ -40,12 +40,10 @@ func TryRiderBearerAuth(db *sql.DB, tokens RiderAccessVerifier) gin.HandlerFunc 
 			c.Next()
 			return
 		}
-		var role string
-		if err := db.QueryRowContext(c.Request.Context(), `SELECT role FROM users WHERE id = ?1`, userID).Scan(&role); err != nil {
-			c.Next()
-			return
-		}
-		if strings.TrimSpace(role) != domain.RoleRider {
+		// Existence only — users.role may be "driver" for dual bot users; a valid
+		// rider access JWT is enough to treat this request as the rider.
+		var exists int
+		if err := db.QueryRowContext(c.Request.Context(), `SELECT 1 FROM users WHERE id = ?1`, userID).Scan(&exists); err != nil {
 			c.Next()
 			return
 		}
