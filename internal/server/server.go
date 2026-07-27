@@ -222,11 +222,35 @@ func New(db *sql.DB, cfg *config.Config, tripSvc *services.TripService, matchSvc
 
 func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
-		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Telegram-Init-Data, X-Driver-Id, X-Driver-Session")
+		origin := strings.TrimSpace(c.Request.Header.Get("Origin"))
+		// Echo a concrete Origin when the browser sent one. Flutter web (and any
+		// fetch with credentials) rejects Access-Control-Allow-Origin: * — that
+		// shows up in DevTools as failed preflight/fetch with "Server javob bermadi".
+		// Local debug origins (127.0.0.1 / localhost) are the common case.
+		if origin != "" {
+			c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
+			c.Writer.Header().Set("Vary", "Origin")
+			c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+		} else {
+			c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+		}
+		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+		// Reflect requested headers when present so Flutter/BrowserClient preflights
+		// are not rejected for an unexpected header (e.g. X-Requested-With). Fall
+		// back to the known app header set otherwise.
+		allowHeaders := strings.TrimSpace(c.Request.Header.Get("Access-Control-Request-Headers"))
+		if allowHeaders == "" {
+			allowHeaders = "Accept, Content-Type, Authorization, X-Telegram-Init-Data, X-Driver-Id, X-Driver-Session, X-Requested-With"
+		}
+		c.Writer.Header().Set("Access-Control-Allow-Headers", allowHeaders)
 		// Without this a browser client cannot read the 429 rate-limit countdown.
 		c.Writer.Header().Set("Access-Control-Expose-Headers", "Retry-After")
+		c.Writer.Header().Set("Access-Control-Max-Age", "86400")
+		// Chrome Private Network Access preflight (localhost page → public API is
+		// fine; public → private needs this). Harmless to advertise when asked.
+		if strings.EqualFold(c.Request.Header.Get("Access-Control-Request-Private-Network"), "true") {
+			c.Writer.Header().Set("Access-Control-Allow-Private-Network", "true")
+		}
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)
 			return
