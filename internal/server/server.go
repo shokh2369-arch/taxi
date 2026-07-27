@@ -282,7 +282,19 @@ func corsForMiniApp(allowedOrigin string) gin.HandlerFunc {
 // healthCacheTTL bounds how often /health actually touches the database.
 const healthCacheTTL = 5 * time.Second
 
+// healthDBPingTimeout is the hard cap for the SELECT 1 probe. Kept short so a
+// Flutter web reachability check (often ~5s client timeout) still gets a
+// response, and so Render's healthCheckPath does not wait on a wedged pool.
+const healthDBPingTimeout = 2 * time.Second
+
 // healthHandler reports whether the service can reach its database.
+//
+// Concurrency notes (Flutter web + Render hit this path together):
+//   - The DB ping uses a detached timeout context, not the request context.
+//     Otherwise a browser that cancels at 5s would mark the cached probe as
+//     failed and poison Render/keepalive with 503 for the whole cache TTL.
+//   - The mutex is not held across the DB round-trip, so one slow Turso ping
+//     cannot block every concurrent /health waiter behind it.
 func healthHandler(db *sql.DB) gin.HandlerFunc {
 	var (
 		mu        sync.Mutex
@@ -291,15 +303,27 @@ func healthHandler(db *sql.DB) gin.HandlerFunc {
 	)
 	return func(c *gin.Context) {
 		mu.Lock()
-		if time.Since(checkedAt) > healthCacheTTL {
-			ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
-			var one int
-			lastErr = db.QueryRowContext(ctx, `SELECT 1`).Scan(&one)
-			cancel()
-			checkedAt = time.Now()
-		}
+		needPing := time.Since(checkedAt) > healthCacheTTL
 		err := lastErr
 		mu.Unlock()
+
+		if needPing {
+			ctx, cancel := context.WithTimeout(context.Background(), healthDBPingTimeout)
+			var one int
+			pingErr := db.QueryRowContext(ctx, `SELECT 1`).Scan(&one)
+			cancel()
+
+			mu.Lock()
+			// Another goroutine may have refreshed while we were in flight; only
+			// publish if we are still the stale writer, or always publish a
+			// successful ping so a good result wins races.
+			if pingErr == nil || time.Since(checkedAt) > healthCacheTTL {
+				lastErr = pingErr
+				checkedAt = time.Now()
+			}
+			err = lastErr
+			mu.Unlock()
+		}
 
 		if err != nil {
 			log.Printf("health: database unreachable: %v", err)
